@@ -49,8 +49,8 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
             smi_val = ssi_snap.smi if ssi_snap.smi is not None else ssi_snap.ssi
             ssi_val = ssi_snap.social_score
             sig_str = ssi_snap.signal or "N/A"
-            base_sig = sig_str.split(" (")[0] if " (" in sig_str else sig_str
-            mod_sig = sig_str.split(" (")[1].replace(")", "") if " (" in sig_str else None
+            base_sig = ssi_snap.base_signal or sig_str
+            mod_sig = ssi_snap.signal_modifier
 
             rankings.append({
                 "ticker": symbol,

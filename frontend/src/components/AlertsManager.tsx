@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Bell, AlertTriangle, Zap, TrendingUp, Check } from 'lucide-react';
 import { AlertItem } from '../types';
 
@@ -9,6 +9,7 @@ interface AlertsManagerProps {
 export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [permission, setPermission] = useState<NotificationPermission>('default');
+  const notifiedRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if ('Notification' in window) {
@@ -22,26 +23,31 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts }) => {
       setPermission(res);
       if (res === 'granted' && alerts.length > 0) {
         new Notification('🚀 Space Sentiment Index Alerts Enabled', {
-          body: `Monitoring active signals. ${alerts.length} critical alerts detected.`,
+          body: `Monitoring active signals. ${alerts.length} active alerts detected.`,
           icon: '🚀'
         });
       }
     }
   };
 
-  // Trigger desktop notification when new alerts arrive
+  // Trigger desktop notification ONLY when brand new alerts arrive
   useEffect(() => {
-    if (permission === 'granted' && alerts && alerts.length > 0) {
-      const topAlert = alerts[0];
-      try {
-        new Notification(`SSI Alert: ${topAlert.ticker}`, {
-          body: topAlert.message,
-          icon: '🚀'
-        });
-      } catch (e) {
-        console.warn('Could not fire notification', e);
+    if (permission !== 'granted' || !alerts || alerts.length === 0) return;
+
+    alerts.forEach((alert) => {
+      const key = `${alert.ticker}:${alert.type}`;
+      if (!notifiedRef.current.has(key)) {
+        notifiedRef.current.add(key);
+        try {
+          new Notification(`SSI Alert: ${alert.ticker}`, {
+            body: alert.message,
+            icon: '🚀'
+          });
+        } catch (e) {
+          console.warn('Could not fire desktop notification', e);
+        }
       }
-    }
+    });
   }, [alerts, permission]);
 
   return (

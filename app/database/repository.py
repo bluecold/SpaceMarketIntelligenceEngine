@@ -316,8 +316,8 @@ def get_latest_market_snapshot(db: Session, ticker: str) -> Optional[MarketSnaps
 
 def save_ssi_snapshot(db: Session, data: Dict[str, Any]) -> SSISnapshotModel:
     sig_val = data["signal"]
-    base_sig = data.get("base_signal") or (sig_val.split(" (")[0] if " (" in sig_val else sig_val)
-    mod_sig = data.get("signal_modifier") or (sig_val.split(" (")[1].replace(")", "") if " (" in sig_val else None)
+    base_sig = data.get("base_signal", sig_val)
+    mod_sig = data.get("signal_modifier")
 
     snapshot = SSISnapshotModel(
         ticker=data["ticker"],
@@ -363,46 +363,52 @@ def get_historical_ssi_snapshot(
     db: Session,
     ticker: str,
     target_hours_ago: float = 24.0,
-    tolerance_hours: float = 6.0
+    tolerance_hours: float = 6.0,
+    max_lookback_multiplier: float = 2.5
 ) -> Optional[SSISnapshotModel]:
     """
-    Retrieves the closest historical snapshot from approximately target_hours_ago
-    (e.g., 24h ago for 1D momentum, 72h for 3D, 120h for 5D).
-    Prevents momentum collapse from comparing against a snapshot taken minutes ago.
+    Retrieves the closest historical snapshot within a bounded quantitative window
+    around target_hours_ago (e.g. 24h for 1D momentum, 72h for 3D, 120h for 5D).
+    
+    Window constraints:
+    - min_time: now - tolerance_hours (e.g. at least 6h old to avoid intra-hour noise).
+    - target_time: now - target_hours_ago (e.g. ~24h ago).
+    - max_time: now - (target_hours_ago * max_lookback_multiplier) (e.g. at most 60h ago for 1D).
+    
+    If no snapshot exists within [max_time, min_time], returns None so momentum is 0.0
+    rather than computed against stale data from weeks ago.
     """
     now = utc_now()
+    min_time = now - timedelta(hours=tolerance_hours)
     target_time = now - timedelta(hours=target_hours_ago)
-    cutoff_time = now - timedelta(hours=tolerance_hours)
+    max_time = now - timedelta(hours=target_hours_ago * max_lookback_multiplier)
 
-    # 1. Best match: Latest snapshot before or near target_time (e.g. <= 24h ago)
+    # 1. Best match: Latest snapshot on or before target_time within max lookback [max_time, target_time]
     snap = (
         db.query(SSISnapshotModel)
         .filter(SSISnapshotModel.ticker == ticker.upper())
         .filter(SSISnapshotModel.timestamp <= target_time)
+        .filter(SSISnapshotModel.timestamp >= max_time)
         .order_by(desc(SSISnapshotModel.timestamp))
         .first()
     )
     if snap:
         return snap
 
-    # 2. Secondary match: Latest snapshot older than tolerance cutoff (e.g. > 6h ago)
-    snap_older = (
+    # 2. Secondary match: Earliest snapshot in the tolerance window [target_time, min_time]
+    snap_tolerance = (
         db.query(SSISnapshotModel)
         .filter(SSISnapshotModel.ticker == ticker.upper())
-        .filter(SSISnapshotModel.timestamp <= cutoff_time)
-        .order_by(desc(SSISnapshotModel.timestamp))
-        .first()
-    )
-    if snap_older:
-        return snap_older
-
-    # 3. Fallback: If all snapshots are within tolerance_hours, return the earliest snapshot
-    return (
-        db.query(SSISnapshotModel)
-        .filter(SSISnapshotModel.ticker == ticker.upper())
+        .filter(SSISnapshotModel.timestamp > target_time)
+        .filter(SSISnapshotModel.timestamp <= min_time)
         .order_by(SSISnapshotModel.timestamp.asc())
         .first()
     )
+    if snap_tolerance:
+        return snap_tolerance
+
+    # 3. No snapshot found within the valid bounded window [max_time, min_time] -> return None
+    return None
 
 
 def get_latest_ssi_snapshots_batch(db: Session, tickers: Optional[List[str]] = None) -> Dict[str, SSISnapshotModel]:

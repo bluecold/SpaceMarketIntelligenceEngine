@@ -161,6 +161,18 @@ def test_get_historical_ssi_snapshot_momentum_isolation():
         # Current SMI is 82.0 -> Momentum 1D is 82.0 - 60.0 = +22.0 (not 82.0 - 80.0 = +2.0)
         smi_mom_1d = 82.0 - snap_24h.smi
         assert smi_mom_1d == 22.0
+
+        # Snapshot 3: Stale gap test - snapshot from 30 days ago (720h)
+        s_ancient = SSISnapshotModel(
+            ticker="RKLB", timestamp=now - timedelta(days=30),
+            social_score=50.0, ssi=50.0, smi=50.0, signal="HOLD", confidence=80.0, data_completeness=100.0
+        )
+        db.add(s_ancient)
+        db.commit()
+
+        # Querying 24h for RKLB must return None (not the 30-day-old record)
+        snap_stale = get_historical_ssi_snapshot(db, "RKLB", target_hours_ago=24.0, tolerance_hours=6.0)
+        assert snap_stale is None
     finally:
         db.close()
 

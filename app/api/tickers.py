@@ -147,8 +147,8 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
         is_stale = age_hours >= 6.0
 
     sig_str = ssi_snap.signal if ssi_snap and ssi_snap.signal else "N/A"
-    base_sig = sig_str.split(" (")[0] if " (" in sig_str else sig_str
-    mod_sig = sig_str.split(" (")[1].replace(")", "") if " (" in sig_str else None
+    base_sig = (ssi_snap.base_signal if ssi_snap else None) or sig_str
+    mod_sig = ssi_snap.signal_modifier if ssi_snap else None
 
     return {
         "ticker": ticker_sym,
