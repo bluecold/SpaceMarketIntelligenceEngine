@@ -31,14 +31,18 @@ def calculate_prediction_market_score(
     sector_events = sector_events or []
     
     valid_market_scores: List[Dict[str, Any]] = []
+    seen_market_ids: set = set()
     
     # 1. Evaluate Direct Markets for this ticker
     for m in direct_markets:
         if m.ticker and m.ticker.upper() == ticker.upper():
+            if m.external_id in seen_market_ids:
+                continue
             # Check Quality Rule
             if m.quality_score < settings.POLYMARKET_MIN_QUALITY:
                 continue  # Excluded by quality threshold
                 
+            seen_market_ids.add(m.external_id)
             # Base probability level (0 - 100)
             prob_level = m.yes_probability * 100.0
             
@@ -69,11 +73,15 @@ def calculate_prediction_market_score(
             
     # 2. Evaluate Sector / Global Event Markets that impact this ticker
     for ev in sector_events:
+        if ev.external_id in seen_market_ids:
+            continue  # Prevent double-counting if market was already evaluated directly
+
         if ev.quality_score < settings.POLYMARKET_MIN_QUALITY:
             continue
             
         event_key = ev.event_key or ev.external_id
         if event_key in mappings and ticker.upper() in mappings[event_key]:
+            seen_market_ids.add(ev.external_id)
             impact_factor = mappings[event_key][ticker.upper()]  # e.g., +0.30 or -0.20
             
             # If event is favorable (impact > 0), high probability is bullish.
@@ -115,17 +123,23 @@ def calculate_prediction_market_score(
             "status": "UNAVAILABLE_OR_LOW_QUALITY",
             "market_count": len(all_markets),
             "valid_count": 0,
+            "avg_quality": round(avg_qual, 1),
+            "pms_delta_24h": None,
+            "delta_24h": None,
             "markets": []
         }
 
-    # Calculate weighted average PMS
+    # Calculate weighted average PMS and 24h probability delta
     total_weight = sum(item["weight"] for item in valid_market_scores)
     if total_weight > 0:
         weighted_pms = sum(item["pms"] * item["weight"] for item in valid_market_scores) / total_weight
+        weighted_delta = sum(item.get("delta_24h", 0.0) * item["weight"] for item in valid_market_scores) / total_weight
     else:
         weighted_pms = sum(item["pms"] for item in valid_market_scores) / len(valid_market_scores)
+        weighted_delta = sum(item.get("delta_24h", 0.0) for item in valid_market_scores) / len(valid_market_scores)
         
     final_pms = round(min(100.0, max(0.0, weighted_pms)), 1)
+    pms_delta_24h = round(weighted_delta, 2)
     avg_quality = round(sum(item["quality"] for item in valid_market_scores) / len(valid_market_scores), 1)
     
     # Calculate confidence based on market quality and depth of markets
@@ -136,6 +150,8 @@ def calculate_prediction_market_score(
         "status": "AVAILABLE",
         "market_count": len(valid_market_scores),
         "avg_quality": avg_quality,
+        "pms_delta_24h": pms_delta_24h,
+        "delta_24h": pms_delta_24h,
         "markets": valid_market_scores
     }
 

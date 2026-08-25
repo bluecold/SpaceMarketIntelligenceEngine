@@ -28,17 +28,40 @@ def test_calculate_financial_metrics_mixed_trades():
 def test_evaluate_backtest_dataset_hypothesis_comparison():
     # Construct synthetic snapshot trajectory
     snapshots = [
-        {"social_score": 80, "technical_score": 30, "smi": 85, "price": 10.0},
-        {"social_score": 80, "technical_score": 30, "smi": 85, "price": 10.5},
-        {"social_score": 80, "technical_score": 30, "smi": 85, "price": 11.0},
-        {"social_score": 80, "technical_score": 30, "smi": 85, "price": 11.5},
-        {"social_score": 80, "technical_score": 30, "smi": 85, "price": 12.0},
+        {"social_score": 80.0, "news_score": 80.0, "momentum_score": 75.0, "prediction_score": 85.0, "technical_score": 30.0, "price": 10.0},
+        {"social_score": 80.0, "news_score": 80.0, "momentum_score": 75.0, "prediction_score": 85.0, "technical_score": 30.0, "price": 10.5},
+        {"social_score": 80.0, "news_score": 80.0, "momentum_score": 75.0, "prediction_score": 85.0, "technical_score": 30.0, "price": 11.0},
+        {"social_score": 80.0, "news_score": 80.0, "momentum_score": 75.0, "prediction_score": 85.0, "technical_score": 30.0, "price": 11.5},
+        {"social_score": 80.0, "news_score": 80.0, "momentum_score": 75.0, "prediction_score": 85.0, "technical_score": 30.0, "price": 12.0},
     ]
 
-    res = evaluate_backtest_dataset(snapshots, holding_period_days=1)
+    res = evaluate_backtest_dataset(snapshots, holding_period_days=1, buy_threshold=70.0)
     
     assert "model_a_baseline" in res
     assert "model_b_multisource" in res
+    assert res["model_a_baseline"]["name"] == "Model A (X Social + Technical + News Baseline)"
+    assert res["model_b_multisource"]["name"] == "Model B (Multi-Source with Polymarket PMS)"
     assert "hypothesis_analysis" in res
     assert res["model_a_baseline"]["metrics"]["total_trades"] == 4
     assert res["model_b_multisource"]["metrics"]["total_trades"] == 4
+
+
+def test_evaluate_backtest_dataset_multi_ticker_isolation():
+    # Interleaved snapshots for ASTS ($10 -> $11) and RKLB ($100 -> $110)
+    interleaved_snapshots = [
+        {"ticker": "ASTS", "social_score": 80.0, "news_score": 80.0, "momentum_score": 75.0, "prediction_score": 85.0, "price": 10.0},
+        {"ticker": "RKLB", "social_score": 80.0, "news_score": 80.0, "momentum_score": 75.0, "prediction_score": 85.0, "price": 100.0},
+        {"ticker": "ASTS", "social_score": 80.0, "news_score": 80.0, "momentum_score": 75.0, "prediction_score": 85.0, "price": 11.0},
+        {"ticker": "RKLB", "social_score": 80.0, "news_score": 80.0, "momentum_score": 75.0, "prediction_score": 85.0, "price": 110.0},
+    ]
+
+    res = evaluate_backtest_dataset(interleaved_snapshots, holding_period_days=1, buy_threshold=70.0)
+
+    # Both ASTS ($10 -> $11 = +10%) and RKLB ($100 -> $110 = +10%) should yield +10% returns
+    # Total trades = 2 (1 for ASTS, 1 for RKLB), avg_return = 10.0%
+    metrics_a = res["model_a_baseline"]["metrics"]
+    assert metrics_a["total_trades"] == 2
+    assert metrics_a["avg_return"] == 10.0
+    assert metrics_a["win_rate"] == 100.0
+
+

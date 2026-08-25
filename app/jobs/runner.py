@@ -10,7 +10,8 @@ from app.database.repository import (
     save_news_items, get_recent_news_items,
     save_prediction_markets, get_recent_prediction_markets,
     save_divergences, save_market_snapshot, get_latest_market_snapshot,
-    save_ssi_snapshot, get_latest_ssi_snapshot, create_job_run, finish_job_run
+    save_ssi_snapshot, get_latest_ssi_snapshot, get_historical_ssi_snapshot,
+    create_job_run, finish_job_run
 )
 from app.collectors.mock_x_provider import MockXProvider
 from app.collectors.twikit_provider import TwikitProvider
@@ -21,7 +22,7 @@ from app.collectors.polymarket_provider import PolymarketGammaProvider
 from app.sentiment.classifier import get_sentiment_classifier
 from app.sentiment.weighting import (
     calculate_engagement_score, calculate_recency_weight,
-    calculate_relevance_score, detect_catalyst, calculate_news_score
+    calculate_relevance_score, detect_catalysts, calculate_news_score
 )
 from app.technical.indicators import calculate_technical_indicators
 from app.technical.scorer import calculate_technical_score
@@ -84,6 +85,7 @@ async def run_full_pipeline() -> Dict[str, Any]:
         sentiment_classifier = get_sentiment_classifier()
 
         # Step 0: Ingest Polymarket Prediction Markets globally for the sector
+        poly_markets = []
         try:
             logger.info("Ingesting Polymarket prediction markets...")
             poly_markets = await poly_provider.get_markets()
@@ -117,9 +119,14 @@ async def run_full_pipeline() -> Dict[str, Any]:
                     rec_weight = calculate_recency_weight(p.created_at)
                     eng_score = calculate_engagement_score(p.likes, p.reposts, p.replies, p.views)
                     
-                    cat_type, cat_dir, cat_imp = detect_catalyst(p.text)
-                    if cat_type:
-                        catalysts_found.append({"category": cat_type, "direction": cat_dir, "importance": cat_imp})
+                    post_cats = detect_catalysts(p.text)
+                    for c in post_cats:
+                        catalysts_found.append({"category": c["category"], "direction": c["direction"], "importance": c["importance"]})
+
+                    top_cat = post_cats[0] if post_cats else None
+                    cat_type = top_cat["category"] if top_cat else None
+                    cat_dir = top_cat["direction"] if top_cat else None
+                    cat_imp = top_cat["importance"] if top_cat else "MEDIUM"
 
                     processed_posts.append({
                         "tweet_id": p.tweet_id,
@@ -155,9 +162,9 @@ async def run_full_pipeline() -> Dict[str, Any]:
             pms_quality = 50.0
             pms_breakdown = {}
             try:
-                ticker_markets = await poly_provider.get_markets(ticker=ticker)
-                sector_events = [m for m in ticker_markets if m.event_key is not None]
-                direct_markets = [m for m in ticker_markets if m.ticker and m.ticker.upper() == ticker.upper()]
+                # Filter directly from in-memory poly_markets (single network fetch for the entire sector)
+                direct_markets = [m for m in poly_markets if m.ticker and m.ticker.upper() == ticker.upper()]
+                sector_events = [m for m in poly_markets if m.event_key is not None and (not m.ticker or m.ticker.upper() != ticker.upper())]
                 
                 pms_score, pms_confidence, pms_quality, pms_breakdown = calculate_prediction_market_score(
                     ticker=ticker,
@@ -172,10 +179,17 @@ async def run_full_pipeline() -> Dict[str, Any]:
                 news_items = await news_provider.fetch_news(query=f"{ticker} {ticker_config.name}", ticker=ticker, max_results=20)
                 processed_news = []
                 for n in news_items:
-                    sent_res = sentiment_classifier.analyze(f"{n.title}. {n.summary}")
-                    cat_type, cat_dir, cat_imp = detect_catalyst(f"{n.title}. {n.summary}")
-                    if cat_type:
-                        catalysts_found.append({"category": cat_type, "direction": cat_dir, "importance": cat_imp})
+                    text_content = f"{n.title}. {n.summary}"
+                    sent_res = sentiment_classifier.analyze(text_content)
+                    rel_score = calculate_relevance_score(text_content, ticker, ticker_config.aliases)
+                    news_cats = detect_catalysts(text_content)
+                    for c in news_cats:
+                        catalysts_found.append({"category": c["category"], "direction": c["direction"], "importance": c["importance"]})
+
+                    top_cat = news_cats[0] if news_cats else None
+                    cat_type = top_cat["category"] if top_cat else None
+                    cat_dir = top_cat["direction"] if top_cat else None
+                    cat_imp = top_cat["importance"] if top_cat else "MEDIUM"
 
                     processed_news.append({
                         "ticker": ticker,
@@ -187,7 +201,7 @@ async def run_full_pipeline() -> Dict[str, Any]:
                         "sentiment_score": sent_res.score,
                         "sentiment_label": sent_res.label,
                         "sentiment_confidence": sent_res.confidence,
-                        "relevance_score": 1.0,
+                        "relevance_score": rel_score,
                         "catalyst": cat_type,
                         "catalyst_direction": cat_dir,
                         "catalyst_importance": cat_imp
@@ -205,10 +219,12 @@ async def run_full_pipeline() -> Dict[str, Any]:
                 "price": None, "volume": None, "ema200": None, "rsi14": None, "technical_score": None
             }
             tech_score_raw = None
+            raw_market_df = None
             try:
                 mkt_data = await market_provider.get_market_data(ticker=ticker)
                 if mkt_data.status == "AVAILABLE" and mkt_data.raw_df is not None:
-                    indicators = calculate_technical_indicators(mkt_data.raw_df)
+                    raw_market_df = mkt_data.raw_df
+                    indicators = calculate_technical_indicators(raw_market_df)
                     indicators["price"] = mkt_data.price
                     indicators["volume"] = mkt_data.volume
                     indicators["status"] = "AVAILABLE"
@@ -235,12 +251,26 @@ async def run_full_pipeline() -> Dict[str, Any]:
             news_res = calculate_news_score(recent_news)
             news_score = news_res.get("news_score") if isinstance(news_res, dict) else news_res
 
-            momentum_score = calculate_momentum_score(indicators)
-            risk_score = calculate_risk_score(indicators)
+            momentum_score = calculate_momentum_score(indicators, raw_df=raw_market_df)
+            risk_score = calculate_risk_score(indicators, raw_df=raw_market_df)
 
-            # Historical previous snapshots for momentum calculation
-            prev_ssi = get_latest_ssi_snapshot(db, ticker)
-            prev_smi_1d = prev_ssi.smi if prev_ssi and prev_ssi.smi is not None else (prev_ssi.ssi if prev_ssi else None)
+            # Extract 1d price return from raw OHLCV DataFrame
+            price_change_1d = None
+            if raw_market_df is not None and len(raw_market_df) >= 2 and 'Close' in raw_market_df.columns:
+                close_series = raw_market_df['Close']
+                prev_c = float(close_series.iloc[-2])
+                curr_c = float(close_series.iloc[-1])
+                if prev_c > 0:
+                    price_change_1d = round(((curr_c - prev_c) / prev_c) * 100.0, 2)
+
+            # Historical previous snapshots for genuine 1D, 3D, 5D momentum calculation
+            snap_1d = get_historical_ssi_snapshot(db, ticker, target_hours_ago=24.0, tolerance_hours=6.0)
+            snap_3d = get_historical_ssi_snapshot(db, ticker, target_hours_ago=72.0, tolerance_hours=18.0)
+            snap_5d = get_historical_ssi_snapshot(db, ticker, target_hours_ago=120.0, tolerance_hours=24.0)
+
+            prev_smi_1d = snap_1d.smi if snap_1d and snap_1d.smi is not None else (snap_1d.ssi if snap_1d else None)
+            prev_smi_3d = snap_3d.smi if snap_3d and snap_3d.smi is not None else (snap_3d.ssi if snap_3d else None)
+            prev_smi_5d = snap_5d.smi if snap_5d and snap_5d.smi is not None else (snap_5d.ssi if snap_5d else None)
 
             smi_dict = calculate_smi(
                 social_score=social_score,
@@ -252,6 +282,8 @@ async def run_full_pipeline() -> Dict[str, Any]:
                 fundamental_score=None,  # Modular for fundamental data integration
                 risk_score=risk_score,
                 previous_smi_1d=prev_smi_1d,
+                previous_smi_3d=prev_smi_3d,
+                previous_smi_5d=prev_smi_5d,
                 post_count=len(recent_posts),
                 news_count=len(recent_news)
             )
@@ -266,8 +298,9 @@ async def run_full_pipeline() -> Dict[str, Any]:
                 social_stats=social_res,
                 catalysts_found=catalysts_found,
                 smi_mom_1d=smi_dict["smi_momentum_1d"],
-                price_change_1d=None,
+                price_change_1d=price_change_1d,
                 prediction_score=pms_score,
+                prediction_delta_24h=pms_breakdown.get("pms_delta_24h"),
                 prediction_data=pms_breakdown,
                 news_score=news_score
             )
@@ -292,6 +325,8 @@ async def run_full_pipeline() -> Dict[str, Any]:
                 "ssi_momentum_3d": smi_dict["smi_momentum_3d"],
                 "ssi_momentum_5d": smi_dict["smi_momentum_5d"],
                 "signal": signal_res["signal"],
+                "base_signal": signal_res.get("base_signal"),
+                "signal_modifier": signal_res.get("signal_modifier"),
                 "confidence": smi_dict["confidence"],
                 "data_completeness": smi_dict["data_quality"],
                 "data_quality": smi_dict["data_quality"],

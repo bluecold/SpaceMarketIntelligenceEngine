@@ -5,7 +5,8 @@ from app.database.connection import get_db
 from app.database.repository import (
     get_latest_ssi_snapshot, get_latest_market_snapshot,
     get_recent_social_posts, get_recent_news_items,
-    get_recent_prediction_markets, get_active_divergences
+    get_recent_prediction_markets, get_active_divergences,
+    utc_now
 )
 from app.scoring.social import calculate_social_score
 from app.config import INITIAL_TICKERS
@@ -134,6 +135,21 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
     reasons = [line for line in (ssi_snap.explanation.split("\n") if ssi_snap and ssi_snap.explanation else [])]
     smi_val = ssi_snap.smi if ssi_snap and ssi_snap.smi is not None else (ssi_snap.ssi if ssi_snap else 50.0)
 
+    # Stale calculation for ticker header
+    age_hours = None
+    is_stale = False
+    if ssi_snap and ssi_snap.timestamp:
+        now_dt = utc_now()
+        snap_dt = ssi_snap.timestamp
+        if snap_dt.tzinfo is not None:
+            snap_dt = snap_dt.replace(tzinfo=None)
+        age_hours = round(max(0.0, (now_dt - snap_dt).total_seconds() / 3600.0), 1)
+        is_stale = age_hours >= 6.0
+
+    sig_str = ssi_snap.signal if ssi_snap and ssi_snap.signal else "N/A"
+    base_sig = sig_str.split(" (")[0] if " (" in sig_str else sig_str
+    mod_sig = sig_str.split(" (")[1].replace(")", "") if " (" in sig_str else None
+
     return {
         "ticker": ticker_sym,
         "name": ticker_cfg.name,
@@ -141,12 +157,17 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
             "smi": smi_val,
             "ssi": ssi_snap.social_score if ssi_snap else 50.0,
             "pms": ssi_snap.prediction_score if ssi_snap else None,
-            "signal": ssi_snap.signal if ssi_snap else "N/A",
+            "signal": sig_str,
+            "base_signal": base_sig,
+            "signal_modifier": mod_sig,
             "confidence": ssi_snap.confidence if ssi_snap else 0.0,
             "data_quality": ssi_snap.data_quality if ssi_snap and ssi_snap.data_quality is not None else (ssi_snap.data_completeness if ssi_snap else 0.0),
             "data_completeness": ssi_snap.data_completeness if ssi_snap else 0.0,
             "smi_momentum_1d": ssi_snap.ssi_momentum_1d if ssi_snap else 0.0,
-            "price": ssi_snap.price if ssi_snap else None
+            "price": ssi_snap.price if ssi_snap else None,
+            "timestamp": ssi_snap.timestamp.isoformat() + "Z" if ssi_snap and ssi_snap.timestamp else None,
+            "data_age_hours": age_hours,
+            "is_stale": is_stale
         },
         "score_breakdown": {
             "social_score": ssi_snap.social_score if ssi_snap else 50.0,

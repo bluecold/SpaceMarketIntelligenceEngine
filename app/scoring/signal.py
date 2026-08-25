@@ -16,6 +16,7 @@ def generate_signal_and_explanation(
     ssi_mom_1d: float = 0.0,
     price_change_1d: Optional[float] = None,
     prediction_score: Optional[float] = None,
+    prediction_delta_24h: Optional[float] = None,
     prediction_data: Optional[Dict[str, Any]] = None,
     news_score: Optional[float] = None
 ) -> Dict[str, Any]:
@@ -27,6 +28,11 @@ def generate_signal_and_explanation(
     social_stats = social_stats or {}
     catalysts_found = catalysts_found or []
     
+    # Extract prediction delta if not directly provided
+    eff_pred_delta = prediction_delta_24h
+    if eff_pred_delta is None and prediction_data:
+        eff_pred_delta = prediction_data.get("pms_delta_24h") if prediction_data.get("pms_delta_24h") is not None else prediction_data.get("delta_24h")
+
     # Primary composite index (SMI with fallback to SSI)
     primary_index = smi if smi is not None else (ssi if ssi is not None else 50.0)
     effective_social = social_score if social_score is not None else primary_index
@@ -40,34 +46,40 @@ def generate_signal_and_explanation(
 
     # 1. Base Signal Thresholds (Using SMI as the comprehensive index)
     if primary_index >= settings.THRESHOLD_STRONG_BUY:
-        raw_signal = "STRONG BUY"
+        base_signal = "STRONG BUY"
     elif primary_index >= settings.THRESHOLD_BUY:
-        raw_signal = "BUY"
+        base_signal = "BUY"
     elif primary_index >= settings.THRESHOLD_WATCH:
-        raw_signal = "WATCH"
+        base_signal = "WATCH"
     elif primary_index >= settings.THRESHOLD_HOLD:
-        raw_signal = "HOLD"
+        base_signal = "HOLD"
     elif primary_index >= settings.THRESHOLD_AVOID:
-        raw_signal = "AVOID"
+        base_signal = "AVOID"
     else:
-        raw_signal = "STRONG AVOID"
+        base_signal = "STRONG AVOID"
 
-    # Special Rule: Overbought restriction (RSI > 75 restricts STRONG BUY to WATCH/BUY)
+    signal_modifier = None
+
+    # Special Rule: Overbought restriction (RSI > 75 restricts STRONG BUY to WATCH with modifier)
     is_overbought = False
     if rsi is not None and rsi > 75.0:
         is_overbought = True
-        if raw_signal == "STRONG BUY":
-            raw_signal = "WATCH (OVEREXTENDED)"
+        if base_signal == "STRONG BUY":
+            base_signal = "WATCH"
+            signal_modifier = "OVEREXTENDED"
 
     if market_status != "AVAILABLE":
-        if raw_signal in ["STRONG BUY", "BUY"]:
-            raw_signal = f"{raw_signal} (NO MKT DATA)"
+        if base_signal in ["STRONG BUY", "BUY"]:
+            signal_modifier = "NO MKT DATA"
+
+    full_signal = f"{base_signal} ({signal_modifier})" if signal_modifier else base_signal
 
     # 2. Tripartite Divergence Engine (X ↔ Polymarket ↔ Price)
     active_divergences = detect_divergences(
         ticker=ticker,
         social_score=effective_social,
         prediction_score=prediction_score,
+        prediction_delta_24h=eff_pred_delta,
         news_score=news_score,
         technical_score=technical_score_raw,
         price_return_1d=price_change_1d,
@@ -81,14 +93,14 @@ def generate_signal_and_explanation(
 
     # 3. Browser Alerts Generation
     alerts = []
-    if "STRONG BUY" in raw_signal:
+    if base_signal == "STRONG BUY" or "STRONG BUY" in full_signal:
         alerts.append({
             "ticker": ticker,
             "type": "STRONG_BUY",
             "level": "CRITICAL",
             "message": f"🚀 {ticker} reached STRONG BUY signal (SMI: {primary_index}/100)"
         })
-    elif "BUY" in raw_signal and effective_mom >= 3.0:
+    elif base_signal == "BUY" and effective_mom >= 3.0:
         alerts.append({
             "ticker": ticker,
             "type": "MOMENTUM_BUY",
@@ -171,7 +183,9 @@ def generate_signal_and_explanation(
     explanation_text = "\n".join(reasons) if reasons else "Neutral baseline signal based on current inputs."
 
     return {
-        "signal": raw_signal,
+        "signal": full_signal,
+        "base_signal": base_signal,
+        "signal_modifier": signal_modifier,
         "is_overbought": is_overbought,
         "divergence": primary_divergence_text,
         "active_divergences": [d.model_dump() for d in active_divergences],

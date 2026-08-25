@@ -54,8 +54,9 @@ def calculate_market_quality(
     # Markets resolving within 3 to 180 days are ideal for near-term intelligence
     time_pts = 10.0
     if end_date:
-        now = datetime.now(timezone.utc) if end_date.tzinfo else datetime.utcnow()
-        days_left = (end_date - now).total_seconds() / 86400.0
+        end_date_utc = end_date.replace(tzinfo=timezone.utc) if end_date.tzinfo is None else end_date.astimezone(timezone.utc)
+        now_utc = datetime.now(timezone.utc)
+        days_left = (end_date_utc - now_utc).total_seconds() / 86400.0
         if days_left < 0:
             time_pts = 5.0  # Already ended / in resolution
         elif days_left <= 1.0:

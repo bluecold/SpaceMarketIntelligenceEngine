@@ -111,9 +111,10 @@ $$\text{Quality} = 0.30 \cdot \text{Liquidity} + 0.30 \cdot \text{Volume} + 0.20
 Pesos base: Social ($30\%$), Polymarket ($15\%$), News ($20\%$), Momentum ($20\%$), Fundamentales ($10\%$), Risk ($5\%$).
 Ante fuentes faltantes ($None$) o anuladas por baja calidad:
 $$w_i^{\text{active}} = \frac{w_i}{\sum_{j \in \text{active}} w_j}$$
-- **Source Agreement ($\in [-1.0, +1.0]$):**
-  $$\text{Agreement} = 1.0 - 2.0 \cdot \sigma(\text{active\_directions})$$
-- Si $\text{Agreement} < 0.30$, la **Confianza** del sistema se penaliza proporcionalmente por dispersión de fuentes.
+- **Source Agreement ($\in [-1.0, +1.0]$) — Pairwise Directional Concordance:**
+  $$\text{Agreement} = \frac{1}{\binom{N}{2}} \sum_{i < j} \text{Concordance}(d_i, d_j), \quad \text{Concordance}(d_i, d_j) = \text{sign}(d_i \cdot d_j) \cdot \min\left(1.0, \frac{|d_i| + |d_j|}{1.5}\right)$$
+  *(donde $|d_k| < 0.10 \implies \text{Concordance} = 0$; garantiza concordancia direccional estricta $[-1.0, +1.0]$ y descarta la dispersión de $\sigma$ que penalizaba intensidades dispares en la misma dirección).*
+- Si $\text{Agreement} < 0.30$, la **Confianza** del sistema se penaliza proporcionalmente por dispersión o contradicción entre fuentes.
 
 ---
 
@@ -132,12 +133,20 @@ El sistema nunca promedia a ciegas señales contradictorias:
 
 ### D. Señales de Trading y Explicabilidad "WHY?"
 
-- **`85–100`**: **STRONG BUY** *(restringido automáticamente a WATCH si RSI > 75 por sobreextensión técnica)*.
-- **`75–84`**: **BUY**
-- **`65–74`**: **WATCH**
-- **`50–64`**: **HOLD**
-- **`35–49`**: **AVOID**
-- **`0–34`**: **STRONG AVOID**
+- **Estructura Desacoplada:**
+  - `base_signal`: Enum canónico puro (`STRONG BUY`, `BUY`, `WATCH`, `HOLD`, `AVOID`, `STRONG AVOID`).
+  - `signal_modifier`: Modificador cualitativo opcional (`OVEREXTENDED`, `NO MKT DATA`, `None`).
+  - `signal`: String compuesto formateado para presentación visual (ej. `"WATCH (OVEREXTENDED)"`, `"STRONG BUY (NO MKT DATA)"`).
+- **Umbrales del SMI:**
+  - **`80–100`**: **STRONG BUY** *(restringido automáticamente a `base_signal: WATCH` con `signal_modifier: OVEREXTENDED` si RSI > 75 por sobreextensión técnica)*.
+  - **`70–79`**: **BUY**
+  - **`60–69`**: **WATCH**
+  - **`45–59`**: **HOLD**
+  - **`35–44`**: **AVOID**
+  - **`0–34`**: **STRONG AVOID**
+- **NLP Heurístico con Detección de Negación e Idiomas Afirmativos:**
+  - Control sintáctico de tokens (0-2 palabras de ventana).
+  - Reconocimiento de modismos de certeza (`"no doubt"`, `"without doubt"`, `"no question"`) y barreras infranqueables de puntuación (`,`, `.`, `;`, `!`, `?`).
 
 ---
 
@@ -146,8 +155,9 @@ El sistema nunca promedia a ciegas señales contradictorias:
 Módulo [`app/backtesting/engine.py`](file:///d:/Mis%20Cosas/test/Space%20Sentiment%20Index/app/backtesting/engine.py) diseñado para responder a la pregunta de investigación central:
 > *¿Aporta la incorporación de Polymarket valor predictivo incremental sobre X + Mercado?*
 
-- **Model A (Baseline):** $X \text{ (Social)} + \text{Technical Data}$
-- **Model B (SMIE v2.0):** $X + \text{Technical} + \text{Polymarket PMS} + \text{News}$
+- **Model A (Control Baseline):** `Model A (X Social + Technical + News Baseline)` — Evaluación sin Polymarket con redistribución adaptativa del 25% entre los pilares de Social, Noticias, Momentum, Riesgo y Análisis Técnico.
+- **Model B (Tratamiento SMIE):** `Model B (Multi-Source with Polymarket PMS)` — Incorporación de los mercados de predicción de Polymarket.
+- **Aislamiento Multi-Ticker:** Agrupación estricta por ticker antes del cálculo de retornos futuros a 1D, 3D y 5D para prevenir contaminación cruzada de precios.
 - **Métricas calculadas:**
   - **Win Rate (%)**
   - **Profit Factor** ($\frac{\sum \text{Gains}}{\sum \text{Losses}}$)
@@ -161,9 +171,9 @@ Módulo [`app/backtesting/engine.py`](file:///d:/Mis%20Cosas/test/Space%20Sentim
 ## 5. 💻 Endpoints REST API y Comandos CLI
 
 ### Endpoints REST (`FastAPI`)
-- `GET /api/dashboard`: Ranking global con columnas `smi`, `ssi`, `pms`, `market_score`, `signal`, `confidence`, `data_quality`, `divergence`.
-- `GET /api/tickers/{ticker}`: Detalle exhaustivo con desglose de 6 pilares, tweets, noticias, prediction markets y divergencias.
-- `GET /api/tickers/{ticker}/prediction-markets`: Lista de contratos de Polymarket asociados con YES/NO %, volumen, liquidez, spread y calidad.
+- `GET /api/dashboard`: Ranking global con columnas `smi`, `ssi`, `pms`, `market_score`, `signal`, `base_signal`, `signal_modifier`, `confidence`, `data_quality`, `is_stale`, `data_age_hours`, `divergence`.
+- `GET /api/tickers/{ticker}`: Detalle exhaustivo con desglose de 6 pilares, tweets, noticias, prediction markets filtrados por matriz de impacto y divergencias.
+- `GET /api/tickers/{ticker}/prediction-markets`: Lista de contratos de Polymarket asociados con YES/NO %, $\Delta_{24\text{h}}$, volumen, liquidez, spread y calidad.
 - `GET /api/tickers/{ticker}/divergences`: Historial de divergencias tripartitas.
 - `GET /api/tickers/{ticker}/history`: Series temporales multi-curva (`price`, `smi`, `ssi`, `pms`, `volume`).
 - `GET /api/reports/daily`: Reporte diario estructurado en JSON y Markdown.
@@ -182,8 +192,8 @@ Módulo [`app/backtesting/engine.py`](file:///d:/Mis%20Cosas/test/Space%20Sentim
 
 ## 6. 🌐 Frontend Terminal Web (React + TS + Vite)
 
-- **Dashboard Principal:** Tabla terminal interactiva estilo Bloomberg y vista alternativa en tarjetas.
-- **Detalle de Ticker:** Modal con medidores `SMI`, `SSI` y `PMS`, pestañas para **Prediction Markets** (con barras animadas YES/NO), **X Social Feed**, **Noticias** y **Divergencias**.
+- **Dashboard Principal:** Tabla terminal interactiva estilo Bloomberg y vista alternativa en tarjetas con badges de frescura/obsolescencia de datos.
+- **Detalle de Ticker:** Modal con medidores `SMI`, `SSI` y `PMS`, pestañas para **Prediction Markets** (filtrados por relevancia semántica), **X Social Feed**, **Noticias** y **Divergencias**.
 - **Gráfico Multi-Serie Interactivo SVG:** Toggles interactivos para encender/apagar curvas individuales (Price, SMI, SSI, PMS) y tooltip sincronizado.
 - **Modal de Inducción y Manual de Uso (`AboutModal.tsx`):** Accesible al hacer clic en el logo del cohete (`🚀`) o en el botón *"Manual de Uso"*.
 
@@ -201,8 +211,8 @@ Módulo [`app/backtesting/engine.py`](file:///d:/Mis%20Cosas/test/Space%20Sentim
 
 ## 8. 🛡️ Suite de Pruebas Automatizadas
 
-El proyecto cuenta con **29 tests unitarios automatizados** que validan la matemática, algoritmos y estabilidad:
+El proyecto cuenta con **53 tests unitarios automatizados** que validan la matemática, algoritmos y estabilidad:
 ```powershell
 python -m pytest tests/ -v
 ```
-*(Resultados: 29 passed en 0.81s, 0 warnings).*
+*(Resultados: 53 passed en 1.50s, 0 warnings).*

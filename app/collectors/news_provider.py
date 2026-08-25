@@ -2,7 +2,7 @@ import logging
 import urllib.parse
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import List, Optional
 import httpx
@@ -60,7 +60,7 @@ class GoogleRSSNewsProvider(BaseNewsProvider):
                     url = link_elem.text if link_elem is not None else ""
                     source = source_elem.text if source_elem is not None else "Google News"
 
-                    published_at = datetime.utcnow()
+                    published_at = datetime.now(timezone.utc).replace(tzinfo=None)
                     if pub_elem is not None and pub_elem.text:
                         try:
                             dt = parsedate_to_datetime(pub_elem.text)
@@ -87,7 +87,7 @@ class GoogleRSSNewsProvider(BaseNewsProvider):
 
 class MockNewsProvider(BaseNewsProvider):
     async def fetch_news(self, query: str, ticker: str, max_results: int = 15) -> List[NewsItemData]:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         return [
             NewsItemData(
                 ticker=ticker,

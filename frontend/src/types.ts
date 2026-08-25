@@ -19,7 +19,9 @@ export interface RankingItem {
   momentum_score: number | null;
   risk_score: number | null;
   technical_score: number | null;
-  signal: string;             // STRONG BUY, BUY, WATCH, HOLD, AVOID, STRONG AVOID
+  signal: string;             // STRONG BUY, BUY, WATCH, HOLD, AVOID, STRONG AVOID (can include modifier)
+  base_signal?: string;       // STRONG BUY, BUY, WATCH, HOLD, AVOID, STRONG AVOID
+  signal_modifier?: string | null; // OVEREXTENDED, NO MKT DATA, etc.
   divergence?: string;
   confidence: number;         // 0-100%
   data_quality: number;       // 0-100%
@@ -27,6 +29,8 @@ export interface RankingItem {
   price: number | null;
   market_status: string;
   timestamp: string | null;
+  data_age_hours?: number | null;
+  is_stale?: boolean;
 }
 
 export interface DashboardResponse {
@@ -123,11 +127,16 @@ export interface TickerDetailResponse {
     ssi: number;
     pms: number | null;
     signal: string;
+    base_signal?: string;
+    signal_modifier?: string | null;
     confidence: number;
     data_quality: number;
     data_completeness: number;
     smi_momentum_1d: number;
     price: number | null;
+    timestamp?: string | null;
+    data_age_hours?: number | null;
+    is_stale?: boolean;
   };
   score_breakdown: {
     social_score: number;

@@ -1,5 +1,5 @@
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List
 from app.collectors.base import XProvider, SocialPostData
 
@@ -42,7 +42,7 @@ class MockXProvider(XProvider):
         templates = MOCK_TEMPLATES.get(ticker, MOCK_TEMPLATES["ASTS"])
         
         count = min(max_results, random.randint(15, 30))
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         for i in range(count):
             user, text, label, catalyst = random.choice(templates)

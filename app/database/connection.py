@@ -61,8 +61,11 @@ def init_db():
             ("ssi_snapshots", "prediction_score", "FLOAT"),
             ("ssi_snapshots", "fundamental_score", "FLOAT"),
             ("ssi_snapshots", "smi", "FLOAT"),
+            ("ssi_snapshots", "base_signal", "VARCHAR(30)"),
+            ("ssi_snapshots", "signal_modifier", "VARCHAR(50)"),
             ("ssi_snapshots", "data_quality", "FLOAT DEFAULT 100.0"),
             ("ssi_snapshots", "volume", "FLOAT"),
+            ("prediction_markets", "event_key", "VARCHAR(100)"),
         ]
         for table, col, col_type in columns_to_check:
             try:

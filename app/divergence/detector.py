@@ -1,6 +1,7 @@
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 from datetime import datetime, timezone
+from app.config import settings
 
 
 class DivergenceResult(BaseModel):
@@ -20,6 +21,7 @@ def detect_divergences(
     ticker: str,
     social_score: float,
     prediction_score: Optional[float] = None,
+    prediction_delta_24h: Optional[float] = None,
     news_score: Optional[float] = None,
     momentum_score: Optional[float] = None,
     technical_score: Optional[float] = None,
@@ -35,7 +37,7 @@ def detect_divergences(
     2. BEARISH_DIVERGENCE: Narrative / Prediction expectations are collapsing while price is temporarily elevated.
     3. BULLISH_CONFIRMATION: Multi-source alignment (Social + Prediction + Price + High Volume).
     4. BEARISH_CONFIRMATION: Multi-source collapse (Social + Prediction + Price falling + High Volume).
-    5. EARLY_REVERSAL: Sharp disagreement between Social narrative and Polymarket capital expectations.
+    5. EARLY_REVERSAL: Sharp 24h shift in Polymarket probabilities (ΔPMS_24h >= +15%) or structural disconnect.
     """
     results: List[DivergenceResult] = []
     now = datetime.now(timezone.utc)
@@ -141,11 +143,44 @@ def detect_divergences(
         ))
 
     # -------------------------------------------------------------
-    # 3. EARLY REVERSAL SCENARIOS (X vs Polymarket Disconnect)
+    # 3. EARLY REVERSAL SCENARIOS (X vs Polymarket Dynamic & Structural Disconnect)
     # -------------------------------------------------------------
-    # E.g. Social is very bearish (panic), but Polymarket "smart capital" is highly bullish
-    if dir_pred is not None:
-        # Case A: Social Bearish vs Polymarket Bullish
+    min_delta = settings.DIVERGENCE_EARLY_REVERSAL_DELTA
+
+    # Dynamic Case A: Bullish Early Reversal via 24h Polymarket Probability Surge (ΔPMS_24h >= +15%)
+    if prediction_delta_24h is not None and prediction_delta_24h >= min_delta:
+        if (social_score <= 55.0 or dir_social <= 0.10) and (price_return_1d is None or price_return_1d <= 2.0):
+            strength = min(1.0, 0.70 + (prediction_delta_24h / 100.0))
+            results.append(DivergenceResult(
+                ticker=ticker,
+                type="EARLY_REVERSAL",
+                source_a="POLYMARKET_MOMENTUM",
+                source_b="X_SOCIAL",
+                source_c="PRICE_ACTION",
+                direction="BULLISH",
+                strength=round(strength, 2),
+                confidence=0.85,
+                description=f"Early Reversal Watch: Polymarket probability surged (+{prediction_delta_24h:+.1f}% in 24h) while retail social sentiment ({social_score:.0f}) and price action remain subdued. Potential smart money frontrunning.",
+                timestamp=now
+            ))
+    # Dynamic Case B: Bearish Early Reversal via 24h Polymarket Probability Collapse (ΔPMS_24h <= -15%)
+    elif prediction_delta_24h is not None and prediction_delta_24h <= -min_delta:
+        if social_score >= 60.0 or dir_social >= 0.20:
+            strength = min(1.0, 0.70 + (abs(prediction_delta_24h) / 100.0))
+            results.append(DivergenceResult(
+                ticker=ticker,
+                type="EARLY_REVERSAL",
+                source_a="POLYMARKET_MOMENTUM",
+                source_b="X_SOCIAL",
+                source_c="PRICE_ACTION",
+                direction="BEARISH",
+                strength=round(strength, 2),
+                confidence=0.85,
+                description=f"Early Reversal Alert: Polymarket probability collapsed ({prediction_delta_24h:+.1f}% in 24h) contradicting elevated retail optimism on X ({social_score:.0f}). High risk of institutional dump or failed catalyst.",
+                timestamp=now
+            ))
+    # Structural Fallback: Level Disconnect (Panic in Social vs High Bullish PMS or vice versa)
+    elif dir_pred is not None:
         if dir_social <= -0.30 and dir_pred >= 0.30:
             results.append(DivergenceResult(
                 ticker=ticker,
@@ -159,7 +194,6 @@ def detect_divergences(
                 description=f"Early Reversal Watch: Retail social narrative is fearful ({social_score:.0f}) while Prediction Markets price high success probability ({prediction_score:.0f}). Potential bottom formation.",
                 timestamp=now
             ))
-        # Case B: Social Hype / Euphoria vs Polymarket Bearish
         elif dir_social >= 0.35 and dir_pred <= -0.30:
             results.append(DivergenceResult(
                 ticker=ticker,
@@ -175,3 +209,4 @@ def detect_divergences(
             ))
 
     return results
+

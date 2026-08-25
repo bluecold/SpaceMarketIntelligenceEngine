@@ -68,7 +68,30 @@ class PolymarketGammaProvider(PredictionMarketProvider):
         return await self._fallback_provider.get_market(market_id)
 
     async def get_history(self, market_id: str) -> List[MarketProbabilityPoint]:
-        # CLOB price history endpoint or fallback
+        """Fetch historical probability curve from Polymarket CLOB prices-history or fallback."""
+        try:
+            async with httpx.AsyncClient(timeout=6.0) as client:
+                resp = await client.get(
+                    "https://clob.polymarket.com/prices-history",
+                    params={"interval": "1d", "market": market_id}
+                )
+                if resp.status_code == 200:
+                    data = resp.json().get("history", [])
+                    points = []
+                    for item in data:
+                        t_val = item.get("t")
+                        p_val = float(item.get("p", 0.5))
+                        v_val = float(item.get("v", 0.0))
+                        dt = datetime.fromtimestamp(t_val, tz=timezone.utc) if t_val else datetime.now(timezone.utc)
+                        points.append(MarketProbabilityPoint(
+                            timestamp=dt,
+                            probability=p_val,
+                            volume=v_val
+                        ))
+                    if points:
+                        return points
+        except Exception as e:
+            logger.debug(f"Could not fetch CLOB price history for {market_id} ({e}). Using mock provider.")
         return await self._fallback_provider.get_history(market_id)
 
     def _parse_gamma_market(self, event: dict, m: dict, ticker: Optional[str]) -> Optional[PredictionMarketData]:
@@ -92,6 +115,19 @@ class PolymarketGammaProvider(PredictionMarketProvider):
             liquidity = float(m.get("liquidityNum") or m.get("liquidity") or event.get("liquidity") or 0.0)
             spread = float(m.get("spread") or 0.02)
             
+            # Extract 24h price/probability delta from Gamma API if present
+            raw_delta_24h = (
+                m.get("oneDayPriceChange")
+                or m.get("priceChange24h")
+                or m.get("priceChange")
+                or event.get("oneDayPriceChange")
+                or 0.0
+            )
+            try:
+                prob_delta_24h = float(raw_delta_24h) * 100.0 if abs(float(raw_delta_24h)) <= 1.0 else float(raw_delta_24h)
+            except Exception:
+                prob_delta_24h = 0.0
+
             end_date_str = m.get("endDate") or event.get("endDate")
             end_date = None
             if end_date_str:
@@ -119,7 +155,7 @@ class PolymarketGammaProvider(PredictionMarketProvider):
                 quality_score=qual,
                 probability_change_1h=0.0,
                 probability_change_6h=0.0,
-                probability_change_24h=0.0,
+                probability_change_24h=round(prob_delta_24h, 2),
                 url=f"https://polymarket.com/event/{event.get('slug', '')}" if event.get("slug") else None
             )
         except Exception as e:

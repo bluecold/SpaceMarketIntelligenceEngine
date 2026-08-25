@@ -8,6 +8,7 @@ class TickerConfig(BaseModel):
     symbol: str
     name: str
     aliases: List[str]
+    sector: str = "Space Technology"
     is_private_or_test: bool = False
 
 
@@ -16,27 +17,32 @@ INITIAL_TICKERS = [
     TickerConfig(
         symbol="ASTS",
         name="AST SpaceMobile",
-        aliases=["$ASTS", "AST SpaceMobile", "ASTSpaceMobile", "ASTS_SpaceMobile", "BlueBird"]
+        aliases=["$ASTS", "AST SpaceMobile", "ASTSpaceMobile", "ASTS_SpaceMobile", "BlueBird"],
+        sector="Direct-to-Cell / Satellite Telecom"
     ),
     TickerConfig(
         symbol="RKLB",
         name="Rocket Lab",
-        aliases=["$RKLB", "Rocket Lab", "RocketLab", "Neutron rocket", "Electron rocket"]
+        aliases=["$RKLB", "Rocket Lab", "RocketLab", "Neutron rocket", "Electron rocket"],
+        sector="Launch Vehicles & Space Systems"
     ),
     TickerConfig(
         symbol="SATL",
         name="Satellogic",
-        aliases=["$SATL", "Satellogic", "Aleph-1"]
+        aliases=["$SATL", "Satellogic", "Aleph-1"],
+        sector="Geospatial & Earth Observation"
     ),
     TickerConfig(
         symbol="SPCE",
         name="Virgin Galactic",
-        aliases=["$SPCE", "Virgin Galactic", "VirginGalactic", "VSS Unity", "Delta Class"]
+        aliases=["$SPCE", "Virgin Galactic", "VirginGalactic", "VSS Unity", "Delta Class"],
+        sector="Commercial Spaceflight & Tourism"
     ),
     TickerConfig(
         symbol="SPCX",
         name="SpaceX / Space ETF",
         aliases=["$SPCX", "SpaceX", "Space X", "Starship", "Starlink", "Procure Space ETF"],
+        sector="Space ETF & Sector Proxy",
         is_private_or_test=False
     )
 ]
@@ -83,6 +89,16 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./data/space_sentiment.db"
     TIMEZONE: str = "America/Argentina/Cordoba"
     
+    # CORS Origins
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000"
+    ]
+    
     # X / Social Provider Settings
     X_PROVIDER: str = "mock"  # "mock" or "twikit"
     X_AUTH_INFO_1: str = ""
@@ -120,6 +136,9 @@ class Settings(BaseSettings):
     THRESHOLD_WATCH: float = 65.0
     THRESHOLD_HOLD: float = 50.0
     THRESHOLD_AVOID: float = 35.0
+    
+    # Divergence Engine thresholds
+    DIVERGENCE_EARLY_REVERSAL_DELTA: float = 15.0  # 24h probability change threshold (+/- 15 pp)
     
     # Scheduler
     ENABLE_SCHEDULER: bool = False

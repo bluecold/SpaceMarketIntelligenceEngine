@@ -5,6 +5,29 @@ from app.scoring.momentum import calculate_momentum_score
 from app.scoring.risk import calculate_risk_score
 
 
+def test_smi_composite_calculation():
+    """Test full composite SMI calculation with normalized adaptive weights."""
+    res = calculate_smi(
+        social_score=80.0,
+        news_score=70.0,
+        momentum_score=60.0,
+        risk_score=50.0,
+        post_count=30,
+        news_count=5
+    )
+    assert 65.0 <= res["smi"] <= 75.0
+    assert res["ssi"] == 80.0
+    assert res["data_completeness"] >= 60.0
+
+
+def test_smi_calculation_missing_market_data():
+    res = calculate_smi(social_score=80.0, technical_score_raw=None, post_count=30)
+    assert res["smi"] == 80.0
+    assert res["ssi"] == 80.0
+    assert res["data_completeness"] == 16.7  # 1 out of 6 pillars active
+    assert res["confidence"] < 80.0
+
+
 def test_missing_prediction_market_spec_116():
     """
     Test Spec Section 116:
@@ -53,14 +76,35 @@ def test_prediction_weight_disabled_on_low_quality_spec_115():
 
 
 def test_source_agreement_calculation():
-    """Test source agreement calculation for concordant vs contradictory signals."""
-    # Concordant bullish sources
+    """Test source agreement calculation for concordant vs contradictory signals and edge cases."""
+    # 1. Concordant bullish sources
     agreement_bullish = calculate_source_agreement([0.80, 0.72, 0.60, 0.55])
     assert agreement_bullish >= 0.70, f"Expected high agreement >= 0.70, got {agreement_bullish}"
 
-    # Contradictory sources (Social Bullish, Price Bearish)
+    # 2. Concordant bearish sources
+    agreement_bearish = calculate_source_agreement([-0.80, -0.70, -0.60])
+    assert agreement_bearish >= 0.70, f"Expected high negative agreement >= 0.70, got {agreement_bearish}"
+
+    # 3. Diametrically contradictory sources (Polar disagreement)
+    agreement_polar = calculate_source_agreement([0.90, -0.90])
+    assert agreement_polar <= -0.80, f"Expected strong negative agreement <= -0.80, got {agreement_polar}"
+
+    # 4. Mixed contradictory sources (Social Bullish, Price Bearish)
     agreement_divergent = calculate_source_agreement([0.80, 0.70, -0.60])
     assert agreement_divergent < 0.20, f"Expected low/negative agreement < 0.20, got {agreement_divergent}"
+
+    # 5. Neutral sources (contribute 0 concordance)
+    agreement_neutral = calculate_source_agreement([0.05, 0.02, 0.0])
+    assert agreement_neutral == 0.0
+
+    # 6. Single source (trivial agreement = 1.0)
+    assert calculate_source_agreement([0.75]) == 1.0
+    assert calculate_source_agreement([]) == 1.0
+
+    # 7. Strict boundary enforcement [-1.0, +1.0]
+    res_extreme = calculate_source_agreement([2.0, -2.0])
+    assert -1.0 <= res_extreme <= 1.0
+
 
 
 def test_smi_signal_with_polymarket_and_divergences():
@@ -95,6 +139,57 @@ def test_smi_signal_with_polymarket_and_divergences():
         prediction_score=smi_res["prediction_score"]
     )
 
+    assert sig_res["base_signal"] in ["BUY", "STRONG BUY"]
+    assert sig_res["signal_modifier"] is None
     assert sig_res["signal"] in ["BUY", "STRONG BUY"]
     assert "Polymarket" in sig_res["explanation"]
     assert len(sig_res["reasons"]) >= 3
+
+
+def test_signal_generator_canonical_matrix():
+    """Exhaustively test canonical signal generation and modifiers across market regimes."""
+    # 1. Regime: Strong Bullish Normal (SMI >= 80, RSI normal)
+    res_bull = generate_signal_and_explanation(
+        ticker="ASTS",
+        smi=85.0,
+        social_score=85.0,
+        indicators={"status": "AVAILABLE", "price": 25.0, "ema200": 20.0, "rsi14": 62.0}
+    )
+    assert res_bull["base_signal"] == "STRONG BUY"
+    assert res_bull["signal_modifier"] is None
+    assert res_bull["signal"] == "STRONG BUY"
+    assert res_bull["is_overbought"] is False
+
+    # 2. Regime: Overbought Restriction (SMI >= 80, RSI > 75)
+    res_ob = generate_signal_and_explanation(
+        ticker="ASTS",
+        smi=88.0,
+        social_score=90.0,
+        indicators={"status": "AVAILABLE", "price": 35.0, "ema200": 20.0, "rsi14": 82.0}
+    )
+    assert res_ob["base_signal"] == "WATCH"
+    assert res_ob["signal_modifier"] == "OVEREXTENDED"
+    assert res_ob["signal"] == "WATCH (OVEREXTENDED)"
+    assert res_ob["is_overbought"] is True
+
+    # 3. Regime: Missing Technical Data (status != "AVAILABLE")
+    res_nodata = generate_signal_and_explanation(
+        ticker="SPCX",
+        smi=82.0,
+        social_score=80.0,
+        indicators={"status": "DATA_UNAVAILABLE", "price": None, "ema200": None, "rsi14": None}
+    )
+    assert res_nodata["base_signal"] in ["BUY", "STRONG BUY"]
+    assert res_nodata["signal_modifier"] == "NO MKT DATA"
+    assert "NO MKT DATA" in res_nodata["signal"]
+
+    # 4. Regime: Bearish / Avoid Regime (SMI < 35)
+    res_avoid = generate_signal_and_explanation(
+        ticker="SPCE",
+        smi=25.0,
+        social_score=25.0,
+        indicators={"status": "AVAILABLE", "price": 1.2, "ema200": 2.5, "rsi14": 30.0}
+    )
+    assert res_avoid["base_signal"] == "STRONG AVOID"
+    assert res_avoid["signal_modifier"] is None
+    assert res_avoid["signal"] == "STRONG AVOID"

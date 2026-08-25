@@ -1,9 +1,13 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import (
     Column, Integer, String, Float, DateTime, Text, Boolean, ForeignKey, Index
 )
 from sqlalchemy.orm import relationship
 from app.database.connection import Base
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class TickerModel(Base):
@@ -12,8 +16,10 @@ class TickerModel(Base):
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String(10), unique=True, index=True, nullable=False)
     name = Column(String(100), nullable=False)
+    sector = Column(String(100), default="Space Technology")
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    is_private_or_test = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=utc_now)
 
     social_posts = relationship("SocialPostModel", back_populates="ticker_rel")
     news_items = relationship("NewsItemModel", back_populates="ticker_rel")
@@ -30,7 +36,7 @@ class SocialPostModel(Base):
     text = Column(Text, nullable=False)
     url = Column(String(255), nullable=True)
     created_at = Column(DateTime, nullable=False, index=True)
-    collected_at = Column(DateTime, default=datetime.utcnow)
+    collected_at = Column(DateTime, default=utc_now)
 
     # Metrics
     likes = Column(Integer, default=0)
@@ -63,7 +69,7 @@ class NewsItemModel(Base):
     source = Column(String(100), nullable=True)
     url = Column(String(500), unique=True, index=True, nullable=False)
     published_at = Column(DateTime, nullable=False, index=True)
-    collected_at = Column(DateTime, default=datetime.utcnow)
+    collected_at = Column(DateTime, default=utc_now)
 
     sentiment_score = Column(Float, default=0.0)  # -1.0 to +1.0
     sentiment_label = Column(String(20), default="NEUTRAL")
@@ -86,7 +92,7 @@ class PredictionMarketModel(Base):
     description = Column(Text, nullable=True)
     category = Column(String(50), default="SPACE")
     status = Column(String(20), default="ACTIVE")  # ACTIVE, CLOSED, RESOLVED
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)
     end_date = Column(DateTime, nullable=True)
     resolution_date = Column(DateTime, nullable=True)
     
@@ -96,9 +102,10 @@ class PredictionMarketModel(Base):
     liquidity = Column(Float, default=0.0)          # USD Liquidity
     spread = Column(Float, default=0.0)             # Bid-Ask spread
     quality_score = Column(Float, default=50.0)     # 0 to 100
+    event_key = Column(String(100), nullable=True, index=True) # e.g. "spacex_starship_orbital_success"
     
     url = Column(String(500), nullable=True)
-    collected_at = Column(DateTime, default=datetime.utcnow, index=True)
+    collected_at = Column(DateTime, default=utc_now, index=True)
 
     snapshots = relationship("PredictionMarketSnapshotModel", back_populates="market_rel")
 
@@ -108,7 +115,7 @@ class PredictionMarketSnapshotModel(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     market_id = Column(Integer, ForeignKey("prediction_markets.id"), index=True, nullable=False)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, default=utc_now, index=True)
     
     yes_probability = Column(Float, nullable=False)
     no_probability = Column(Float, nullable=False)
@@ -133,8 +140,8 @@ class PredictionMarketEventModel(Base):
     description = Column(Text, nullable=True)
     probability = Column(Float, default=0.5)
     company_mappings = Column(Text, nullable=True)  # JSON string: {"ASTS": 0.20, "RKLB": 0.30, ...}
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
 
 
 class DivergenceModel(Base):
@@ -142,7 +149,7 @@ class DivergenceModel(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     ticker = Column(String(10), ForeignKey("tickers.symbol"), index=True, nullable=False)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, default=utc_now, index=True)
     
     type = Column(String(50), nullable=False)  # BULLISH_DIVERGENCE, BEARISH_DIVERGENCE, BULLISH_CONFIRMATION, BEARISH_CONFIRMATION, EARLY_REVERSAL
     source_a = Column(String(30), nullable=False)  # e.g., "X_SOCIAL"
@@ -160,7 +167,7 @@ class MarketSnapshotModel(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     ticker = Column(String(10), index=True, nullable=False)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, default=utc_now, index=True)
     price = Column(Float, nullable=True)
     volume = Column(Float, nullable=True)
     market_status = Column(String(30), default="AVAILABLE")  # AVAILABLE, DATA_UNAVAILABLE, ERROR
@@ -186,7 +193,7 @@ class SSISnapshotModel(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     ticker = Column(String(10), ForeignKey("tickers.symbol"), index=True, nullable=False)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, default=utc_now, index=True)
 
     # Individual Pillar Scores (0 - 100)
     social_score = Column(Float, nullable=False)       # Pure Social SSI
@@ -205,7 +212,9 @@ class SSISnapshotModel(Base):
     ssi_momentum_3d = Column(Float, default=0.0)
     ssi_momentum_5d = Column(Float, default=0.0)
 
-    signal = Column(String(30), nullable=False)       # STRONG BUY, BUY, WATCH, HOLD, AVOID, STRONG AVOID, N/A
+    signal = Column(String(100), nullable=False)       # Full signal e.g. "WATCH (OVEREXTENDED)"
+    base_signal = Column(String(30), nullable=True, index=True) # Canonical enum e.g. "WATCH"
+    signal_modifier = Column(String(50), nullable=True) # Modifier e.g. "OVEREXTENDED"
     confidence = Column(Float, nullable=False)        # 0 to 100 %
     data_completeness = Column(Float, nullable=False) # 0 to 100 %
     data_quality = Column(Float, default=100.0)       # 0 to 100 %
@@ -222,7 +231,7 @@ class JobRunModel(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     job_name = Column(String(100), nullable=False, index=True)
-    started_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, default=utc_now)
     finished_at = Column(DateTime, nullable=True)
     status = Column(String(20), nullable=False)  # SUCCESS, ERROR, RUNNING
     records_processed = Column(Integer, default=0)

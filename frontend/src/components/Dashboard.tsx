@@ -123,7 +123,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ rankings, onSelectTicker }
                   >
                     {/* Ticker & Name */}
                     <td style={{ padding: '12px 16px' }}>
-                      <div style={{ fontWeight: 700, color: '#fff', fontSize: '0.95rem' }}>${stock.ticker}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span style={{ fontWeight: 700, color: '#fff', fontSize: '0.95rem' }}>${stock.ticker}</span>
+                        {stock.is_stale && (
+                          <span
+                            title={`Data is ${stock.data_age_hours?.toFixed(0)}h old`}
+                            style={{
+                              fontSize: '0.65rem',
+                              fontWeight: 600,
+                              color: 'var(--neutral-yellow)',
+                              background: 'rgba(255, 179, 0, 0.12)',
+                              border: '1px solid rgba(255, 179, 0, 0.3)',
+                              padding: '1px 5px',
+                              borderRadius: '4px'
+                            }}
+                          >
+                            ⏳ {stock.data_age_hours ? `${stock.data_age_hours.toFixed(0)}h` : 'Stale'}
+                          </span>
+                        )}
+                      </div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{stock.name}</div>
                     </td>
 
@@ -226,7 +244,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ rankings, onSelectTicker }
               >
                 <div className="card-top">
                   <div>
-                    <div className="ticker-symbol">${stock.ticker}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span className="ticker-symbol">${stock.ticker}</span>
+                      {stock.is_stale && (
+                        <span
+                          title={`Data is ${stock.data_age_hours?.toFixed(0)}h old`}
+                          style={{
+                            fontSize: '0.65rem',
+                            fontWeight: 600,
+                            color: 'var(--neutral-yellow)',
+                            background: 'rgba(255, 179, 0, 0.12)',
+                            border: '1px solid rgba(255, 179, 0, 0.3)',
+                            padding: '1px 5px',
+                            borderRadius: '4px'
+                          }}
+                        >
+                          ⏳ {stock.data_age_hours ? `${stock.data_age_hours.toFixed(0)}h` : 'Stale'}
+                        </span>
+                      )}
+                    </div>
                     <div className="company-name">{stock.name}</div>
                   </div>
                   <div style={{ textAlign: 'right' }}>

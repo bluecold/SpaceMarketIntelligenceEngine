@@ -4,10 +4,14 @@ from app.config import settings
 
 def calculate_source_agreement(active_directions: List[float]) -> float:
     """
-    Calculate degree of agreement (-1.0 to +1.0) among active information sources.
+    Calculate the Pairwise Directional Concordance (-1.0 to +1.0) among active information sources.
+    
     Directions are in range [-1.0 (extreme bearish), +1.0 (extreme bullish)].
-    High agreement (> +0.50) occurs when sources point in the same direction.
-    Disagreement (< 0.0) occurs when sources contradict each other.
+    - Unanimous concordant signals (+/+ or -/-) yield positive agreement approaching +1.0.
+    - Contradictory signals (+/-) yield negative agreement (divergence) approaching -1.0.
+    - Neutral sources (|d| < 0.10) contribute 0.0 (neutral impact).
+    
+    Guarantees strict bounds within [-1.0, +1.0].
     """
     if len(active_directions) <= 1:
         return 1.0  # Single source has trivial self-agreement
@@ -17,14 +21,12 @@ def calculate_source_agreement(active_directions: List[float]) -> float:
 
     for i in range(len(active_directions)):
         for j in range(i + 1, len(active_directions)):
-            d_i = active_directions[i]
-            d_j = active_directions[j]
+            d_i = max(-1.0, min(1.0, active_directions[i]))
+            d_j = max(-1.0, min(1.0, active_directions[j]))
             
-            # Pairwise agreement: product of normalized directions
-            # Both positive or both negative -> positive concordance
-            # One positive, one negative -> negative concordance
+            # Pairwise concordance:
+            # If either source is neutral, pair contributes neutral 0.0
             if abs(d_i) < 0.10 or abs(d_j) < 0.10:
-                # Neutral source provides mild neutrality
                 pair_score = 0.0
             elif (d_i > 0 and d_j > 0) or (d_i < 0 and d_j < 0):
                 pair_score = min(1.0, (abs(d_i) + abs(d_j)) / 1.5)
@@ -34,7 +36,12 @@ def calculate_source_agreement(active_directions: List[float]) -> float:
             total_concordance += pair_score
             pairs += 1
 
-    return round(total_concordance / pairs, 2) if pairs > 0 else 1.0
+    if pairs == 0:
+        return 1.0
+
+    avg_concordance = total_concordance / pairs
+    return round(max(-1.0, min(1.0, avg_concordance)), 2)
+
 
 
 def calculate_smi(

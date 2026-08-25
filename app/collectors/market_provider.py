@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import pandas as pd
 import yfinance as yf
 from app.collectors.base import MarketProviderInterface, MarketData
@@ -14,11 +14,12 @@ class YFinanceMarketProvider(MarketProviderInterface):
             ticker_obj = yf.Ticker(ticker)
             df = ticker_obj.history(period="1y", interval="1d")
             
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
             if df.empty or len(df) < 5 or 'Close' not in df.columns:
                 logger.warning(f"Market data for {ticker} unavailable or insufficient history.")
                 return MarketData(
                     ticker=ticker,
-                    timestamp=datetime.utcnow(),
+                    timestamp=now,
                     price=None,
                     volume=None,
                     status="DATA_UNAVAILABLE",
@@ -33,7 +34,7 @@ class YFinanceMarketProvider(MarketProviderInterface):
             if pd.isna(latest_price) or latest_price <= 0:
                 return MarketData(
                     ticker=ticker,
-                    timestamp=datetime.utcnow(),
+                    timestamp=now,
                     price=None,
                     volume=None,
                     status="DATA_UNAVAILABLE",
@@ -42,7 +43,7 @@ class YFinanceMarketProvider(MarketProviderInterface):
 
             return MarketData(
                 ticker=ticker,
-                timestamp=datetime.utcnow(),
+                timestamp=now,
                 price=latest_price,
                 volume=latest_volume,
                 status="AVAILABLE",
@@ -52,7 +53,7 @@ class YFinanceMarketProvider(MarketProviderInterface):
             logger.error(f"Error fetching market data for {ticker}: {e}")
             return MarketData(
                 ticker=ticker,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc).replace(tzinfo=None),
                 price=None,
                 volume=None,
                 status="DATA_UNAVAILABLE",

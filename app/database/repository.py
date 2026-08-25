@@ -1,13 +1,14 @@
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
+from collections import defaultdict
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from app.database.models import (
     TickerModel, SocialPostModel, NewsItemModel,
     MarketSnapshotModel, SSISnapshotModel, JobRunModel,
     PredictionMarketModel, PredictionMarketSnapshotModel, DivergenceModel
 )
-from app.config import INITIAL_TICKERS
+from app.config import INITIAL_TICKERS, DEFAULT_EVENT_COMPANY_MAPPINGS
 from app.collectors.base import PredictionMarketData
 
 
@@ -154,6 +155,7 @@ def save_prediction_markets(db: Session, markets: List[PredictionMarketData]) ->
                 liquidity=m.liquidity,
                 spread=m.spread,
                 quality_score=m.quality_score,
+                event_key=m.event_key,
                 url=m.url,
                 collected_at=now
             )
@@ -168,8 +170,31 @@ def save_prediction_markets(db: Session, markets: List[PredictionMarketData]) ->
             existing.liquidity = m.liquidity
             existing.spread = m.spread
             existing.quality_score = m.quality_score
+            existing.event_key = m.event_key
             existing.collected_at = now
             market_id = existing.id
+
+        # Compute 24h probability delta from SQLite snapshot history if not already set by provider
+        if (m.probability_change_24h == 0.0 or m.probability_change_24h is None) and existing:
+            snap_24h = (
+                db.query(PredictionMarketSnapshotModel)
+                .filter(PredictionMarketSnapshotModel.market_id == market_id)
+                .filter(PredictionMarketSnapshotModel.timestamp <= now - timedelta(hours=18))
+                .order_by(desc(PredictionMarketSnapshotModel.timestamp))
+                .first()
+            )
+            if not snap_24h:
+                # Fallback to the latest prior snapshot
+                snap_24h = (
+                    db.query(PredictionMarketSnapshotModel)
+                    .filter(PredictionMarketSnapshotModel.market_id == market_id)
+                    .order_by(desc(PredictionMarketSnapshotModel.id))
+                    .first()
+                )
+
+            if snap_24h:
+                delta_24h = round((m.yes_probability - snap_24h.yes_probability) * 100.0, 2)
+                m.probability_change_24h = delta_24h
 
         # Append snapshot
         snap = PredictionMarketSnapshotModel(
@@ -190,14 +215,36 @@ def save_prediction_markets(db: Session, markets: List[PredictionMarketData]) ->
     return count
 
 
-def get_recent_prediction_markets(db: Session, ticker: Optional[str] = None) -> List[PredictionMarketModel]:
-    """Get active prediction markets, optionally filtered by ticker."""
+def get_recent_prediction_markets(
+    db: Session,
+    ticker: Optional[str] = None,
+    mappings: Optional[Dict[str, Dict[str, float]]] = None
+) -> List[PredictionMarketModel]:
+    """Get active prediction markets, filtered by ticker and relevant cross-company event mappings."""
     query = db.query(PredictionMarketModel).filter(PredictionMarketModel.status == "ACTIVE")
-    if ticker:
-        ticker_up = ticker.upper()
-        # Direct markets or sector events without specific ticker
-        query = query.filter((PredictionMarketModel.ticker == ticker_up) | (PredictionMarketModel.ticker == None))
-    return query.order_by(desc(PredictionMarketModel.quality_score)).all()
+    all_active = query.order_by(desc(PredictionMarketModel.quality_score)).all()
+    
+    if not ticker:
+        return all_active
+
+    ticker_up = ticker.upper()
+    event_maps = mappings or DEFAULT_EVENT_COMPANY_MAPPINGS
+
+    filtered = []
+    for m in all_active:
+        # 1. Direct market for this ticker
+        if m.ticker and m.ticker.upper() == ticker_up:
+            filtered.append(m)
+            continue
+        # 2. Sector event market with an impact mapping on this ticker
+        if m.event_key and m.event_key in event_maps and ticker_up in event_maps[m.event_key]:
+            filtered.append(m)
+            continue
+        # 3. Macro / unmapped global market with no ticker and no event_key
+        if not m.ticker and not m.event_key:
+            filtered.append(m)
+
+    return filtered
 
 
 def save_divergences(db: Session, ticker: str, divergences_data: List[Dict[str, Any]]) -> int:
@@ -268,6 +315,10 @@ def get_latest_market_snapshot(db: Session, ticker: str) -> Optional[MarketSnaps
 
 
 def save_ssi_snapshot(db: Session, data: Dict[str, Any]) -> SSISnapshotModel:
+    sig_val = data["signal"]
+    base_sig = data.get("base_signal") or (sig_val.split(" (")[0] if " (" in sig_val else sig_val)
+    mod_sig = data.get("signal_modifier") or (sig_val.split(" (")[1].replace(")", "") if " (" in sig_val else None)
+
     snapshot = SSISnapshotModel(
         ticker=data["ticker"],
         timestamp=utc_now(),
@@ -283,7 +334,9 @@ def save_ssi_snapshot(db: Session, data: Dict[str, Any]) -> SSISnapshotModel:
         ssi_momentum_1d=data.get("ssi_momentum_1d", 0.0),
         ssi_momentum_3d=data.get("ssi_momentum_3d", 0.0),
         ssi_momentum_5d=data.get("ssi_momentum_5d", 0.0),
-        signal=data["signal"],
+        signal=sig_val,
+        base_signal=base_sig,
+        signal_modifier=mod_sig,
         confidence=data["confidence"],
         data_completeness=data["data_completeness"],
         data_quality=data.get("data_quality", data["data_completeness"]),
@@ -300,10 +353,106 @@ def save_ssi_snapshot(db: Session, data: Dict[str, Any]) -> SSISnapshotModel:
 def get_latest_ssi_snapshot(db: Session, ticker: str) -> Optional[SSISnapshotModel]:
     return (
         db.query(SSISnapshotModel)
-        .filter(SSISnapshotModel.ticker == ticker)
+        .filter(SSISnapshotModel.ticker == ticker.upper())
         .order_by(desc(SSISnapshotModel.timestamp))
         .first()
     )
+
+
+def get_historical_ssi_snapshot(
+    db: Session,
+    ticker: str,
+    target_hours_ago: float = 24.0,
+    tolerance_hours: float = 6.0
+) -> Optional[SSISnapshotModel]:
+    """
+    Retrieves the closest historical snapshot from approximately target_hours_ago
+    (e.g., 24h ago for 1D momentum, 72h for 3D, 120h for 5D).
+    Prevents momentum collapse from comparing against a snapshot taken minutes ago.
+    """
+    now = utc_now()
+    target_time = now - timedelta(hours=target_hours_ago)
+    cutoff_time = now - timedelta(hours=tolerance_hours)
+
+    # 1. Best match: Latest snapshot before or near target_time (e.g. <= 24h ago)
+    snap = (
+        db.query(SSISnapshotModel)
+        .filter(SSISnapshotModel.ticker == ticker.upper())
+        .filter(SSISnapshotModel.timestamp <= target_time)
+        .order_by(desc(SSISnapshotModel.timestamp))
+        .first()
+    )
+    if snap:
+        return snap
+
+    # 2. Secondary match: Latest snapshot older than tolerance cutoff (e.g. > 6h ago)
+    snap_older = (
+        db.query(SSISnapshotModel)
+        .filter(SSISnapshotModel.ticker == ticker.upper())
+        .filter(SSISnapshotModel.timestamp <= cutoff_time)
+        .order_by(desc(SSISnapshotModel.timestamp))
+        .first()
+    )
+    if snap_older:
+        return snap_older
+
+    # 3. Fallback: If all snapshots are within tolerance_hours, return the earliest snapshot
+    return (
+        db.query(SSISnapshotModel)
+        .filter(SSISnapshotModel.ticker == ticker.upper())
+        .order_by(SSISnapshotModel.timestamp.asc())
+        .first()
+    )
+
+
+def get_latest_ssi_snapshots_batch(db: Session, tickers: Optional[List[str]] = None) -> Dict[str, SSISnapshotModel]:
+    """Retrieve the latest SSI/SMI snapshot for each ticker in a single consolidated batch query."""
+    subquery = db.query(
+        SSISnapshotModel.ticker,
+        func.max(SSISnapshotModel.id).label("max_id")
+    )
+    if tickers:
+        subquery = subquery.filter(SSISnapshotModel.ticker.in_([t.upper() for t in tickers]))
+    subquery = subquery.group_by(SSISnapshotModel.ticker).subquery()
+
+    records = (
+        db.query(SSISnapshotModel)
+        .join(subquery, SSISnapshotModel.id == subquery.c.max_id)
+        .all()
+    )
+    return {r.ticker: r for r in records}
+
+
+def get_latest_market_snapshots_batch(db: Session, tickers: Optional[List[str]] = None) -> Dict[str, MarketSnapshotModel]:
+    """Retrieve the latest market snapshot for each ticker in a single consolidated batch query."""
+    subquery = db.query(
+        MarketSnapshotModel.ticker,
+        func.max(MarketSnapshotModel.id).label("max_id")
+    )
+    if tickers:
+        subquery = subquery.filter(MarketSnapshotModel.ticker.in_([t.upper() for t in tickers]))
+    subquery = subquery.group_by(MarketSnapshotModel.ticker).subquery()
+
+    records = (
+        db.query(MarketSnapshotModel)
+        .join(subquery, MarketSnapshotModel.id == subquery.c.max_id)
+        .all()
+    )
+    return {r.ticker: r for r in records}
+
+
+def get_active_divergences_batch(db: Session, hours: int = 48, tickers: Optional[List[str]] = None) -> Dict[str, List[DivergenceModel]]:
+    """Retrieve active divergences grouped by ticker in a single consolidated batch query."""
+    since = utc_now() - timedelta(hours=hours)
+    query = db.query(DivergenceModel).filter(DivergenceModel.timestamp >= since)
+    if tickers:
+        query = query.filter(DivergenceModel.ticker.in_([t.upper() for t in tickers]))
+    
+    divs = query.order_by(desc(DivergenceModel.timestamp)).all()
+    res: Dict[str, List[DivergenceModel]] = defaultdict(list)
+    for d in divs:
+        res[d.ticker].append(d)
+    return res
 
 
 def get_history_series(db: Session, ticker: str, limit: int = 100) -> List[Dict[str, Any]]:

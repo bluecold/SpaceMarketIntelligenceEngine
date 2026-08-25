@@ -65,11 +65,26 @@ export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose }) =
         {/* Modal Header */}
         <div className="detail-header" style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '16px', marginBottom: '20px' }}>
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
               <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '2.2rem', margin: 0 }}>${detail.ticker}</h2>
               <span className={`signal-pill ${getSignalClass(detail.header.signal)}`} style={{ fontSize: '0.85rem' }}>
                 {detail.header.signal}
               </span>
+              {detail.header.is_stale && (
+                <span
+                  style={{
+                    fontSize: '0.72rem',
+                    fontWeight: 600,
+                    color: 'var(--neutral-yellow)',
+                    background: 'rgba(255, 179, 0, 0.12)',
+                    border: '1px solid rgba(255, 179, 0, 0.3)',
+                    padding: '3px 8px',
+                    borderRadius: '6px'
+                  }}
+                >
+                  ⏳ Data Age: {detail.header.data_age_hours ? `${detail.header.data_age_hours.toFixed(1)}h` : 'Stale'}
+                </span>
+              )}
             </div>
             <p style={{ color: 'var(--text-muted)', margin: '4px 0 0 0' }}>{detail.name}</p>
           </div>
@@ -300,7 +315,7 @@ export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose }) =
         {activeTab === 'social' && (
           <div>
             {/* Sentiment Summary Bar */}
-            {detail.social_stats && (
+            {detail.social_stats && detail.social_stats.total_posts > 0 ? (
               <div style={{ display: 'flex', justifyContent: 'space-around', background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '8px', marginBottom: '16px' }}>
                 <div style={{ textAlign: 'center' }}>
                   <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>BULLISH</div>
@@ -320,6 +335,10 @@ export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose }) =
                     {detail.social_stats.bearish_pct}%
                   </div>
                 </div>
+              </div>
+            ) : (
+              <div style={{ textAlign: 'center', background: 'rgba(0,0,0,0.2)', padding: '10px', borderRadius: '8px', marginBottom: '16px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                No recent social posts collected in the analysis window (Anchor Baseline: 50.0)
               </div>
             )}
 

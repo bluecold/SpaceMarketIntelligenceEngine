@@ -24,7 +24,7 @@ class BaseSentimentClassifier(ABC):
 
 
 class HeuristicSentimentClassifier(BaseSentimentClassifier):
-    """Fast, deterministic finance lexicon & keyword sentiment analyzer for rapid dev & testing."""
+    """Fast, deterministic finance lexicon & keyword sentiment analyzer with negation detection."""
     
     BULLISH_KEYWORDS = [
         "bull", "bullish", "moon", "rocket", "buy", "buying", "long", "call", "calls",
@@ -40,11 +40,65 @@ class HeuristicSentimentClassifier(BaseSentimentClassifier):
         "lawsuit", "investigation", "stretched", "overvalued"
     ]
 
+    NEGATION_WORDS = [
+        "not", "no", "never", "without", "hardly", "barely", "scarcely",
+        "failed", "fail", "fails", "failing", "lack", "lacks", "lacking",
+        "don't", "dont", "doesn't", "doesnt", "didn't", "didnt",
+        "won't", "wont", "can't", "cant", "cannot", "couldn't", "couldnt",
+        "wouldn't", "wouldnt", "shouldn't", "shouldnt", "isn't", "isnt",
+        "aren't", "arent", "wasn't", "wasnt", "weren't", "werent",
+        "neither", "nor"
+    ]
+
+    AFFIRMATIVE_IDIOMS = [
+        "no doubt", "without doubt", "without a doubt",
+        "no question", "without question", "no wonder", "no surprise"
+    ]
+
+    def _is_negated(self, kw: str, clean_text: str) -> bool:
+        """
+        Check if keyword is preceded by a genuine negation within 0-2 intervening words,
+        resisting affirmative idioms (e.g. 'no doubt') and punctuation boundaries.
+        """
+        # 1. Mask affirmative idioms so phrases like 'no doubt' are not treated as negations
+        temp_text = clean_text
+        for idiom in self.AFFIRMATIVE_IDIOMS:
+            temp_text = re.sub(r'\b' + re.escape(idiom) + r'\b', '__AFFIRMED__', temp_text)
+
+        # 2. Strict syntax window: Negation word + 0 to 2 words + target keyword
+        neg_re = (
+            r'\b(?:' + '|'.join(re.escape(nw) for nw in self.NEGATION_WORDS) + r')\b'
+            r'(?:\s+[a-z0-9\'-]+){0,2}\s+'
+            r'\b' + re.escape(kw) + r'\b'
+        )
+        match = re.search(neg_re, temp_text)
+        if match:
+            matched_segment = match.group(0)
+            if not any(punct in matched_segment for punct in ['.', ';', '!', '?', ',', ':', '-', '—', '(', ')']):
+                return True
+        return False
+
     def analyze(self, text: str) -> SentimentResult:
         clean_text = text.lower()
         
-        bull_hits = sum(1 for kw in self.BULLISH_KEYWORDS if re.search(r'\b' + re.escape(kw) + r'\b', clean_text))
-        bear_hits = sum(1 for kw in self.BEARISH_KEYWORDS if re.search(r'\b' + re.escape(kw) + r'\b', clean_text))
+        bull_hits = 0
+        bear_hits = 0
+
+        # Evaluate Bullish keywords with negation inversion
+        for kw in self.BULLISH_KEYWORDS:
+            if re.search(r'\b' + re.escape(kw) + r'\b', clean_text):
+                if self._is_negated(kw, clean_text):
+                    bear_hits += 1  # Negated bullish = Bearish
+                else:
+                    bull_hits += 1
+
+        # Evaluate Bearish keywords with negation inversion
+        for kw in self.BEARISH_KEYWORDS:
+            if re.search(r'\b' + re.escape(kw) + r'\b', clean_text):
+                if self._is_negated(kw, clean_text):
+                    bull_hits += 1  # Negated bearish = Bullish
+                else:
+                    bear_hits += 1
         
         total_hits = bull_hits + bear_hits
         if total_hits == 0:

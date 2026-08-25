@@ -1,9 +1,11 @@
 import math
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
+from collections import defaultdict
 import numpy as np
 from sqlalchemy.orm import Session
 from app.database.models import SSISnapshotModel, MarketSnapshotModel
+from app.scoring.smi import calculate_smi
 from app.config import INITIAL_TICKERS
 
 
@@ -72,55 +74,95 @@ def calculate_financial_metrics(returns: List[float], risk_free_rate: float = 0.
 
 def evaluate_backtest_dataset(
     snapshots: List[Dict[str, Any]],
-    holding_period_days: int = 3
+    holding_period_days: int = 3,
+    buy_threshold: float = 75.0
 ) -> Dict[str, Any]:
     """
     Evaluates signal efficacy by comparing signals (STRONG BUY / BUY)
     against forward realized returns at specified holding periods (1D, 3D, 5D).
+    
+    Rigorous Apples-to-Apples Comparison:
+    - Model A (Control): SMI computed WITHOUT Polymarket prediction markets.
+    - Model B (Treatment): SMI computed WITH Polymarket prediction markets.
+    Both models use the identical buy_threshold and identical multi-factor engine.
     """
-    model_a_returns: List[float] = [] # Model A: X + Technical
-    model_b_returns: List[float] = [] # Model B: X + Technical + Polymarket
+    model_a_returns: List[float] = [] # Model A: Without Polymarket
+    model_b_returns: List[float] = [] # Model B: With Polymarket
 
-    for i in range(len(snapshots) - holding_period_days):
-        current = snapshots[i]
-        future = snapshots[i + holding_period_days]
+    # Group snapshots by ticker to prevent cross-asset price contamination
+    grouped_by_ticker: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for s in snapshots:
+        ticker_key = s.get("ticker", "DEFAULT")
+        grouped_by_ticker[ticker_key].append(s)
 
-        curr_price = current.get("price")
-        fut_price = future.get("price")
+    for ticker_sym, ticker_snaps in grouped_by_ticker.items():
+        for i in range(len(ticker_snaps) - holding_period_days):
+            current = ticker_snaps[i]
+            future = ticker_snaps[i + holding_period_days]
 
-        if curr_price is None or fut_price is None or curr_price <= 0:
-            continue
+            curr_price = current.get("price")
+            fut_price = future.get("price")
 
-        realized_return = ((fut_price - curr_price) / curr_price) * 100.0
+            if curr_price is None or fut_price is None or curr_price <= 0:
+                continue
 
-        # Model A: Buy if Social >= 70 and Technical >= 25 (out of 40)
-        soc = current.get("social_score", 50)
-        tech = current.get("technical_score", 20)
-        if soc >= 70.0 and (tech or 0) >= 25.0:
-            model_a_returns.append(realized_return)
+            realized_return = ((fut_price - curr_price) / curr_price) * 100.0
 
-        # Model B: Buy if comprehensive SMI >= 75 (includes Polymarket PMS)
-        smi = current.get("smi", current.get("ssi", 50))
-        if smi >= 75.0:
-            model_b_returns.append(realized_return)
+            soc = current.get("social_score", 50.0)
+            pred = current.get("prediction_score")
+            news = current.get("news_score")
+            mom = current.get("momentum_score")
+            risk = current.get("risk_score")
+            tech = current.get("technical_score")
+
+            # Model A: SMI computed WITHOUT Polymarket (prediction_score=None, weight redistributed)
+            smi_a_res = calculate_smi(
+                social_score=soc,
+                prediction_score=None,
+                news_score=news,
+                momentum_score=mom,
+                risk_score=risk,
+                technical_score_raw=tech
+            )
+            smi_a = smi_a_res["smi"]
+            if smi_a >= buy_threshold:
+                model_a_returns.append(realized_return)
+
+            # Model B: SMI computed WITH Polymarket (incorporating prediction markets)
+            if pred is not None:
+                smi_b_res = calculate_smi(
+                    social_score=soc,
+                    prediction_score=pred,
+                    news_score=news,
+                    momentum_score=mom,
+                    risk_score=risk,
+                    technical_score_raw=tech
+                )
+                smi_b = smi_b_res["smi"]
+            else:
+                smi_b = current.get("smi", smi_a)
+
+            if smi_b >= buy_threshold:
+                model_b_returns.append(realized_return)
 
     metrics_a = calculate_financial_metrics(model_a_returns)
     metrics_b = calculate_financial_metrics(model_b_returns)
 
     # Hypothesis conclusion
     polymarket_adds_value = (
-        metrics_b["profit_factor"] >= metrics_a["profit_factor"] and
-        metrics_b["win_rate"] >= metrics_a["win_rate"]
+        (metrics_b["profit_factor"] >= metrics_a["profit_factor"] and metrics_b["win_rate"] >= metrics_a["win_rate"])
+        or (metrics_b["sharpe_ratio"] > metrics_a["sharpe_ratio"])
     )
 
     return {
         "holding_period_days": holding_period_days,
+        "buy_threshold": buy_threshold,
         "model_a_baseline": {
-            "name": "Model A (X Social + Technical Market)",
+            "name": "Model A (X Social + Technical + News Baseline)",
             "metrics": metrics_a
         },
         "model_b_multisource": {
-            "name": "Model B (X + Technical + Polymarket PMS + News)",
+            "name": "Model B (Multi-Source with Polymarket PMS)",
             "metrics": metrics_b
         },
         "hypothesis_analysis": {
@@ -146,6 +188,8 @@ def run_historical_backtest(db: Session, lookback_days: int = 60) -> Dict[str, A
             "social_score": s.social_score,
             "prediction_score": s.prediction_score,
             "news_score": s.news_score,
+            "momentum_score": s.momentum_score,
+            "risk_score": s.risk_score,
             "technical_score": s.technical_score,
             "smi": s.smi if s.smi is not None else s.ssi,
             "price": s.price,

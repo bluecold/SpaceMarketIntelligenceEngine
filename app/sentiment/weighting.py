@@ -1,6 +1,6 @@
 import math
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Tuple, Optional, Dict, Any
 
 CATALYST_CONFIG = {
@@ -67,8 +67,14 @@ def calculate_recency_weight(created_at: datetime, reference_now: Optional[datet
     Exponential decay weight based on age in hours.
     weight = exp(-lambda * age_hours)
     """
-    now = reference_now or datetime.utcnow()
-    age_seconds = max(0.0, (now - created_at).total_seconds())
+    created_at_utc = created_at.replace(tzinfo=timezone.utc) if created_at.tzinfo is None else created_at.astimezone(timezone.utc)
+    
+    if reference_now is not None:
+        now_utc = reference_now.replace(tzinfo=timezone.utc) if reference_now.tzinfo is None else reference_now.astimezone(timezone.utc)
+    else:
+        now_utc = datetime.now(timezone.utc)
+
+    age_seconds = max(0.0, (now_utc - created_at_utc).total_seconds())
     age_hours = age_seconds / 3600.0
     
     decay_lambda = math.log(2.0) / half_life_hours
@@ -103,31 +109,59 @@ def calculate_relevance_score(text: str, symbol: str, aliases: List[str]) -> flo
     return 0.10
 
 
-def detect_catalyst(text: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+IMPORTANCE_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+
+
+def detect_catalysts(text: str) -> List[Dict[str, str]]:
     """
-    Detect potential market catalysts, direction and importance.
-    Returns (catalyst_category, direction, importance)
+    Detect all matching market catalysts, their directions and importances in the text.
+    Returns a list of dicts sorted by importance: [{"category": cat, "direction": dir, "importance": imp, "keyword": kw}, ...]
     """
     clean_text = text.lower()
-    
+    matches: List[Dict[str, str]] = []
+    seen_categories = set()
+
     for category, config in CATALYST_CONFIG.items():
         for kw in config["keywords"]:
             if kw in clean_text:
-                return category, config["direction"], config["importance"]
-                    
-    return None, None, None
+                if category not in seen_categories:
+                    matches.append({
+                        "category": category,
+                        "direction": config["direction"],
+                        "importance": config["importance"],
+                        "keyword": kw
+                    })
+                    seen_categories.add(category)
+                break
+
+    # Sort matches by importance hierarchy (CRITICAL first, then HIGH, etc.)
+    matches.sort(key=lambda c: IMPORTANCE_RANK.get(c["importance"], 99))
+    return matches
+
+
+def detect_catalyst(text: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Detect highest-priority market catalyst in the text based on importance hierarchy.
+    Returns (catalyst_category, direction, importance)
+    """
+    all_cats = detect_catalysts(text)
+    if not all_cats:
+        return None, None, None
+    top = all_cats[0]
+    return top["category"], top["direction"], top["importance"]
 
 
 def calculate_news_score(news_items: List[Any]) -> Dict[str, Any]:
     """
     Computes aggregated News Score (0 to 100) from recent news articles.
+    Returns news_score = None when no news items exist (Adaptive weight normalization).
     """
     if not news_items:
         return {
-            "news_score": 50.0,
+            "news_score": None,
             "total_news": 0,
-            "bullish_news_pct": 33.3,
-            "bearish_news_pct": 33.3
+            "bullish_news_pct": 0.0,
+            "bearish_news_pct": 0.0
         }
 
     total_weight = 0.0
@@ -145,21 +179,26 @@ def calculate_news_score(news_items: List[Any]) -> Dict[str, Any]:
 
         # Recency decay for news (half-life 24 hours)
         rec_w = calculate_recency_weight(item.published_at, half_life_hours=24.0)
-        w = item.relevance_score * rec_w * imp_mult
+        rel_score = getattr(item, 'relevance_score', 1.0)
+        w = rel_score * rec_w * imp_mult
         
         total_weight += w
-        weighted_sentiment_sum += item.sentiment_score * w
+        weighted_sentiment_sum += getattr(item, 'sentiment_score', 0.0) * w
 
-        if item.sentiment_label == "BULLISH":
+        if getattr(item, 'sentiment_label', None) == "BULLISH":
             bull_cnt += 1
-        elif item.sentiment_label == "BEARISH":
+        elif getattr(item, 'sentiment_label', None) == "BEARISH":
             bear_cnt += 1
 
-    if total_weight > 0:
-        norm_sent = weighted_sentiment_sum / total_weight
-    else:
-        norm_sent = 0.0
+    if total_weight <= 0:
+        return {
+            "news_score": None,
+            "total_news": len(news_items),
+            "bullish_news_pct": 0.0,
+            "bearish_news_pct": 0.0
+        }
 
+    norm_sent = weighted_sentiment_sum / total_weight
     raw_news_score = 50.0 + (50.0 * norm_sent)
     news_score = max(0.0, min(100.0, round(raw_news_score, 1)))
 

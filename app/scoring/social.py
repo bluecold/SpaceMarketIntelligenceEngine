@@ -12,12 +12,12 @@ def calculate_social_score(posts: List[SocialPostModel]) -> Dict[str, Any]:
             "social_score": 50.0,
             "total_posts": 0,
             "relevant_posts": 0,
-            "bullish_pct": 33.3,
-            "neutral_pct": 33.4,
-            "bearish_pct": 33.3,
-            "weighted_bullish_pct": 33.3,
-            "weighted_neutral_pct": 33.4,
-            "weighted_bearish_pct": 33.3
+            "bullish_pct": 0.0,
+            "neutral_pct": 0.0,
+            "bearish_pct": 0.0,
+            "weighted_bullish_pct": 0.0,
+            "weighted_neutral_pct": 0.0,
+            "weighted_bearish_pct": 0.0
         }
 
     total_count = len(posts)

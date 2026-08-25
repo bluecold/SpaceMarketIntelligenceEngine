@@ -25,13 +25,25 @@ def calculate_technical_indicators(df: pd.DataFrame) -> Dict[str, Any]:
     ema_period = min(200, len(df))
     ema200 = float(close.ewm(span=ema_period, adjust=False).mean().iloc[-1])
 
-    # 2. RSI 14
+    # 2. RSI 14 (Wilder's Smoothing Moving Average / RMA)
     delta = close.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss.replace(0, np.nan)
-    rsi_series = 100 - (100 / (1 + rs))
-    rsi14 = float(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else 50.0
+    gain = delta.clip(lower=0.0)
+    loss = (-delta).clip(lower=0.0)
+    
+    rsi_period = min(14, max(2, len(df) - 1))
+    avg_gain = gain.ewm(alpha=1.0 / rsi_period, min_periods=rsi_period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1.0 / rsi_period, min_periods=rsi_period, adjust=False).mean()
+    
+    last_gain = avg_gain.iloc[-1]
+    last_loss = avg_loss.iloc[-1]
+    
+    if pd.isna(last_gain) or pd.isna(last_loss) or (last_gain == 0 and last_loss == 0):
+        rsi14 = 50.0
+    elif last_loss == 0:
+        rsi14 = 100.0
+    else:
+        rs = last_gain / last_loss
+        rsi14 = 100.0 - (100.0 / (1.0 + rs))
 
     # 3. Bollinger Bands (20, 2)
     bb_window = min(20, len(df))
@@ -56,7 +68,7 @@ def calculate_technical_indicators(df: pd.DataFrame) -> Dict[str, Any]:
     volume_ma20 = float(volume.rolling(window=vol_window).mean().iloc[-1])
     volume_ratio = latest_volume / volume_ma20 if volume_ma20 > 0 else 1.0
 
-    # 6. ATR 14
+    # 6. ATR 14 (Wilder's Smoothing)
     high = df['High'] if 'High' in df.columns else close
     low = df['Low'] if 'Low' in df.columns else close
     prev_close = close.shift(1)
@@ -65,7 +77,10 @@ def calculate_technical_indicators(df: pd.DataFrame) -> Dict[str, Any]:
     tr2 = (high - prev_close).abs()
     tr3 = (low - prev_close).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    atr14 = float(tr.rolling(window=min(14, len(df))).mean().iloc[-1])
+    
+    atr_period = min(14, max(1, len(df)))
+    atr_series = tr.ewm(alpha=1.0 / atr_period, min_periods=atr_period, adjust=False).mean()
+    atr14 = float(atr_series.iloc[-1]) if not pd.isna(atr_series.iloc[-1]) else float(tr.iloc[-1])
 
     return {
         "price": round(latest_price, 2),

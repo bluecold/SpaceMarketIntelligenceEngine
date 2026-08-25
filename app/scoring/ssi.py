@@ -1,42 +1,46 @@
-from typing import Dict, Any, Optional
-from app.scoring.smi import calculate_smi
+from typing import Dict, Any, Optional, List
+from app.database.models import SocialPostModel
+from app.scoring.social import calculate_social_score
 
 
 def calculate_ssi(
-    social_score: float,
-    news_score: Optional[float] = None,
-    momentum_score: Optional[float] = None,
-    technical_score_raw: Optional[float] = None,
-    fundamental_score: Optional[float] = None,
-    risk_score: Optional[float] = None,
-    prediction_score: Optional[float] = None,
-    prediction_quality: float = 50.0,
-    previous_ssi_1d: Optional[float] = None,
-    previous_ssi_3d: Optional[float] = None,
-    previous_ssi_5d: Optional[float] = None,
-    post_count: int = 0,
-    news_count: int = 0
+    posts: Optional[List[SocialPostModel]] = None,
+    social_score: Optional[float] = None
 ) -> Dict[str, Any]:
     """
-    Backward-compatible wrapper forwarding to calculate_smi in SMIE v2.0.
+    Computes the Space Sentiment Index (SSI, 0 - 100) representing pure social sentiment from X/Twitter.
+    
+    If raw posts are provided, applies log1p engagement weighting and exponential recency decay.
+    If a pre-calculated social_score is provided, validates and encapsulates it.
+    Does NOT include prediction markets, news catalysts, or technical price indicators (those belong to SMI).
     """
-    res = calculate_smi(
-        social_score=social_score,
-        prediction_score=prediction_score,
-        prediction_quality=prediction_quality,
-        news_score=news_score,
-        momentum_score=momentum_score,
-        technical_score_raw=technical_score_raw,
-        fundamental_score=fundamental_score,
-        risk_score=risk_score,
-        previous_smi_1d=previous_ssi_1d,
-        previous_smi_3d=previous_ssi_3d,
-        previous_smi_5d=previous_ssi_5d,
-        post_count=post_count,
-        news_count=news_count
-    )
-    # Ensure backward compatible keys
-    res["ssi_momentum_1d"] = res.get("smi_momentum_1d", 0.0)
-    res["ssi_momentum_3d"] = res.get("smi_momentum_3d", 0.0)
-    res["ssi_momentum_5d"] = res.get("smi_momentum_5d", 0.0)
-    return res
+    if posts is not None:
+        stats = calculate_social_score(posts)
+        return {
+            "ssi": stats["social_score"],
+            "social_score": stats["social_score"],
+            "total_posts": stats["total_posts"],
+            "relevant_posts": stats["relevant_posts"],
+            "bullish_pct": stats["bullish_pct"],
+            "neutral_pct": stats["neutral_pct"],
+            "bearish_pct": stats["bearish_pct"],
+            "weighted_bullish_pct": stats["weighted_bullish_pct"],
+            "weighted_neutral_pct": stats["weighted_neutral_pct"],
+            "weighted_bearish_pct": stats["weighted_bearish_pct"]
+        }
+
+    raw = social_score if social_score is not None else 50.0
+    clamped = max(0.0, min(100.0, round(raw, 1)))
+    return {
+        "ssi": clamped,
+        "social_score": clamped,
+        "total_posts": 0,
+        "relevant_posts": 0,
+        "bullish_pct": 0.0,
+        "neutral_pct": 0.0,
+        "bearish_pct": 0.0,
+        "weighted_bullish_pct": 0.0,
+        "weighted_neutral_pct": 0.0,
+        "weighted_bearish_pct": 0.0
+    }
+
