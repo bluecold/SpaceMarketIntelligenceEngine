@@ -9,6 +9,7 @@ interface HeaderProps {
   alerts: AlertItem[];
   onTriggerAnalysis: () => void;
   onOpenAbout: () => void;
+  onSelectTicker?: (ticker: string) => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -16,7 +17,8 @@ export const Header: React.FC<HeaderProps> = ({
   isAnalyzing,
   alerts,
   onTriggerAnalysis,
-  onOpenAbout
+  onOpenAbout,
+  onSelectTicker
 }) => {
   return (
     <header className="app-header">
@@ -132,7 +134,7 @@ export const Header: React.FC<HeaderProps> = ({
           </span>
         )}
 
-        <AlertsManager alerts={alerts} />
+        <AlertsManager alerts={alerts} onSelectTicker={onSelectTicker} />
 
         <button
           className="btn-trigger"

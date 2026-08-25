@@ -1,8 +1,13 @@
 export interface AlertItem {
+  id?: string;
   ticker: string;
   type: string;
-  level: 'CRITICAL' | 'HIGH' | 'MEDIUM';
+  category?: 'SIGNAL' | 'DIVERGENCE' | 'CATALYST' | 'SYSTEM' | string;
+  level: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'WARNING';
   message: string;
+  timestamp?: string | null;
+  age_hours?: number | null;
+  is_active?: boolean;
 }
 
 export interface RankingItem {

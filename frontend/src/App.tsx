@@ -50,6 +50,7 @@ export const App: React.FC = () => {
         alerts={dashboard?.alerts || []}
         onTriggerAnalysis={handleTriggerAnalysis}
         onOpenAbout={() => setShowAboutModal(true)}
+        onSelectTicker={(ticker) => setSelectedTicker(ticker)}
       />
 
       {loading ? (
