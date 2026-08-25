@@ -242,7 +242,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
           {activeSection === 'metrics' && (
             <div>
               <p style={{ color: 'var(--text-muted)', marginBottom: '16px' }}>
-                Para evitar confusiones, el sistema separa estrictamente el sentimiento social puro de las expectativas de mercados de predicción y del índice integral:
+                Para evitar confusiones y sesgos, el sistema separa estrictamente el sentimiento social puro, las probabilidades implícitas en mercados de predicción y el índice maestro:
               </p>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '14px' }}>
@@ -257,7 +257,11 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                     </span>
                   </div>
                   <p style={{ margin: '8px 0 0 0', color: 'var(--text-main)', fontSize: '0.85rem' }}>
-                    Combina todas las fuentes disponibles mediante <strong>pesos adaptativos normalizados</strong> (Social 30%, Polymarket 15%, News 20%, Momentum 20%, Fundamentales 10%, Risk 5%). Si falta una fuente, las demás absorben su peso proporcionalmente sin inventar datos neutros ficticios.
+                    Combina todas las fuentes disponibles mediante <strong>pesos adaptativos normalizados</strong> (Social 30%, Polymarket 15%, News 20%, Momentum 20%, Fundamentales 10%, Risk 5%).
+                    <br />
+                    • <strong>Escala Cuantitativa:</strong> <code>≥ 85</code> STRONG BUY | <code>75–84</code> BUY | <code>65–74</code> WATCH | <code>50–64</code> HOLD | <code>35–49</code> AVOID | <code>&lt; 35</code> STRONG AVOID.
+                    <br />
+                    • <strong>Señales Canónicas Desacopladas:</strong> Separa la señal base (<code>base_signal</code>) de modificadores de riesgo (<code>signal_modifier: OVEREXTENDED / NO MKT DATA</code>).
                   </p>
                 </div>
 
@@ -272,7 +276,11 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                     </span>
                   </div>
                   <p style={{ margin: '8px 0 0 0', color: 'var(--text-main)', fontSize: '0.85rem' }}>
-                    Mide <strong>exclusivamente</strong> la narrativa y opinión pública en X/Twitter. Pondera cada publicación según su engagement logarítmico ("ln(1 + likes + 2·reposts)") y aplica un decaimiento temporal exponencial de 24 horas.
+                    Mide <strong>exclusivamente</strong> la narrativa y opinión pública en X/Twitter.
+                    <br />
+                    • <strong>Ponderación:</strong> Engagement logarítmico con divisor parametrizado y decaimiento temporal exponencial de 24h.
+                    <br />
+                    • <strong>Contracción Bayesiana:</strong> Ante pocas publicaciones (N &lt; 10), contrae el score hacia el prior neutro (50.0) para evitar sobre-reacción por tweets atípicos aislados.
                   </p>
                 </div>
 
@@ -287,9 +295,9 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                     </span>
                   </div>
                   <p style={{ margin: '8px 0 0 0', color: 'var(--text-main)', fontSize: '0.85rem' }}>
-                    Calcula la probabilidad agregada de éxito de eventos espaciales directos y sectoriales en Polymarket.
+                    Calcula la probabilidad agregada de éxito de eventos espaciales directos y sectoriales en Polymarket con tracking de Δ24h.
                     <br />
-                    <em>Regla de Oro:</em> Si la calidad del mercado (liquidez, volumen, spread) es $&lt; 30$, su peso efectivo en SMI se anula ($0\%$).
+                    <em>Regla de Oro:</em> Si la calidad del mercado (liquidez, volumen, spread) es &lt; 30, su peso efectivo en SMI se anula (0%) para evitar manipulación.
                   </p>
                 </div>
 
@@ -304,7 +312,9 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                     </span>
                   </div>
                   <p style={{ margin: '8px 0 0 0', color: 'var(--text-main)', fontSize: '0.85rem' }}>
-                    Evalúa si la tendencia del precio acompaña la narrativa. Penaliza sobreextensiones alcistas ($RSI &gt; 75$) o cotizaciones por debajo de la media móvil de 200 días ($EMA200$).
+                    Evalúa si la tendencia del precio acompaña la narrativa mediante EMA200, RSI(14) con suavizado Wilder RMA y ratio de volumen.
+                    <br />
+                    • <strong>Gestión de Sobrecompra:</strong> Si RSI &gt; 75, restringe preventivamente <code>STRONG BUY</code> a <code>WATCH (OVEREXTENDED)</code> y añade advertencia cualitativa a <code>BUY (OVEREXTENDED)</code>.
                   </p>
                 </div>
               </div>
@@ -321,37 +331,46 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                 <div style={{ background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '10px', padding: '14px' }}>
                   <div style={{ color: 'var(--bullish-green)', fontWeight: 700, fontSize: '0.9rem' }}>
-                    🟢 BULLISH DIVERGENCE (Oportunidad)
+                    🟢 BULLISH DIVERGENCE [HIGH]
                   </div>
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-main)', marginTop: '6px' }}>
-                    El sentimiento social (SSI) y Polymarket (PMS) son fuertemente alcistas, pero el precio de la acción sigue deprimido o rezagado. Suele anticipar rebotes o infravaloración temporal.
+                    El sentimiento social (SSI) y Polymarket (PMS) son fuertemente alcistas, pero el precio sigue rezagado (Precio &lt; EMA200). Oportunidad de entrada por infravaloración temporal.
                   </div>
                 </div>
 
                 <div style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '10px', padding: '14px' }}>
                   <div style={{ color: 'var(--bearish-red)', fontWeight: 700, fontSize: '0.9rem' }}>
-                    🔴 BEARISH DIVERGENCE (Alerta de Trampa)
+                    🔴 BEARISH DIVERGENCE [HIGH]
                   </div>
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-main)', marginTop: '6px' }}>
-                    El precio de la acción está en máximos o subiendo, pero la comunidad social o las apuestas en Polymarket están colapsando. Alerta sobre alta probabilidad de corrección inminente.
+                    El precio de la acción está en máximos o subiendo, pero la comunidad social o Polymarket están colapsando. Alerta sobre alta probabilidad de corrección o trampa alcista.
+                  </div>
+                </div>
+
+                <div style={{ background: 'rgba(220, 38, 38, 0.15)', border: '1px solid rgba(220, 38, 38, 0.4)', borderRadius: '10px', padding: '14px' }}>
+                  <div style={{ color: '#f87171', fontWeight: 700, fontSize: '0.9rem' }}>
+                    🛑 BEARISH CONFIRMATION [CRITICAL]
+                  </div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-main)', marginTop: '6px' }}>
+                    Todas las fuentes activas (X + Polymarket + Noticias) se alinean a la baja con alto volumen de venta institucional. Alerta crítica para la preservación urgente de capital.
                   </div>
                 </div>
 
                 <div style={{ background: 'rgba(0, 229, 255, 0.1)', border: '1px solid rgba(0, 229, 255, 0.3)', borderRadius: '10px', padding: '14px' }}>
                   <div style={{ color: 'var(--accent-cyan)', fontWeight: 700, fontSize: '0.9rem' }}>
-                    ⚡ EARLY REVERSAL (Giro Temprano)
+                    ⚡ EARLY REVERSAL [HIGH]
                   </div>
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-main)', marginTop: '6px' }}>
-                    Las probabilidades de Polymarket giran drásticamente antes de que la noticia llegue a X o impacte en la cotización del mercado bursátil.
+                    Las probabilidades de Polymarket giran drásticamente (|Δ24h| ≥ 15%) antes de que la noticia llegue a redes sociales o impacte en la cotización bursátil.
                   </div>
                 </div>
 
-                <div style={{ background: 'rgba(255, 255, 255, 0.05)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '14px' }}>
+                <div style={{ background: 'rgba(255, 255, 255, 0.05)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '14px', gridColumn: '1 / -1' }}>
                   <div style={{ color: '#fff', fontWeight: 700, fontSize: '0.9rem' }}>
-                    🛡️ CONFIRMATION (Alineación Estructural)
+                    🛡️ BULLISH CONFIRMATION [HIGH]
                   </div>
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '6px' }}>
-                    Todas las fuentes (X + Polymarket + Noticias + Precio) se mueven en la misma dirección, otorgando la máxima puntuación de Confianza ($&gt; 80\%$).
+                    Todas las fuentes (X + Polymarket + Noticias + Precio + Volumen) se mueven armónicamente al alza, otorgando la máxima puntuación de Confianza del sistema (&gt; 85%).
                   </div>
                 </div>
               </div>
@@ -367,9 +386,9 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                     1
                   </div>
                   <div>
-                    <h4 style={{ margin: 0, color: '#fff', fontSize: '0.95rem' }}>Revisa el Termómetro del Sector</h4>
+                    <h4 style={{ margin: 0, color: '#fff', fontSize: '0.95rem' }}>Revisa el Termómetro del Sector y Alertas de Escritorio</h4>
                     <p style={{ margin: '4px 0 0 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                      En la barra superior del Dashboard verás el <strong>SMI Promedio del Sector</strong>, el activo más alcista y el estado de frescura en vivo de los proveedores.
+                      En la barra superior del Dashboard verás el <strong>SMI Promedio del Sector</strong>, el activo líder y la campana de alertas en tiempo real. Puedes habilitar notificaciones nativas de escritorio (con deduplicación inteligente) haciendo clic en el icono de la campana.
                     </p>
                   </div>
                 </div>
@@ -381,7 +400,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                   <div>
                     <h4 style={{ margin: 0, color: '#fff', fontSize: '0.95rem' }}>Explora la Tabla Terminal de Posiciones</h4>
                     <p style={{ margin: '4px 0 0 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                      Compara rápidamente qué empresas tienen puntuaciones <code>SMI &gt; 75</code> (Señales <strong>BUY / STRONG BUY</strong>) o advertencias de divergencia.
+                      Compara rápidamente qué empresas tienen señales alcistas (<code>SMI ≥ 75</code>), señales bajistas de preservación de capital (<code>SMI &lt; 35</code>), modificadores de sobrecompra (<code>OVEREXTENDED</code>) o alertas de divergencia activa.
                     </p>
                   </div>
                 </div>
@@ -393,11 +412,11 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                   <div>
                     <h4 style={{ margin: 0, color: '#fff', fontSize: '0.95rem' }}>Haz Clic en Cualquier Ticker para Abrir el Análisis Detallado</h4>
                     <p style={{ margin: '4px 0 0 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                      Podrás ver:
-                      <br />• <strong>Pestaña Prediction Markets:</strong> Contratos de Polymarket, barras YES/NO, volumen y liquidez.
-                      <br />• <strong>Pestaña X Social Feed:</strong> Tweets clasificados por sentimiento con tags de catalizador.
-                      <br />• <strong>WHY THIS SIGNAL?:</strong> Razones explícitas generadas por el motor algorítmico.
-                      <br />• <strong>Gráfico Multi-serie SVG:</strong> Activa o desactiva las curvas de Precio, SMI, SSI y PMS con los botones interactivos.
+                      Podrás consultar:
+                      <br />• <strong>Pestaña Prediction Markets:</strong> Contratos de Polymarket, probabilidades YES/NO, volumen y liquidez.
+                      <br />• <strong>Pestaña X Social Feed:</strong> Tweets categorizados con tags de catalizador y análisis de sentimiento.
+                      <br />• <strong>WHY THIS SIGNAL?:</strong> Razones cuantitativas explicables con jerarquía de momentum (+X.X pts en 24h).
+                      <br />• <strong>Gráfico Multi-serie SVG:</strong> Enciende o apaga interactivamente las curvas de Precio, SMI, SSI y PMS.
                     </p>
                   </div>
                 </div>
@@ -410,8 +429,8 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                     <h4 style={{ margin: 0, color: '#fff', fontSize: '0.95rem' }}>Ejecuta el Pipeline Manualmente o Consulta Reportes</h4>
                     <p style={{ margin: '4px 0 0 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
                       Usa el botón <strong>"Run SMIE Pipeline"</strong> en el header o los comandos CLI en tu consola:
-                      <br />• <code>python -m app.cli daily-report</code>: Genera el resumen diario del sector.
-                      <br />• <code>python -m app.cli backtest</code>: Evalúa el desempeño cuantitativo de los modelos.
+                      <br />• <code>python -m app.cli daily-report</code>: Genera el reporte diario del sector espacial.
+                      <br />• <code>python -m app.cli backtest</code>: Evalúa el desempeño cuantitativo comparativo (Model A vs Model B).
                     </p>
                   </div>
                 </div>
