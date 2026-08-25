@@ -91,10 +91,14 @@ def calculate_smi(
     effective_weights: Dict[str, float] = {}
     active_directions: List[float] = []
 
-    # A. Social Sentiment (SSI)
-    active_scores["social"] = social_score
-    effective_weights["social"] = BASE_WEIGHTS["social"]
-    active_directions.append((social_score - 50.0) / 50.0)
+    # A. Social Sentiment (SSI) with Bayesian Credibility Shrinkage for small sample sizes (<10 posts)
+    is_social_available = (social_score is not None) and (post_count > 0 or social_score != 50.0)
+    if is_social_available:
+        credibility = min(1.0, max(0.1, post_count / 10.0)) if post_count > 0 else 1.0
+        effective_social = 50.0 + (social_score - 50.0) * credibility
+        active_scores["social"] = effective_social
+        effective_weights["social"] = BASE_WEIGHTS["social"]
+        active_directions.append((effective_social - 50.0) / 50.0)
 
     # B. Prediction Market Score (PMS)
     if prediction_score is not None and prediction_quality >= settings.POLYMARKET_MIN_QUALITY:
@@ -143,7 +147,7 @@ def calculate_smi(
         weighted_smi = sum(active_scores[k] * normalized_weights[k] for k in active_scores.keys())
     else:
         normalized_weights = {}
-        weighted_smi = social_score
+        weighted_smi = social_score if social_score is not None else 50.0
 
     smi = max(0.0, min(100.0, round(weighted_smi, 1)))
 

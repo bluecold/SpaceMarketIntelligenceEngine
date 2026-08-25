@@ -122,3 +122,28 @@ def test_early_reversal_watch():
     rev = next(r for r in results if r.type == "EARLY_REVERSAL")
     assert rev.direction == "BULLISH"
     assert "Early Reversal" in rev.description
+
+
+def test_bearish_confirmation_critical_alert():
+    """Verify that multi-source BEARISH_CONFIRMATION yields CRITICAL severity alert in signal engine."""
+    from app.scoring.signal import generate_signal_and_explanation
+
+    res = generate_signal_and_explanation(
+        ticker="SPCE",
+        smi=25.0,
+        social_score=25.0,
+        prediction_score=20.0,
+        price_change_1d=-5.0,
+        indicators={"status": "AVAILABLE", "price": 1.1, "ema200": 2.5, "rsi14": 28.0, "volume_ratio": 1.8}
+    )
+
+    # 1. Base signal STRONG AVOID must generate CRITICAL alert
+    strong_avoid_alert = next((a for a in res["alerts"] if a["type"] == "STRONG_AVOID"), None)
+    assert strong_avoid_alert is not None
+    assert strong_avoid_alert["level"] == "CRITICAL"
+
+    # 2. BEARISH_CONFIRMATION must generate CRITICAL alert
+    bear_conf_alert = next((a for a in res["alerts"] if a["type"] == "BEARISH_CONFIRMATION"), None)
+    assert bear_conf_alert is not None
+    assert bear_conf_alert["level"] == "CRITICAL"
+

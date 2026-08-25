@@ -110,6 +110,7 @@ class Settings(BaseSettings):
     SOCIAL_LOOKBACK_HOURS: int = 24
     SOCIAL_MAX_POSTS_PER_TICKER: int = 100
     SOCIAL_MIN_RELEVANCE: float = 0.40
+    ENGAGEMENT_SCALE_DIVISOR: float = 10.0  # Scales log1p engagement: ln(1 + ~22,000) ≈ 10.0 maps high engagement to ~2.0x weight
     
     # Prediction Market (Polymarket) Settings
     POLYMARKET_ENABLED: bool = True

@@ -1,11 +1,15 @@
 from typing import List, Dict, Any
 from app.database.models import SocialPostModel
+from app.config import settings
+
+# Scales log1p engagement: ln(1 + ~22,000) ≈ 10.0 maps high-engagement posts to ~2.0x weight
+ENGAGEMENT_SCALE_DIVISOR = getattr(settings, "ENGAGEMENT_SCALE_DIVISOR", 10.0)
 
 
 def calculate_social_score(posts: List[SocialPostModel]) -> Dict[str, Any]:
     """
     Calculates Social Sentiment Score (0 - 100) and sentiment distribution.
-    Weight per post: relevance_score * recency_weight * (1 + engagement_score/10)
+    Weight per post: relevance_score * recency_weight * (1 + engagement_score / ENGAGEMENT_SCALE_DIVISOR)
     """
     if not posts:
         return {
@@ -44,7 +48,7 @@ def calculate_social_score(posts: List[SocialPostModel]) -> Dict[str, Any]:
     w_neu = 0.0
 
     for p in relevant_posts:
-        w = p.relevance_score * p.recency_weight * (1.0 + (p.engagement_score or 0.0) / 10.0)
+        w = p.relevance_score * p.recency_weight * (1.0 + (p.engagement_score or 0.0) / ENGAGEMENT_SCALE_DIVISOR)
         weight_total += w
         weighted_sentiment_sum += p.sentiment_score * w
 

@@ -11,11 +11,11 @@ SMIE sintetiza de forma desacoplada la **narrativa social (X/Twitter)**, las **p
 ## 📐 Métricas Clave
 
 - **`SMI` (Space Market Intelligence Index, 0–100):** Índice integral ponderado maestro con normalización adaptativa dinámica de pesos según disponibilidad y calidad de fuentes.
-- **`SSI` (Space Sentiment Index, 0–100):** Mide exclusivamente el sentimiento social puro de X/Twitter con engagement logarítmico, decaimiento temporal y detección de negación sintáctica.
+- **`SSI` (Space Sentiment Index, 0–100):** Mide exclusivamente el sentimiento social puro de X/Twitter con engagement logarítmico, decaimiento temporal, contracción bayesiana para muestras pequeñas ($N < 10$) y detección de negación sintáctica.
 - **`PMS` (Prediction Market Score, 0–100):** Probabilidad agregada de éxito de eventos espaciales implícita en Polymarket (con regla de exclusión si `quality_score < 30` y filtrado por matriz de impacto de eventos sectoriales).
 - **`Canonical Signals`:** Desacoplamiento estricto entre `base_signal` canónico (`STRONG BUY`, `BUY`, `WATCH`, `HOLD`, `AVOID`, `STRONG AVOID`) y `signal_modifier` (`OVEREXTENDED`, `NO MKT DATA`).
 - **`Market Score` (0–100):** Confirmación técnica del precio basada en EMA200, RSI(14) con suavizado Wilder RMA, Bollinger Bands, MACD y ratio de volumen.
-- **`Divergence Engine`:** Detecta desacoples estructurales (ej. *Bullish Divergence: Social/Polymarket Bullish vs. Price Bearish*, *Early Reversal* con $\Delta_{24\text{h}}$ dinámico).
+- **`Divergence Engine & Risk Hierarchy`:** Detecta desacoples estructurales (ej. *Bullish Divergence: Social/Polymarket Bullish vs. Price Bearish*, *Early Reversal* con $\Delta_{24\text{h}}$ dinámico) y alertas de severidad simétrica (`CRITICAL` para `STRONG BUY`, `STRONG AVOID` y `BEARISH_CONFIRMATION`).
 
 ---
 
@@ -63,7 +63,7 @@ Abre tu navegador en: **`http://localhost:8000`**
   ```bash
   python -m app.cli calculate-divergences
   ```
-- **Ejecutar suite de tests automatizados (53 tests unitarios):**
+- **Ejecutar suite de tests automatizados (58 tests unitarios):**
   ```bash
   python -m pytest tests/ -v
   ```

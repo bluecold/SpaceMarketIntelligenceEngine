@@ -88,12 +88,24 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                     "level": "CRITICAL",
                     "message": f"🚀 {symbol} issued a STRONG BUY signal (SMI: {smi_val:.0f}/100)"
                 })
+            elif "STRONG AVOID" in ssi_snap.signal:
+                alerts.append({
+                    "ticker": symbol,
+                    "type": "STRONG_AVOID",
+                    "level": "CRITICAL",
+                    "message": f"🛑 {symbol} issued a STRONG AVOID signal (SMI: {smi_val:.0f}/100) — high capital risk"
+                })
             
             for d in divs:
+                d_level = (
+                    "CRITICAL" if "BEARISH_CONFIRMATION" in d.type
+                    else "HIGH" if ("CONFIRMATION" in d.type or "DIVERGENCE" in d.type)
+                    else "MEDIUM"
+                )
                 alerts.append({
                     "ticker": symbol,
                     "type": d.type,
-                    "level": "HIGH",
+                    "level": d_level,
                     "message": f"⚠️ {symbol}: {d.description}"
                 })
 

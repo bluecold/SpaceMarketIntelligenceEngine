@@ -60,12 +60,14 @@ def generate_signal_and_explanation(
 
     signal_modifier = None
 
-    # Special Rule: Overbought restriction (RSI > 75 restricts STRONG BUY to WATCH with modifier)
+    # Special Rule: Overbought restriction (RSI > 75 restricts STRONG BUY to WATCH, warns on BUY)
     is_overbought = False
     if rsi is not None and rsi > 75.0:
         is_overbought = True
         if base_signal == "STRONG BUY":
             base_signal = "WATCH"
+            signal_modifier = "OVEREXTENDED"
+        elif base_signal == "BUY":
             signal_modifier = "OVEREXTENDED"
 
     if market_status != "AVAILABLE":
@@ -100,6 +102,13 @@ def generate_signal_and_explanation(
             "level": "CRITICAL",
             "message": f"🚀 {ticker} reached STRONG BUY signal (SMI: {primary_index}/100)"
         })
+    elif base_signal == "STRONG AVOID":
+        alerts.append({
+            "ticker": ticker,
+            "type": "STRONG_AVOID",
+            "level": "CRITICAL",
+            "message": f"🛑 {ticker} issued STRONG AVOID signal (SMI: {primary_index}/100) — high capital risk"
+        })
     elif base_signal == "BUY" and effective_mom >= 3.0:
         alerts.append({
             "ticker": ticker,
@@ -109,21 +118,31 @@ def generate_signal_and_explanation(
         })
 
     for div in active_divergences:
+        div_level = (
+            "CRITICAL" if "BEARISH_CONFIRMATION" in div.type
+            else "HIGH" if ("CONFIRMATION" in div.type or "DIVERGENCE" in div.type)
+            else "MEDIUM"
+        )
         alerts.append({
             "ticker": ticker,
             "type": div.type,
-            "level": "HIGH" if "CONFIRMATION" in div.type or "DIVERGENCE" in div.type else "MEDIUM",
+            "level": div_level,
             "message": f"⚠️ {ticker}: {div.description}"
         })
 
+    seen_cat_alerts: Set[str] = set()
     for cat in catalysts_found:
         if cat.get("importance") == "CRITICAL":
-            alerts.append({
-                "ticker": ticker,
-                "type": "CRITICAL_CATALYST",
-                "level": "CRITICAL",
-                "message": f"⚡ Critical Catalyst detected on {ticker}: {cat.get('category')}"
-            })
+            cat_key = str(cat.get("category", "")).upper()
+            if cat_key and cat_key not in seen_cat_alerts:
+                seen_cat_alerts.add(cat_key)
+                cat_name = cat_key.replace("_", " ").title()
+                alerts.append({
+                    "ticker": ticker,
+                    "type": "CRITICAL_CATALYST",
+                    "level": "CRITICAL",
+                    "message": f"⚡ Critical Catalyst detected on {ticker}: {cat_name}"
+                })
 
     # 4. Build Detailed Multi-Source "WHY?" Reasons (Explanations)
     reasons = []
@@ -136,10 +155,14 @@ def generate_signal_and_explanation(
     elif bear_pct >= 40.0:
         reasons.append(f"- Elevated social bearish sentiment: {bear_pct}% of relevant posts are bearish")
 
-    if effective_mom > 2.0:
-        reasons.append(f"+ Momentum rising strongly (+{effective_mom} in 24h)")
-    elif effective_mom < -2.0:
-        reasons.append(f"- Momentum deteriorating ({effective_mom} in 24h)")
+    if effective_mom >= 8.0:
+        reasons.append(f"+ Rapid SMI acceleration (+{effective_mom:.1f} pts in 24h): strong momentum expansion")
+    elif effective_mom >= 4.0:
+        reasons.append(f"+ SMI momentum rising (+{effective_mom:.1f} pts in 24h)")
+    elif effective_mom <= -8.0:
+        reasons.append(f"- Severe SMI breakdown ({effective_mom:.1f} pts in 24h): rapid sentiment drop")
+    elif effective_mom <= -4.0:
+        reasons.append(f"- SMI momentum deteriorating ({effective_mom:.1f} pts in 24h)")
 
     # Prediction Market reasons
     if prediction_score is not None:

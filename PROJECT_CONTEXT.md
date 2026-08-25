@@ -95,12 +95,17 @@ El sistema está construido como un **Monolito Modular** en Python 3.11+ con int
 
 ### B. Fórmulas Matemáticas Clave
 
-#### 1. Ponderación Social SSI:
+#### 1. Ponderación Social SSI & Bayesian Credibility Shrinkage:
 - **Engagement Logarítmico:**
   $$\text{Engagement} = \ln\left(1 + \text{likes} + 2\cdot\text{reposts} + 1.5\cdot\text{replies} + \frac{\text{views}}{1000}\right)$$
+  Multiplicador de peso parametrizado por `ENGAGEMENT_SCALE_DIVISOR = 10.0` ($\ln(1+22\,000) \approx 10.0$):
+  $$w_i = \text{relevance} \cdot \text{recency} \cdot \left(1.0 + \frac{\text{engagement}}{10.0}\right)$$
 - **Decaimiento Temporal Exponencial:**
   $$\text{Weight}_{\text{recency}} = e^{-\lambda \cdot \text{age\_hours}}, \quad \lambda = \frac{\ln(2)}{12.0\text{h}}$$
 - **Score Social:** $\text{SSI} = 50 + 50 \cdot \text{Weighted\_Sentiment} \in [0, 100]$.
+- **Contracción Bayesiana de Credibilidad (*Empirical Bayes Shrinkage*):** Ante muestras reducidas ($N < 10$ posts), el score social efectivo se contrae suavemente hacia el prior neutro ($\mu_0 = 50.0$) para evitar sobre-reacción por ruido muestral:
+  $$\text{effective\_social} = 50.0 + (\text{social\_score} - 50.0) \times \min\left(1.0, \frac{\text{post\_count}}{10.0}\right)$$
+- **Exclusión Adaptativa sin Falsa Neutralidad:** Si $N = 0$ posts (ej. rate limit de X), el pilar social se excluye ($w_{\text{social}} = 0$) y su $30\%$ de peso se redistribuye entre las demás fuentes activas.
 
 #### 2. Polymarket Market Quality Scorer (0 a 100):
 Calcula la confiabilidad del contrato para evitar manipulación en mercados ilíquidos:
@@ -122,12 +127,13 @@ $$w_i^{\text{active}} = \frac{w_i}{\sum_{j \in \text{active}} w_j}$$
 
 El sistema nunca promedia a ciegas señales contradictorias:
 
-| Tipo de Divergencia | Condición Cuantitativa | Implicación de Mercado |
-| :--- | :--- | :--- |
-| **`BULLISH_DIVERGENCE`** | $\text{SSI} \ge 70$ y $\text{PMS} \ge 60$, pero $\text{Price} < \text{EMA200}$ o Retorno $< -5\%$ | Oportunidad de compra por desacople / infravaloración temporal. |
-| **`BEARISH_DIVERGENCE`** | Precio en máximos / extendido, pero $\text{SSI} \le 40$ o $\text{PMS} \le 40$ | Alerta de trampa alcista; alto riesgo de corrección. |
-| **`EARLY_REVERSAL`** | $\Delta\text{PMS}_{24\text{h}} \ge +15\%$ mientras el precio y redes siguen neutros/bajistas | Giro temprano liderado por apostadores informados en Polymarket. |
-| **`CONFIRMATION`** | Todas las fuentes activas en la misma dirección ($\text{Agreement} \ge 0.70$) | Confirmación estructural; máxima certeza en la señal. |
+| Tipo de Divergencia | Condición Cuantitativa | Implicación de Mercado | Severidad de Alerta |
+| :--- | :--- | :--- | :---: |
+| **`BULLISH_DIVERGENCE`** | $\text{SSI} \ge 70$ y $\text{PMS} \ge 60$, pero $\text{Price} < \text{EMA200}$ o Retorno $< -5\%$ | Oportunidad de compra por desacople / infravaloración temporal. | **`HIGH`** |
+| **`BEARISH_DIVERGENCE`** | Precio en máximos / extendido, pero $\text{SSI} \le 40$ o $\text{PMS} \le 40$ | Alerta de trampa alcista; alto riesgo de corrección. | **`HIGH`** |
+| **`BEARISH_CONFIRMATION`**| Todas las fuentes alineadas a la baja + alto volumen de venta | Confirmación multilateral bajista; liquidación institucional. | **`CRITICAL`** |
+| **`EARLY_REVERSAL`** | $\Delta\text{PMS}_{24\text{h}} \ge +15\%$ mientras el precio y redes siguen neutros/bajistas | Giro temprano liderado por apostadores informados en Polymarket. | **`HIGH`** |
+| **`BULLISH_CONFIRMATION`**| Todas las fuentes activas en la misma dirección ($\text{Agreement} \ge 0.70$) | Confirmación estructural; máxima certeza en la señal alcista. | **`HIGH`** |
 
 ---
 
@@ -136,17 +142,23 @@ El sistema nunca promedia a ciegas señales contradictorias:
 - **Estructura Desacoplada:**
   - `base_signal`: Enum canónico puro (`STRONG BUY`, `BUY`, `WATCH`, `HOLD`, `AVOID`, `STRONG AVOID`).
   - `signal_modifier`: Modificador cualitativo opcional (`OVEREXTENDED`, `NO MKT DATA`, `None`).
-  - `signal`: String compuesto formateado para presentación visual (ej. `"WATCH (OVEREXTENDED)"`, `"STRONG BUY (NO MKT DATA)"`).
-- **Umbrales del SMI:**
-  - **`80–100`**: **STRONG BUY** *(restringido automáticamente a `base_signal: WATCH` con `signal_modifier: OVEREXTENDED` si RSI > 75 por sobreextensión técnica)*.
-  - **`70–79`**: **BUY**
-  - **`60–69`**: **WATCH**
-  - **`45–59`**: **HOLD**
-  - **`35–44`**: **AVOID**
-  - **`0–34`**: **STRONG AVOID**
-- **NLP Heurístico con Detección de Negación e Idiomas Afirmativos:**
-  - Control sintáctico de tokens (0-2 palabras de ventana).
-  - Reconocimiento de modismos de certeza (`"no doubt"`, `"without doubt"`, `"no question"`) y barreras infranqueables de puntuación (`,`, `.`, `;`, `!`, `?`).
+  - `signal`: String compuesto formateado para presentación visual (ej. `"WATCH (OVEREXTENDED)"`, `"BUY (OVEREXTENDED)"`, `"STRONG BUY (NO MKT DATA)"`).
+- **Umbrales del SMI y Gestión de Sobrecompra:**
+  - **`85–100`**: **STRONG BUY** *(restringido preventivamente a `base_signal: WATCH` con `signal_modifier: OVEREXTENDED` si RSI > 75 por sobreextensión técnica)*.
+  - **`75–84`**: **BUY** *(mantiene `base_signal: BUY` pero adjunta `signal_modifier: OVEREXTENDED` si RSI > 75)*.
+  - **`65–74`**: **WATCH**
+  - **`50–64`**: **HOLD**
+  - **`35–49`**: **AVOID**
+  - **`0–34`**: **STRONG AVOID** *(emite alerta `CRITICAL` para preservación de capital)*.
+- **Motor "WHY?" con Jerarquía de Momentum Graduado:**
+  - $\Delta \ge +8.0\text{ pts}$: `+ Rapid SMI acceleration (+X.X pts in 24h): strong momentum expansion`
+  - $\Delta \ge +4.0\text{ pts}$: `+ SMI momentum rising (+X.X pts in 24h)`
+  - $\Delta \le -8.0\text{ pts}$: `- Severe SMI breakdown (X.X pts in 24h): rapid sentiment drop`
+  - $\Delta \le -4.0\text{ pts}$: `- SMI momentum deteriorating (X.X pts in 24h)`
+  - Micro-ruido ($|\Delta| < 4.0$) se ignora para no contaminar el reporte.
+- **Deduplicación Semántica de Alertas:**
+  - Alertas de catalizadores críticos (`CRITICAL_CATALYST`) se deduplican por categoría.
+  - El panel de notificaciones del cliente web ([`AlertsManager.tsx`](frontend/src/components/AlertsManager.tsx)) usa un registro de claves para prevenir re-notificaciones en los ciclos periódicos de polling.
 
 ---
 
@@ -195,6 +207,7 @@ Módulo [`app/backtesting/engine.py`](file:///d:/Mis%20Cosas/test/Space%20Sentim
 - **Dashboard Principal:** Tabla terminal interactiva estilo Bloomberg y vista alternativa en tarjetas con badges de frescura/obsolescencia de datos.
 - **Detalle de Ticker:** Modal con medidores `SMI`, `SSI` y `PMS`, pestañas para **Prediction Markets** (filtrados por relevancia semántica), **X Social Feed**, **Noticias** y **Divergencias**.
 - **Gráfico Multi-Serie Interactivo SVG:** Toggles interactivos para encender/apagar curvas individuales (Price, SMI, SSI, PMS) y tooltip sincronizado.
+- **Alertas y Notificaciones de Escritorio:** Deduplicación estricta para notificar novedades una sola vez por evento.
 - **Modal de Inducción y Manual de Uso (`AboutModal.tsx`):** Accesible al hacer clic en el logo del cohete (`🚀`) o en el botón *"Manual de Uso"*.
 
 ---
@@ -211,8 +224,8 @@ Módulo [`app/backtesting/engine.py`](file:///d:/Mis%20Cosas/test/Space%20Sentim
 
 ## 8. 🛡️ Suite de Pruebas Automatizadas
 
-El proyecto cuenta con **53 tests unitarios automatizados** que validan la matemática, algoritmos y estabilidad:
+El proyecto cuenta con **58 tests unitarios automatizados** que validan la matemática, algoritmos y estabilidad:
 ```powershell
 python -m pytest tests/ -v
 ```
-*(Resultados: 53 passed en 1.50s, 0 warnings).*
+*(Resultados: 58 passed en 1.50s, 0 warnings).*
