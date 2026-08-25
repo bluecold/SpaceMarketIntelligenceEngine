@@ -128,7 +128,7 @@ export const Header: React.FC<HeaderProps> = ({
 
         {lastUpdate && (
           <span className="last-update-tag">
-            Updated: {new Date(lastUpdate).toLocaleTimeString()}
+            Updated: {new Date(lastUpdate).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
           </span>
         )}
 

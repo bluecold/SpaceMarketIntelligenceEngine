@@ -276,7 +276,7 @@ export const HistoryChart: React.FC<HistoryChartProps> = ({ data }) => {
           }}
         >
           <div style={{ color: 'var(--text-muted)', marginBottom: '4px', fontSize: '0.7rem' }}>
-            {new Date(hoveredPoint.timestamp).toLocaleString()}
+            {new Date(hoveredPoint.timestamp).toLocaleString([], { hour12: false })}
           </div>
           <div style={{ color: '#a855f7', fontWeight: 700 }}>
             SMI (Integral): {(hoveredPoint.smi ?? hoveredPoint.ssi).toFixed(1)}/100
