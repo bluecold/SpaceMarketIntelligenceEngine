@@ -17,9 +17,9 @@ def utc_now() -> datetime:
 
 
 def ensure_tickers_seeded(db: Session):
-    """Seed initial universe of aerospace stocks if table is empty."""
-    count = db.query(TickerModel).count()
-    if count == 0:
+    """Seed initial universe of aerospace stocks if table is empty or update metadata."""
+    existing_tickers = {t.symbol: t for t in db.query(TickerModel).all()}
+    if not existing_tickers:
         for t in INITIAL_TICKERS:
             ticker_record = TickerModel(
                 symbol=t.symbol,
@@ -30,6 +30,24 @@ def ensure_tickers_seeded(db: Session):
             )
             db.add(ticker_record)
         db.commit()
+    else:
+        # Backfill metadata (sector, is_private_or_test) for existing records
+        cfg_map = {t.symbol: t for t in INITIAL_TICKERS}
+        updated = False
+        for symbol, t_rec in existing_tickers.items():
+            if symbol in cfg_map:
+                cfg = cfg_map[symbol]
+                if not t_rec.sector or t_rec.sector == "Space Technology":
+                    t_rec.sector = cfg.sector
+                    updated = True
+                if t_rec.is_private_or_test is None:
+                    t_rec.is_private_or_test = cfg.is_private_or_test
+                    updated = True
+                if not t_rec.name and cfg.name:
+                    t_rec.name = cfg.name
+                    updated = True
+        if updated:
+            db.commit()
 
 
 def save_social_posts(db: Session, posts_data: List[Dict[str, Any]]) -> int:

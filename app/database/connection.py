@@ -54,18 +54,31 @@ def init_db():
     # SQLite column auto-migrations for backward compatibility
     with engine.connect() as conn:
         columns_to_check = [
+            ("tickers", "sector", "VARCHAR(100) DEFAULT 'Space Technology'"),
+            ("tickers", "is_private_or_test", "BOOLEAN DEFAULT 0"),
+            ("social_posts", "catalyst", "VARCHAR(50)"),
+            ("social_posts", "catalyst_direction", "VARCHAR(20)"),
             ("social_posts", "catalyst_importance", "VARCHAR(20) DEFAULT 'MEDIUM'"),
+            ("news_items", "catalyst", "VARCHAR(50)"),
+            ("news_items", "catalyst_direction", "VARCHAR(20)"),
+            ("news_items", "catalyst_importance", "VARCHAR(20) DEFAULT 'MEDIUM'"),
+            ("prediction_markets", "event_key", "VARCHAR(100)"),
+            ("prediction_markets", "url", "VARCHAR(500)"),
+            ("market_snapshots", "technical_score", "FLOAT"),
+            ("market_snapshots", "atr", "FLOAT"),
+            ("market_snapshots", "volume_ratio", "FLOAT"),
+            ("market_snapshots", "volume_ma20", "FLOAT"),
             ("ssi_snapshots", "news_score", "FLOAT"),
             ("ssi_snapshots", "momentum_score", "FLOAT"),
             ("ssi_snapshots", "risk_score", "FLOAT"),
             ("ssi_snapshots", "prediction_score", "FLOAT"),
             ("ssi_snapshots", "fundamental_score", "FLOAT"),
+            ("ssi_snapshots", "technical_score", "FLOAT"),
             ("ssi_snapshots", "smi", "FLOAT"),
             ("ssi_snapshots", "base_signal", "VARCHAR(30)"),
             ("ssi_snapshots", "signal_modifier", "VARCHAR(50)"),
             ("ssi_snapshots", "data_quality", "FLOAT DEFAULT 100.0"),
             ("ssi_snapshots", "volume", "FLOAT"),
-            ("prediction_markets", "event_key", "VARCHAR(100)"),
         ]
         for table, col, col_type in columns_to_check:
             try:
