@@ -29,15 +29,24 @@ class HeuristicSentimentClassifier(BaseSentimentClassifier):
     BULLISH_KEYWORDS = [
         "bull", "bullish", "moon", "rocket", "buy", "buying", "long", "call", "calls",
         "milestone", "launch", "contract", "revenue", "growth", "breakout", "deployment",
-        "fcc", "nasa", "partner", "partnership", "success", "upgrade", "record", "high",
+        "fcc", "nasa", "partner", "partnership", "success", "upgrade", "record",
+        "all-time high", "all time high", "ath", "record high", "52-week high",
         "gamechanger", "expansion", "profit", "profitable", "satellite"
     ]
     
     BEARISH_KEYWORDS = [
-        "bear", "bearish", "short", "shorts", "sell", "selling", "put", "puts", "dilution",
+        "bear", "bearish", "short", "shorts", "short interest", "sell", "selling", "put", "puts", "dilution",
         "capital raise", "offering", "downgrade", "delay", "delayed", "failure", "fail",
         "burn", "cash burn", "drop", "dropped", "loss", "losses", "risk", "bankruptcy",
         "lawsuit", "investigation", "stretched", "overvalued"
+    ]
+
+    HIGH_PRICE_EXPRESSIONS = [
+        "all-time high", "all time high", "ath", "record high", "52-week high"
+    ]
+
+    NEGATIVE_METRIC_TARGETS = [
+        "short", "shorts", "short interest", "loss", "losses", "debt", "risk", "burn", "cash burn", "dilution"
     ]
 
     NEGATION_WORDS = [
@@ -84,9 +93,25 @@ class HeuristicSentimentClassifier(BaseSentimentClassifier):
         bull_hits = 0
         bear_hits = 0
 
-        # Evaluate Bullish keywords with negation inversion
+        # Evaluate Bullish keywords with negation inversion and context disambiguation
         for kw in self.BULLISH_KEYWORDS:
             if re.search(r'\b' + re.escape(kw) + r'\b', clean_text):
+                # Disambiguation: if 'all-time high' is modifying a negative metric (e.g. 'short interest reaches all-time high')
+                if kw in self.HIGH_PRICE_EXPRESSIONS:
+                    neg_pattern = (
+                        r'\b(?:' + '|'.join(re.escape(t) for t in self.NEGATIVE_METRIC_TARGETS) + r')\b'
+                        r'(?:\s+[a-z0-9\'-]+){0,3}\s+'
+                        r'\b' + re.escape(kw) + r'\b'
+                    )
+                    neg_pattern_rev = (
+                        r'\b' + re.escape(kw) + r'\b'
+                        r'(?:\s+(?:in|of))?\s+'
+                        r'\b(?:' + '|'.join(re.escape(t) for t in self.NEGATIVE_METRIC_TARGETS) + r')\b'
+                    )
+                    if re.search(neg_pattern, clean_text) or re.search(neg_pattern_rev, clean_text):
+                        bear_hits += 1
+                        continue
+
                 if self._is_negated(kw, clean_text):
                     bear_hits += 1  # Negated bullish = Bearish
                 else:

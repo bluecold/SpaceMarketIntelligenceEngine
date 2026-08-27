@@ -58,10 +58,20 @@ def calculate_technical_score(indicators: Dict[str, Any]) -> Optional[float]:
     if macd_hist is not None:
         if macd_hist > 0:
             total_score += 5.0
-        elif abs(macd_hist) <= 0.05:
-            total_score += 2.0
         else:
-            total_score += 0.0
+            # Price / Volatility normalized near-zero consolidation threshold
+            atr = indicators.get("atr")
+            if atr is not None and atr > 0:
+                is_near_zero = (abs(macd_hist) / atr) <= 0.08
+            elif price > 0:
+                is_near_zero = (abs(macd_hist) / price) <= 0.002  # <= 0.20% of price
+            else:
+                is_near_zero = abs(macd_hist) <= 0.05
+
+            if is_near_zero:
+                total_score += 2.0
+            else:
+                total_score += 0.0
 
     # 5. Volume Ratio (Max 5 points)
     if vol_ratio is not None:

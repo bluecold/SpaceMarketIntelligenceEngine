@@ -25,9 +25,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ rankings, onSelectTicker }
     return 'var(--bearish-red)';
   };
 
-  const topBullish = rankings.find(r => r.signal.includes('BUY')) || rankings[0];
-  const avgSmi = rankings.length > 0
-    ? (rankings.reduce((acc, r) => acc + (r.smi || r.ssi || 50), 0) / rankings.length).toFixed(1)
+  const topBullish = rankings.find(r => r.signal && r.signal.includes('BUY')) || (rankings.find(r => r.smi !== null) || rankings[0]);
+  const validSmis = rankings.filter(r => r.smi !== null && r.smi !== undefined).map(r => r.smi as number);
+  const avgSmi = validSmis.length > 0
+    ? (validSmis.reduce((acc, val) => acc + val, 0) / validSmis.length).toFixed(1)
     : '--';
 
   return (
@@ -40,7 +41,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ rankings, onSelectTicker }
             {topBullish?.ticker || '--'}
           </div>
           <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-            SMI: {topBullish?.smi || '--'} | Signal: {topBullish?.signal || '--'}
+            SMI: {topBullish?.smi !== null && topBullish?.smi !== undefined ? topBullish.smi.toFixed(1) : '--'} | Signal: {topBullish?.signal || '--'}
           </div>
         </div>
 
@@ -57,7 +58,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ rankings, onSelectTicker }
         <div className="summary-card">
           <div className="summary-label">Average Sector SMI</div>
           <div className="summary-value" style={{ color: '#fff' }}>
-            {avgSmi} / 100
+            {avgSmi !== '--' ? `${avgSmi} / 100` : '--'}
           </div>
           <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>
             Multi-Source: Social 30% | Prediction 15% | News 20% | Market 20%
@@ -105,6 +106,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ rankings, onSelectTicker }
                 <th style={{ padding: '12px 12px', textAlign: 'center' }}>SSI (SOCIAL)</th>
                 <th style={{ padding: '12px 12px', textAlign: 'center' }}>PMS (POLYMARKET)</th>
                 <th style={{ padding: '12px 12px', textAlign: 'center' }}>MARKET SCORE</th>
+                <th style={{ padding: '12px 12px', textAlign: 'center' }}>RISK / SAFETY</th>
                 <th style={{ padding: '12px 12px', textAlign: 'center' }}>SIGNAL</th>
                 <th style={{ padding: '12px 12px', textAlign: 'center' }}>CONFIDENCE</th>
                 <th style={{ padding: '12px 12px', textAlign: 'center' }}>REGIME / DIVERGENCE</th>
@@ -113,7 +115,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ rankings, onSelectTicker }
             </thead>
             <tbody>
               {rankings.map((stock) => {
-                const smi = stock.smi !== undefined ? stock.smi : stock.ssi;
+                const smi = stock.smi ?? stock.ssi;
                 return (
                   <tr
                     key={stock.ticker}
@@ -148,14 +150,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ rankings, onSelectTicker }
                     {/* SMI Score */}
                     <td style={{ padding: '12px 12px', textAlign: 'center' }}>
                       <span className="smi-badge" style={{ color: getScoreColor(smi), fontWeight: 800, fontSize: '1.05rem' }}>
-                        {smi.toFixed(1)}
+                        {smi !== null && smi !== undefined ? smi.toFixed(1) : '—'}
                       </span>
                     </td>
 
                     {/* SSI (Social Score) */}
                     <td style={{ padding: '12px 12px', textAlign: 'center' }}>
                       <span style={{ color: getScoreColor(stock.ssi), fontWeight: 700 }}>
-                        {stock.ssi ? stock.ssi.toFixed(1) : '--'}
+                        {stock.ssi !== null && stock.ssi !== undefined ? stock.ssi.toFixed(1) : '—'}
                       </span>
                     </td>
 
@@ -181,6 +183,20 @@ export const Dashboard: React.FC<DashboardProps> = ({ rankings, onSelectTicker }
                       )}
                     </td>
 
+                    {/* Risk / Safety Score */}
+                    <td style={{ padding: '12px 12px', textAlign: 'center' }}>
+                      {stock.risk_score !== null && stock.risk_score !== undefined ? (
+                        <span style={{
+                          color: stock.risk_score >= 60 ? 'var(--bullish-green)' : stock.risk_score <= 35 ? 'var(--bearish-red)' : 'var(--neutral-yellow)',
+                          fontWeight: 600
+                        }}>
+                          {stock.risk_score.toFixed(0)}/100
+                        </span>
+                      ) : (
+                        <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>--</span>
+                      )}
+                    </td>
+
                     {/* Signal */}
                     <td style={{ padding: '12px 12px', textAlign: 'center' }}>
                       <span className={`signal-pill ${getSignalClass(stock.signal)}`}>
@@ -198,18 +214,19 @@ export const Dashboard: React.FC<DashboardProps> = ({ rankings, onSelectTicker }
                       </div>
                     </td>
 
-                    {/* Divergence */}
+                    {/* Regime / Divergence */}
                     <td style={{ padding: '12px 12px', textAlign: 'center' }}>
                       {stock.divergence && stock.divergence !== 'NONE' ? (
                         <span
                           style={{
-                            fontSize: '0.72rem',
-                            fontWeight: 700,
-                            color: stock.divergence.includes('BULLISH') ? 'var(--bullish-green)' : (stock.divergence.includes('BEARISH') ? 'var(--bearish-red)' : 'var(--accent-cyan)'),
-                            background: stock.divergence.includes('BULLISH') ? 'var(--bullish-bg)' : (stock.divergence.includes('BEARISH') ? 'var(--bearish-bg)' : 'rgba(0, 229, 255, 0.1)'),
+                            display: 'inline-block',
                             padding: '3px 8px',
                             borderRadius: '4px',
-                            display: 'inline-block'
+                            fontSize: '0.72rem',
+                            fontWeight: 700,
+                            background: stock.divergence.includes('BULLISH') ? 'var(--bullish-bg)' : 'var(--bearish-bg)',
+                            color: stock.divergence.includes('BULLISH') ? 'var(--bullish-green)' : 'var(--bearish-red)',
+                            border: `1px solid ${stock.divergence.includes('BULLISH') ? 'rgba(0, 230, 118, 0.3)' : 'rgba(255, 23, 68, 0.3)'}`
                           }}
                         >
                           {stock.divergence.split(':')[0]}
@@ -235,7 +252,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ rankings, onSelectTicker }
         /* 2. Cards Grid View */
         <div className="stock-grid">
           {rankings.map((stock) => {
-            const smi = stock.smi !== undefined ? stock.smi : stock.ssi;
+            const smi = stock.smi ?? stock.ssi;
             return (
               <div
                 key={stock.ticker}
@@ -268,7 +285,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ rankings, onSelectTicker }
                   <div style={{ textAlign: 'right' }}>
                     <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>SMI INDEX</div>
                     <div className="ssi-score-badge" style={{ color: getScoreColor(smi) }}>
-                      {smi.toFixed(1)}
+                      {smi !== null && smi !== undefined ? smi.toFixed(1) : '—'}
                     </div>
                   </div>
                 </div>
@@ -283,14 +300,20 @@ export const Dashboard: React.FC<DashboardProps> = ({ rankings, onSelectTicker }
                 </div>
 
                 {/* Sub-scores preview */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', marginTop: '10px', padding: '8px', background: 'rgba(0,0,0,0.2)', borderRadius: '6px', fontSize: '0.75rem' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px', marginTop: '10px', padding: '8px', background: 'rgba(0,0,0,0.2)', borderRadius: '6px', fontSize: '0.72rem' }}>
                   <div>
-                    <span style={{ color: 'var(--text-muted)' }}>Social: </span>
-                    <b style={{ color: getScoreColor(stock.ssi) }}>{stock.ssi?.toFixed(0)}</b>
+                    <span style={{ color: 'var(--text-muted)' }}>SSI: </span>
+                    <b style={{ color: getScoreColor(stock.ssi) }}>{stock.ssi !== null && stock.ssi !== undefined ? stock.ssi.toFixed(0) : '—'}</b>
                   </div>
                   <div>
-                    <span style={{ color: 'var(--text-muted)' }}>Poly: </span>
-                    <b style={{ color: getScoreColor(stock.pms) }}>{stock.pms !== null && stock.pms !== undefined ? stock.pms.toFixed(0) : '--'}</b>
+                    <span style={{ color: 'var(--text-muted)' }}>PMS: </span>
+                    <b style={{ color: getScoreColor(stock.pms) }}>{stock.pms !== null && stock.pms !== undefined ? stock.pms.toFixed(0) : '—'}</b>
+                  </div>
+                  <div>
+                    <span style={{ color: 'var(--text-muted)' }}>Risk: </span>
+                    <b style={{ color: stock.risk_score !== null && stock.risk_score !== undefined ? (stock.risk_score >= 60 ? 'var(--bullish-green)' : stock.risk_score <= 35 ? 'var(--bearish-red)' : 'var(--neutral-yellow)') : 'var(--text-muted)' }}>
+                      {stock.risk_score !== null && stock.risk_score !== undefined ? stock.risk_score.toFixed(0) : '—'}
+                    </b>
                   </div>
                   <div>
                     <span style={{ color: 'var(--text-muted)' }}>Price: </span>

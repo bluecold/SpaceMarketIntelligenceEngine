@@ -219,6 +219,10 @@ class SSISnapshotModel(Base):
     data_completeness = Column(Float, nullable=False) # 0 to 100 %
     data_quality = Column(Float, default=100.0)       # 0 to 100 %
     
+    post_count = Column(Integer, nullable=True)       # Social post sample count
+    news_count = Column(Integer, nullable=True)       # News articles count
+    prediction_count = Column(Integer, nullable=True) # Prediction markets count
+    
     price = Column(Float, nullable=True)
     volume = Column(Float, nullable=True)
     explanation = Column(Text, nullable=True)

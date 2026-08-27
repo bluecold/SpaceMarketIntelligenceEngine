@@ -13,12 +13,12 @@ export interface AlertItem {
 export interface RankingItem {
   ticker: string;
   name: string;
-  smi: number;                // Space Market Intelligence Index (0-100)
-  ssi: number;                // Space Sentiment Index (Social 0-100)
+  smi: number | null;                // Space Market Intelligence Index (0-100)
+  ssi: number | null;                // Space Sentiment Index (Social 0-100)
   pms: number | null;         // Prediction Market Score (0-100)
   market_score: number | null;// Technical Market Score (0-100)
-  delta_1d: number;
-  social_score: number;
+  delta_1d: number | null;
+  social_score: number | null;
   prediction_score: number | null;
   news_score: number | null;
   momentum_score: number | null;
@@ -31,6 +31,9 @@ export interface RankingItem {
   confidence: number;         // 0-100%
   data_quality: number;       // 0-100%
   data_completeness: number;
+  post_count?: number | null;
+  news_count?: number | null;
+  prediction_count?: number | null;
   price: number | null;
   market_status: string;
   timestamp: string | null;
@@ -89,6 +92,11 @@ export interface PredictionMarketItem {
   spread: number;
   quality_score: number;     // 0 - 100
   url: string | null;
+  ticker?: string | null;
+  is_direct?: boolean;
+  event_role?: 'DIRECT' | 'SECTOR_CATALYST';
+  impact_weight?: number | null;
+  event_key?: string | null;
 }
 
 export interface DivergenceItem {
@@ -152,6 +160,11 @@ export interface TickerDetailResponse {
     scaled_technical: number | null;
     risk_score: number | null;
     fundamental_score: number | null;
+  };
+  sample_counts?: {
+    post_count: number;
+    news_count: number;
+    prediction_count: number;
   };
   social_stats: {
     total_posts: number;

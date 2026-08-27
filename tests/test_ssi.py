@@ -177,3 +177,55 @@ def test_get_historical_ssi_snapshot_momentum_isolation():
         db.close()
 
 
+def test_ssi_snapshot_persists_post_news_prediction_counts():
+    """Verify that SSISnapshotModel and repository accurately persist post_count, news_count, and prediction_count."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.database.models import Base
+    from app.database.repository import save_ssi_snapshot, get_latest_ssi_snapshot
+    from app.scoring.smi import calculate_smi
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+
+    try:
+        data = {
+            "ticker": "ASTS",
+            "social_score": 85.0,
+            "prediction_score": 75.0,
+            "news_score": 80.0,
+            "ssi": 85.0,
+            "smi": 82.0,
+            "signal": "STRONG BUY",
+            "confidence": 90.0,
+            "data_completeness": 100.0,
+            "post_count": 42,
+            "news_count": 7,
+            "prediction_count": 3
+        }
+        saved = save_ssi_snapshot(db, data)
+        assert saved.post_count == 42
+        assert saved.news_count == 7
+        assert saved.prediction_count == 3
+
+        latest = get_latest_ssi_snapshot(db, "ASTS")
+        assert latest is not None
+        assert latest.post_count == 42
+        assert latest.news_count == 7
+        assert latest.prediction_count == 3
+
+        # Test calculate_smi excludes prediction when prediction_count=0
+        smi_zero_pred = calculate_smi(
+            social_score=80.0,
+            prediction_score=90.0,
+            prediction_count=0
+        )
+        # Prediction score was 90.0, but prediction_count=0 strictly excludes it, so SMI remains 80.0 (social only)
+        assert smi_zero_pred["smi"] == 80.0
+    finally:
+        db.close()
+
+
+

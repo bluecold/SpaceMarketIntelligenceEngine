@@ -348,4 +348,73 @@ def test_get_recent_prediction_markets_event_key_filtering():
         db.close()
 
 
+def test_gamma_provider_ticker_and_event_resolution():
+    """
+    Verify that PolymarketGammaProvider._parse_gamma_market resolves tickers and event_keys
+    directly from title/slug/description when ticker is NOT passed (as in production runner).
+    """
+    from app.collectors.polymarket_provider import PolymarketGammaProvider
+
+    provider = PolymarketGammaProvider()
+
+    # 1. AST SpaceMobile direct market (ticker should be ASTS, event_key None)
+    event_1 = {"id": "ev-1", "title": "Space Comms", "slug": "asts-commercial-broadband"}
+    market_1 = {
+        "id": "m-1",
+        "question": "Will AST SpaceMobile launch commercial service before Q4 2026?",
+        "description": "Resolves YES if BlueBird satellites provide service.",
+        "outcomePrices": '["0.75", "0.25"]',
+        "liquidityNum": 50000.0,
+        "volumeNum": 100000.0,
+        "spread": 0.02
+    }
+    parsed_1 = provider._parse_gamma_market(event_1, market_1, ticker=None)
+    assert parsed_1 is not None
+    assert parsed_1.ticker == "ASTS"
+
+    # 2. Rocket Lab direct market (ticker should be RKLB)
+    event_2 = {"id": "ev-2", "title": "Launch Market", "slug": "rocket-lab-neutron-launch"}
+    market_2 = {
+        "id": "m-2",
+        "question": "Will Rocket Lab launch Neutron rocket in 2026?",
+        "outcomePrices": '["0.65", "0.35"]',
+        "liquidityNum": 80000.0,
+        "volumeNum": 300000.0,
+        "spread": 0.015
+    }
+    parsed_2 = provider._parse_gamma_market(event_2, market_2, ticker=None)
+    assert parsed_2 is not None
+    assert parsed_2.ticker == "RKLB"
+
+    # 3. SpaceX Starship sector event (ticker should be SPCX, event_key should be spacex_starship_orbital_success)
+    event_3 = {"id": "ev-3", "title": "Starship Flight", "slug": "spacex-starship-orbital-catch"}
+    market_3 = {
+        "id": "m-3",
+        "question": "Will SpaceX successfully catch Starship from orbit in 2026?",
+        "outcomePrices": '["0.82", "0.18"]',
+        "liquidityNum": 200000.0,
+        "volumeNum": 1000000.0,
+        "spread": 0.01
+    }
+    parsed_3 = provider._parse_gamma_market(event_3, market_3, ticker=None)
+    assert parsed_3 is not None
+    assert parsed_3.ticker == "SPCX"
+    assert parsed_3.event_key == "spacex_starship_orbital_success"
+
+    # 4. US Space Force SDA sector event (ticker None, event_key us_space_force_sda_defense_contracts)
+    event_4 = {"id": "ev-4", "title": "Space Defense", "slug": "us-space-force-sda-awards"}
+    market_4 = {
+        "id": "m-4",
+        "question": "Will US Space Force SDA award Tranche 3 satellite constellation contracts?",
+        "outcomePrices": '["0.70", "0.30"]',
+        "liquidityNum": 100000.0,
+        "volumeNum": 500000.0,
+        "spread": 0.02
+    }
+    parsed_4 = provider._parse_gamma_market(event_4, market_4, ticker=None)
+    assert parsed_4 is not None
+    assert parsed_4.event_key == "us_space_force_sda_defense_contracts"
+
+
+
 

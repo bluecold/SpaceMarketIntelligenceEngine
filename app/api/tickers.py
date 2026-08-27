@@ -9,7 +9,7 @@ from app.database.repository import (
     utc_now
 )
 from app.scoring.social import calculate_social_score
-from app.config import INITIAL_TICKERS
+from app.config import INITIAL_TICKERS, DEFAULT_EVENT_COMPANY_MAPPINGS
 
 router = APIRouter(tags=["Tickers"])
 
@@ -83,9 +83,13 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
             "catalyst_importance": n.catalyst_importance
         })
 
-    # Prediction Markets serialization
+    # Prediction Markets serialization (Direct vs Sector Event classification)
     markets_payload = []
     for m in markets:
+        is_direct = bool(m.ticker and m.ticker.upper() == ticker_sym)
+        impact_w = 1.0 if is_direct else (DEFAULT_EVENT_COMPANY_MAPPINGS.get(m.event_key, {}).get(ticker_sym) if m.event_key else None)
+        event_role = "DIRECT" if is_direct else "SECTOR_CATALYST"
+        
         markets_payload.append({
             "id": m.external_id,
             "title": m.title,
@@ -97,7 +101,12 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
             "liquidity": m.liquidity,
             "spread": m.spread,
             "quality_score": m.quality_score,
-            "url": m.url
+            "url": m.url,
+            "ticker": m.ticker,
+            "is_direct": is_direct,
+            "event_role": event_role,
+            "impact_weight": impact_w,
+            "event_key": m.event_key
         })
 
     # Divergences serialization
@@ -133,7 +142,7 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
     }
 
     reasons = [line for line in (ssi_snap.explanation.split("\n") if ssi_snap and ssi_snap.explanation else [])]
-    smi_val = ssi_snap.smi if ssi_snap and ssi_snap.smi is not None else (ssi_snap.ssi if ssi_snap else 50.0)
+    smi_val = ssi_snap.smi if (ssi_snap and ssi_snap.smi is not None) else (ssi_snap.ssi if ssi_snap else None)
 
     # Stale calculation for ticker header
     age_hours = None
@@ -155,7 +164,7 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
         "name": ticker_cfg.name,
         "header": {
             "smi": smi_val,
-            "ssi": ssi_snap.social_score if ssi_snap else 50.0,
+            "ssi": ssi_snap.social_score if ssi_snap else None,
             "pms": ssi_snap.prediction_score if ssi_snap else None,
             "signal": sig_str,
             "base_signal": base_sig,
@@ -163,14 +172,14 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
             "confidence": ssi_snap.confidence if ssi_snap else 0.0,
             "data_quality": ssi_snap.data_quality if ssi_snap and ssi_snap.data_quality is not None else (ssi_snap.data_completeness if ssi_snap else 0.0),
             "data_completeness": ssi_snap.data_completeness if ssi_snap else 0.0,
-            "smi_momentum_1d": ssi_snap.ssi_momentum_1d if ssi_snap else 0.0,
+            "smi_momentum_1d": ssi_snap.ssi_momentum_1d if ssi_snap else None,
             "price": ssi_snap.price if ssi_snap else None,
             "timestamp": ssi_snap.timestamp.isoformat() + "Z" if ssi_snap and ssi_snap.timestamp else None,
             "data_age_hours": age_hours,
             "is_stale": is_stale
         },
         "score_breakdown": {
-            "social_score": ssi_snap.social_score if ssi_snap else 50.0,
+            "social_score": ssi_snap.social_score if ssi_snap else None,
             "prediction_score": ssi_snap.prediction_score if ssi_snap else None,
             "news_score": ssi_snap.news_score if ssi_snap else None,
             "momentum_score": ssi_snap.momentum_score if ssi_snap else None,
@@ -178,6 +187,11 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
             "risk_score": ssi_snap.risk_score if ssi_snap else None,
             "technical_score": ssi_snap.technical_score if ssi_snap else None,
             "scaled_technical": round((ssi_snap.technical_score / 40.0) * 100.0, 1) if ssi_snap and ssi_snap.technical_score is not None else None
+        },
+        "sample_counts": {
+            "post_count": ssi_snap.post_count if ssi_snap and ssi_snap.post_count is not None else 0,
+            "news_count": ssi_snap.news_count if ssi_snap and ssi_snap.news_count is not None else 0,
+            "prediction_count": ssi_snap.prediction_count if ssi_snap and ssi_snap.prediction_count is not None else 0
         },
         "social_stats": social_stats,
         "technical_data": tech_payload,
@@ -207,7 +221,12 @@ def get_ticker_prediction_markets(ticker: str, db: Session = Depends(get_db)) ->
             "liquidity": m.liquidity,
             "spread": m.spread,
             "quality_score": m.quality_score,
-            "url": m.url
+            "url": m.url,
+            "ticker": m.ticker,
+            "is_direct": bool(m.ticker and m.ticker.upper() == ticker_sym),
+            "event_role": "DIRECT" if bool(m.ticker and m.ticker.upper() == ticker_sym) else "SECTOR_CATALYST",
+            "impact_weight": 1.0 if bool(m.ticker and m.ticker.upper() == ticker_sym) else (DEFAULT_EVENT_COMPANY_MAPPINGS.get(m.event_key, {}).get(ticker_sym) if m.event_key else None),
+            "event_key": m.event_key
         }
         for m in markets
     ]

@@ -43,22 +43,51 @@ def calculate_source_agreement(active_directions: List[float]) -> float:
     return round(max(-1.0, min(1.0, avg_concordance)), 2)
 
 
+# Global in-memory cache for dynamically calibrated weights
+_calibrated_weights_cache: Optional[Dict[str, float]] = None
+
+
+def set_calibrated_weights(weights: Optional[Dict[str, float]]) -> None:
+    """Store dynamically calibrated weights from backtesting engine."""
+    global _calibrated_weights_cache
+    _calibrated_weights_cache = dict(weights) if weights else None
+
+
+def get_active_weights() -> Dict[str, float]:
+    """
+    Retrieve active base scoring weights:
+    Returns calibrated weights if dynamic feedback is enabled and available,
+    otherwise returns static configuration weights.
+    """
+    global _calibrated_weights_cache
+    if getattr(settings, "ENABLE_DYNAMIC_WEIGHT_FEEDBACK", False) and _calibrated_weights_cache:
+        return dict(_calibrated_weights_cache)
+    return {
+        "social": settings.WEIGHT_SOCIAL,
+        "prediction": settings.WEIGHT_PREDICTION,
+        "news": settings.WEIGHT_NEWS,
+        "momentum": settings.WEIGHT_MOMENTUM,
+        "fundamental": settings.WEIGHT_FUNDAMENTALS,
+        "risk": settings.WEIGHT_RISK
+    }
+
 
 def calculate_smi(
-    social_score: float,
+    social_score: Optional[float] = None,
     prediction_score: Optional[float] = None,
     prediction_quality: float = 50.0,
     news_score: Optional[float] = None,
     momentum_score: Optional[float] = None,
-    technical_score_raw: Optional[float] = None,
     fundamental_score: Optional[float] = None,
     risk_score: Optional[float] = None,
+    technical_score_raw: Optional[float] = None,
     previous_smi_1d: Optional[float] = None,
     previous_smi_3d: Optional[float] = None,
     previous_smi_5d: Optional[float] = None,
-    post_count: int = 0,
-    news_count: int = 0,
-    prediction_count: int = 0
+    post_count: Optional[int] = None,
+    news_count: Optional[int] = None,
+    prediction_count: Optional[int] = None,
+    custom_weights: Optional[Dict[str, float]] = None
 ) -> Dict[str, Any]:
     """
     Computes Space Market Intelligence Index (SMI, 0 - 100) using SMIE v2.0 Architecture.
@@ -73,49 +102,54 @@ def calculate_smi(
       
     Features:
       - Adaptive Weight Normalization (weights always sum to 1.0 without fabricating 50s)
+      - Bayesian Credibility Shrinkage for small social samples (N < 10 posts)
       - Quality Gate: Polymarket weight = 0 if quality < POLYMARKET_MIN_QUALITY (30.0)
       - Decoupled Data Quality (%) vs Confidence (%)
       - Source Agreement (-1.0 to +1.0)
     """
-    # 1. Base weights from configuration
-    BASE_WEIGHTS = {
-        "social": settings.WEIGHT_SOCIAL,
-        "prediction": settings.WEIGHT_PREDICTION,
-        "news": settings.WEIGHT_NEWS,
-        "momentum": settings.WEIGHT_MOMENTUM,
-        "fundamental": settings.WEIGHT_FUNDAMENTALS,
-        "risk": settings.WEIGHT_RISK
-    }
+    # 1. Base weights from configuration or dynamic calibration
+    BASE_WEIGHTS = dict(custom_weights) if custom_weights else get_active_weights()
 
     active_scores: Dict[str, float] = {}
     effective_weights: Dict[str, float] = {}
     active_directions: List[float] = []
 
     # A. Social Sentiment (SSI) with Bayesian Credibility Shrinkage for small sample sizes (<10 posts)
-    is_social_available = (social_score is not None) and (post_count > 0 or social_score != 50.0)
-    if is_social_available:
-        credibility = min(1.0, max(0.1, post_count / 10.0)) if post_count > 0 else 1.0
-        effective_social = 50.0 + (social_score - 50.0) * credibility
-        active_scores["social"] = effective_social
-        effective_weights["social"] = BASE_WEIGHTS["social"]
-        active_directions.append((effective_social - 50.0) / 50.0)
+    if social_score is not None:
+        if post_count is None:
+            # Sample size unspecified: treat signal as observed
+            is_social_available = True
+            effective_social = social_score
+        elif post_count == 0:
+            # 0 posts collected: strictly exclude social pillar from active weights
+            is_social_available = False
+            effective_social = 50.0
+        else:
+            # Bayesian shrinkage towards neutral prior 50.0: effective = 50.0 + (social - 50.0) * (N / 10)
+            is_social_available = True
+            credibility = min(1.0, max(0.1, post_count / 10.0))
+            effective_social = 50.0 + (social_score - 50.0) * credibility
+
+        if is_social_available:
+            active_scores["social"] = effective_social
+            effective_weights["social"] = BASE_WEIGHTS["social"]
+            active_directions.append((effective_social - 50.0) / 50.0)
 
     # B. Prediction Market Score (PMS)
     if prediction_score is not None and prediction_quality >= settings.POLYMARKET_MIN_QUALITY:
-        active_scores["prediction"] = prediction_score
-        # Modulate prediction weight by quality score
-        quality_factor = min(1.0, max(0.3, prediction_quality / 100.0))
-        effective_weights["prediction"] = BASE_WEIGHTS["prediction"] * quality_factor
-        active_directions.append((prediction_score - 50.0) / 50.0)
-    else:
-        # Effective weight is 0
-        pass
+        if prediction_count is None or prediction_count > 0:
+            active_scores["prediction"] = prediction_score
+            # Modulate prediction weight by quality score
+            quality_factor = min(1.0, max(0.3, prediction_quality / 100.0))
+            effective_weights["prediction"] = BASE_WEIGHTS["prediction"] * quality_factor
+            active_directions.append((prediction_score - 50.0) / 50.0)
 
     # C. News & Catalysts
-    if news_score is not None and news_count > 0:
-        active_scores["news"] = news_score
-        effective_weights["news"] = BASE_WEIGHTS["news"]
-        active_directions.append((news_score - 50.0) / 50.0)
+    if news_score is not None:
+        if news_count is None or news_count > 0:
+            active_scores["news"] = news_score
+            effective_weights["news"] = BASE_WEIGHTS["news"]
+            active_directions.append((news_score - 50.0) / 50.0)
 
     # D. Market Momentum (falls back to scaled technical score if raw momentum score is None)
     effective_mom = momentum_score
@@ -133,12 +167,11 @@ def calculate_smi(
         effective_weights["fundamental"] = BASE_WEIGHTS["fundamental"]
         active_directions.append((fundamental_score - 50.0) / 50.0)
 
-    # F. Risk / Safety (Inverted for score aggregation: higher safety = higher contribution)
+    # F. Risk / Safety (calculate_risk_score already yields 0-100 where higher = safer/lower risk)
     if risk_score is not None:
-        # Risk score 0 (high safety) to 100 (high risk)
-        # Convert to Safety index for addition: (100 - risk_score)
-        active_scores["risk"] = (100.0 - risk_score)
+        active_scores["risk"] = risk_score
         effective_weights["risk"] = BASE_WEIGHTS["risk"]
+        active_directions.append((risk_score - 50.0) / 50.0)
 
     # 2. Adaptive Weight Normalization
     total_effective_weight = sum(effective_weights.values())
@@ -155,28 +188,29 @@ def calculate_smi(
     source_agreement = calculate_source_agreement(active_directions)
 
     # 4. Data Quality Score (0 to 100%)
-    # Ratio of available pillars + depth
     total_pillars = len(BASE_WEIGHTS)
     active_pillars = len(active_scores)
     data_quality = round(100.0 * (active_pillars / float(total_pillars)), 1)
 
     # 5. Confidence Score (0 to 100%)
-    # Combines Data Quality, source agreement, sample sizes
-    base_conf = data_quality * 0.50  # Up to 50% from data completeness
-    
-    # Source agreement impact (+/- 15%)
+    base_conf = data_quality * 0.50
     agreement_bonus = source_agreement * 15.0
     
-    # Volume / Sample depth bonus (up to 35%)
     depth_bonus = 0.0
-    if post_count >= 30:
-        depth_bonus += 12.0
-    elif post_count >= 10:
+    if post_count is not None:
+        if post_count >= 30:
+            depth_bonus += 12.0
+        elif post_count >= 10:
+            depth_bonus += 6.0
+    elif social_score is not None:
         depth_bonus += 6.0
 
-    if news_count >= 3:
-        depth_bonus += 10.0
-    elif news_count >= 1:
+    if news_count is not None:
+        if news_count >= 3:
+            depth_bonus += 10.0
+        elif news_count >= 1:
+            depth_bonus += 5.0
+    elif news_score is not None:
         depth_bonus += 5.0
 
     if prediction_score is not None and prediction_quality >= 50.0:
@@ -197,11 +231,11 @@ def calculate_smi(
 
     return {
         "smi": smi,
-        "ssi": round(social_score, 1),
-        "social_score": round(social_score, 1),
+        "ssi": round(social_score, 1) if social_score is not None else None,
+        "social_score": round(social_score, 1) if social_score is not None else None,
         "prediction_score": round(prediction_score, 1) if prediction_score is not None and prediction_quality >= settings.POLYMARKET_MIN_QUALITY else None,
         "prediction_quality": round(prediction_quality, 1),
-        "news_score": round(news_score, 1) if news_score is not None and news_count > 0 else None,
+        "news_score": round(news_score, 1) if news_score is not None and (news_count is None or news_count > 0) else None,
         "momentum_score": round(momentum_score, 1) if momentum_score is not None else None,
         "scaled_technical": scaled_tech,
         "fundamental_score": round(fundamental_score, 1) if fundamental_score is not None else None,

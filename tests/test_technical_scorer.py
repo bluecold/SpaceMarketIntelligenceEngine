@@ -75,3 +75,42 @@ def test_rsi_wilder_smoothing_realistic_series():
     assert res["bollinger_upper"] > res["bollinger_middle"] > res["bollinger_lower"]
     assert res["atr"] > 0.0
 
+
+def test_macd_price_and_atr_normalization_scale_invariance():
+    """
+    Validates scale invariance for MACD near-zero consolidation:
+    - Low priced stock ($2, e.g. SPCE): -0.04 is a 2% negative move (NOT near zero -> 0 pts).
+      -0.002 is 0.1% negative move (near zero -> +2 pts).
+    - High priced stock ($400, e.g. LMT): -0.20 is a 0.05% move (near zero -> +2 pts).
+    """
+    # 1. Penny/Micro-cap ($2.00) with -0.04 MACD (2% drop from price)
+    ind_spce_negative = {
+        "status": "AVAILABLE",
+        "price": 2.00,
+        "atr": 0.15,
+        "macd_histogram": -0.04  # Was getting +2 in old code due to <= 0.05, now should get 0.0
+    }
+    score_spce_neg = calculate_technical_score(ind_spce_negative)
+    assert score_spce_neg == 0.0, f"Expected 0.0 for 2% negative MACD move, got {score_spce_neg}"
+
+    # 1b. Penny/Micro-cap ($2.00) with genuine tight consolidation (-0.002)
+    ind_spce_flat = {
+        "status": "AVAILABLE",
+        "price": 2.00,
+        "atr": 0.15,
+        "macd_histogram": -0.002
+    }
+    score_spce_flat = calculate_technical_score(ind_spce_flat)
+    assert score_spce_flat == 2.0, f"Expected 2.0 for tight consolidation, got {score_spce_flat}"
+
+    # 2. Large-cap ($400.00) with -0.20 MACD (0.05% drop from price, within ATR)
+    ind_lmt_flat = {
+        "status": "AVAILABLE",
+        "price": 400.00,
+        "atr": 5.0,
+        "macd_histogram": -0.20  # -0.20 / 5.0 = 0.04 ATR (well within 0.08 ATR threshold)
+    }
+    score_lmt_flat = calculate_technical_score(ind_lmt_flat)
+    assert score_lmt_flat == 2.0, f"Expected 2.0 for high priced stock near-zero MACD, got {score_lmt_flat}"
+
+

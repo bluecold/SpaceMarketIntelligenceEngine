@@ -64,37 +64,52 @@ def generate_daily_report(db: Session) -> Dict[str, Any]:
             ticker_summaries.append({
                 "ticker": symbol,
                 "name": cfg.name,
-                "smi": 50.0,
-                "ssi": 50.0,
+                "smi": None,
+                "ssi": None,
                 "pms": None,
-                "delta_1d": 0.0,
+                "delta_1d": None,
                 "signal": "N/A",
                 "confidence": 0.0,
                 "price": None,
                 "markets_count": len(markets)
             })
 
-    # Sort by SMI descending
-    ticker_summaries.sort(key=lambda x: x["smi"], reverse=True)
+    # Sort by SMI descending, putting None values at the bottom
+    ticker_summaries.sort(
+        key=lambda x: (x["smi"] is not None, x["smi"] if x["smi"] is not None else -1.0),
+        reverse=True
+    )
 
-    # Sector average SMI
-    avg_smi = sum(t["smi"] for t in ticker_summaries) / len(ticker_summaries) if ticker_summaries else 50.0
-    if avg_smi >= 70.0:
-        sector_sentiment = "BULLISH"
-    elif avg_smi >= 55.0:
-        sector_sentiment = "MODERATELY BULLISH"
-    elif avg_smi >= 45.0:
-        sector_sentiment = "NEUTRAL"
-    elif avg_smi >= 35.0:
-        sector_sentiment = "MODERATELY BEARISH"
+    valid_smis = [t["smi"] for t in ticker_summaries if t["smi"] is not None]
+    if valid_smis:
+        avg_smi = sum(valid_smis) / len(valid_smis)
+        if avg_smi >= 70.0:
+            sector_sentiment = "BULLISH"
+        elif avg_smi >= 55.0:
+            sector_sentiment = "MODERATELY BULLISH"
+        elif avg_smi >= 45.0:
+            sector_sentiment = "NEUTRAL"
+        elif avg_smi >= 35.0:
+            sector_sentiment = "MODERATELY BEARISH"
+        else:
+            sector_sentiment = "BEARISH"
+        avg_smi_rounded = round(avg_smi, 1)
+        avg_smi_str = f"{avg_smi:.1f}/100"
     else:
-        sector_sentiment = "BEARISH"
+        avg_smi = None
+        avg_smi_rounded = None
+        avg_smi_str = "AWAITING_DATA"
+        sector_sentiment = "AWAITING_DATA"
 
-    top_bullish = ticker_summaries[0]["ticker"] if ticker_summaries else "NONE"
-    top_bearish = ticker_summaries[-1]["ticker"] if ticker_summaries else "NONE"
+    evaluated_tickers = [t for t in ticker_summaries if t["smi"] is not None]
+    top_bullish = evaluated_tickers[0]["ticker"] if evaluated_tickers else "NONE"
+    top_bearish = evaluated_tickers[-1]["ticker"] if evaluated_tickers else "NONE"
+    top_bullish_smi = f"{evaluated_tickers[0]['smi']:.1f}" if evaluated_tickers else "N/A"
+    top_bearish_smi = f"{evaluated_tickers[-1]['smi']:.1f}" if evaluated_tickers else "N/A"
 
     # Largest SSI increase
-    largest_ssi_move = max(ticker_summaries, key=lambda x: x["delta_1d"]) if ticker_summaries else None
+    evaluated_with_delta = [t for t in ticker_summaries if t["delta_1d"] is not None]
+    largest_ssi_move = max(evaluated_with_delta, key=lambda x: x["delta_1d"]) if evaluated_with_delta else None
     
     # Strongest Divergences
     bull_divs = [d for d in all_divergences if d["direction"] == "BULLISH"]
@@ -109,9 +124,9 @@ def generate_daily_report(db: Session) -> Dict[str, Any]:
         f"SPACE MARKET INTELLIGENCE DAILY REPORT",
         f"DATE: {date_str}",
         "==================================================",
-        f"\n[1] SECTOR REGIME: {sector_sentiment} (Avg SMI: {avg_smi:.1f}/100)",
-        f"- Top Bullish:               {top_bullish} (SMI: {ticker_summaries[0]['smi']:.1f})",
-        f"- Top Bearish:               {top_bearish} (SMI: {ticker_summaries[-1]['smi']:.1f})",
+        f"\n[1] SECTOR REGIME: {sector_sentiment} (Avg SMI: {avg_smi_str})",
+        f"- Top Bullish:               {top_bullish} (SMI: {top_bullish_smi})",
+        f"- Top Bearish:               {top_bearish} (SMI: {top_bearish_smi})",
     ]
 
     if largest_ssi_move:
@@ -124,9 +139,11 @@ def generate_daily_report(db: Session) -> Dict[str, Any]:
     ])
 
     for t in ticker_summaries:
+        smi_str = f"{t['smi']:>4.1f}" if t['smi'] is not None else "  --"
+        ssi_str = f"{t['ssi']:>4.1f}" if t['ssi'] is not None else "  --"
         pms_str = f"{t['pms']:.0f}" if t['pms'] is not None else "--"
         price_str = f"${t['price']:.2f}" if t['price'] is not None else "N/A"
-        lines.append(f"  {t['ticker']:<5} | SMI: {t['smi']:>4.1f} | SSI: {t['ssi']:>4.1f} | PMS: {pms_str:>3} | Signal: {t['signal']:<12} | Conf: {t['confidence']:>3.0f}% | Price: {price_str}")
+        lines.append(f"  {t['ticker']:<5} | SMI: {smi_str} | SSI: {ssi_str} | PMS: {pms_str:>3} | Signal: {t['signal']:<12} | Conf: {t['confidence']:>3.0f}% | Price: {price_str}")
 
     if all_catalysts:
         lines.append("\n[3] KEY CATALYSTS DETECTED:")
@@ -145,7 +162,7 @@ def generate_daily_report(db: Session) -> Dict[str, Any]:
         "date": date_str,
         "timestamp": now.isoformat(),
         "sector_sentiment": sector_sentiment,
-        "average_smi": round(avg_smi, 1),
+        "average_smi": avg_smi_rounded,
         "top_bullish": top_bullish,
         "top_bearish": top_bearish,
         "largest_sentiment_change": {

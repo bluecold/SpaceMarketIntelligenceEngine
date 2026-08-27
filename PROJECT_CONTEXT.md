@@ -37,11 +37,12 @@ El sistema está construido como un **Monolito Modular** en Python 3.11+ con int
                                 ┌─────────────────────────────────────────────────────────┐
                                 │                 PROCESSORS & NLP LAYER                  │
                                 │  - Sentiment Classifier (Lexical / FinBERT)            │
+                                │  - Disambiguation: multi-word ATH vs negative metrics   │
                                 │  - log1p Engagement Weight: ln(1+likes+2·rt+...)       │
                                 │  - Exp Decay Recency Weight: exp(-lambda·age)          │
                                 │  - Polymarket Quality Scorer (0-100 Quality Threshold)  │
                                 │  - Catalyst Categorizer & Importance Assessor           │
-                                │  - Technical Indicators (EMA200, RSI, BB, MACD, Vol)    │
+                                │  - Technical Indicators (EMA200, RSI, BB, MACD, ATR)    │
                                 └────────────────────────────┬────────────────────────────┘
                                                              │
                                                              ▼
@@ -51,6 +52,7 @@ El sistema está construido como un **Monolito Modular** en Python 3.11+ con int
                                 │  - PMS (Prediction Market Score, 0-100)                 │
                                 │  - News Score (0-100)                                   │
                                 │  - Price Momentum Score (0-100)                         │
+                                │  - Fundamental Score (0-100)                           │
                                 │  - Technical Score (0-40)                               │
                                 │  - Risk & Safety Score (0-100)                          │
                                 └────────────────────────────┬────────────────────────────┘
@@ -60,6 +62,7 @@ El sistema está construido como un **Monolito Modular** en Python 3.11+ con int
                                 │                 SMI & DIVERGENCE ENGINE                 │
                                 │  - SMI (Space Market Intelligence Index, 0-100)         │
                                 │  - Adaptive Weight Normalization (No Fake Imputation)   │
+                                │  - Dynamic Closed-Loop Weight Calibration (Backtest)    │
                                 │  - Source Agreement & Directional Cohesion Metric       │
                                 │  - Tripartite Divergence Engine (X vs Poly vs Price)    │
                                 │  - Signal Generator (STRONG BUY, BUY, WATCH, HOLD, etc) │
@@ -73,8 +76,9 @@ El sistema está construido como un **Monolito Modular** en Python 3.11+ con int
                  │      PERSISTENCE LAYER      │                           │     PRESENTATION LAYER      │
                  │  - SQLite WAL (Auto-migrate)│                           │  - FastAPI REST API         │
                  │  - Immutable Snapshots      │                           │  - React 18 + TS Terminal UI│
-                 │  - Prediction Market History│                           │  - Multi-series SVG Charts  │
-                 │  - Divergences & Job Runs   │                           │  - Interactive Guide Modal  │
+                 │  - Sample Counts (P, N, M)  │                           │  - Multi-series SVG Charts  │
+                 │  - Divergences & Job Runs   │                           │  - Silent Cold-Start Radar  │
+                 │  - Introspective Migration  │                           │  - Desktop Notifications    │
                  └─────────────────────────────┘                           └─────────────────────────────┘
 ```
 
@@ -86,9 +90,10 @@ El sistema está construido como un **Monolito Modular** en Python 3.11+ con int
 
 | Métrica | Nombre Completo | Rango | Definición y Rol |
 | :--- | :--- | :---: | :--- |
-| **`SMI`** | **Space Market Intelligence Index** | **$0\text{--}100$** | **Índice cuantitativo integral maestro.** Combina todas las fuentes multivariables con pesos adaptativos dinámicos. |
+| **`SMI`** | **Space Market Intelligence Index** | **$0\text{--}100$** | **Índice cuantitativo integral maestro.** Combina los 6 factores multivariables con pesos adaptativos dinámicos. |
 | **`SSI`** | **Space Sentiment Index** | **$0\text{--}100$** | Mide **exclusivamente el sentimiento social puro de X/Twitter**, ponderado por engagement logarítmico y decaimiento temporal. |
 | **`PMS`** | **Prediction Market Score** | **$0\text{--}100$** | Mide las **expectativas implícitas en Prediction Markets (Polymarket)** para eventos directos y sectoriales. |
+| **`Risk Score`** | **Risk & Safety Score** | **$0\text{--}100$** | Mide la **seguridad del activo** basada en volatilidad relativa (ATR % sobre precio), compresión de Bollinger y drawdown. |
 | **`Market Score`** | **Technical Market Score** | **$0\text{--}100$** | Mide la **confirmación técnica del precio** (escalado desde el score técnico de 40 pts). |
 
 ---
@@ -98,36 +103,58 @@ El sistema está construido como un **Monolito Modular** en Python 3.11+ con int
 #### 1. Ponderación Social SSI & Bayesian Credibility Shrinkage:
 - **Engagement Logarítmico:**
   $$\text{Engagement} = \ln\left(1 + \text{likes} + 2\cdot\text{reposts} + 1.5\cdot\text{replies} + \frac{\text{views}}{1000}\right)$$
-  Multiplicador de peso parametrizado por `ENGAGEMENT_SCALE_DIVISOR = 10.0` ($\ln(1+22\,000) \approx 10.0$):
+  Multiplicador de peso parametrizado por `ENGAGEMENT_SCALE_DIVISOR = 10.0`:
   $$w_i = \text{relevance} \cdot \text{recency} \cdot \left(1.0 + \frac{\text{engagement}}{10.0}\right)$$
 - **Decaimiento Temporal Exponencial:**
   $$\text{Weight}_{\text{recency}} = e^{-\lambda \cdot \text{age\_hours}}, \quad \lambda = \frac{\ln(2)}{12.0\text{h}}$$
-- **Score Social:** $\text{SSI} = 50 + 50 \cdot \text{Weighted\_Sentiment} \in [0, 100]$.
-- **Contracción Bayesiana de Credibilidad (*Empirical Bayes Shrinkage*):** Ante muestras reducidas ($N < 10$ posts), el score social efectivo se contrae suavemente hacia el prior neutro ($\mu_0 = 50.0$) para evitar sobre-reacción por ruido muestral:
+- **Contracción Bayesiana de Credibilidad (*Empirical Bayes Shrinkage*):** Ante muestras reducidas ($1 \le N < 10$ posts), el score social efectivo se contrae suavemente hacia el prior neutro ($\mu_0 = 50.0$):
   $$\text{effective\_social} = 50.0 + (\text{social\_score} - 50.0) \times \min\left(1.0, \frac{\text{post\_count}}{10.0}\right)$$
-- **Exclusión Adaptativa sin Falsa Neutralidad:** Si $N = 0$ posts (ej. rate limit de X), el pilar social se excluye ($w_{\text{social}} = 0$) y su $30\%$ de peso se redistribuye entre las demás fuentes activas.
+- **Exclusión Adaptativa sin Falsa Neutralidad:** Si $N = 0$ posts, el pilar social se excluye estrictamente ($w_{\text{social}} = 0$) y su peso se redistribuye proporcionalmente entre las fuentes activas.
 
 #### 2. Polymarket Market Quality Scorer (0 a 100):
 Calcula la confiabilidad del contrato para evitar manipulación en mercados ilíquidos:
 $$\text{Quality} = 0.30 \cdot \text{Liquidity} + 0.30 \cdot \text{Volume} + 0.20 \cdot \text{Spread} + 0.20 \cdot \text{TimeToExpiry}$$
-> **Regla de Oro de Calidad:** Si $\text{Quality} < 30.0$, el peso efectivo de Polymarket en el cálculo de SMI se anula estrictamente ($w_{\text{prediction}} = 0$).
+> **Regla de Calidad:** Si $\text{Quality} < 30.0$ o `prediction_count == 0`, el peso de Polymarket se anula estrictamente ($w_{\text{prediction}} = 0$).
 
-#### 3. Cálculo Adaptativo de SMI:
-Pesos base: Social ($30\%$), Polymarket ($15\%$), News ($20\%$), Momentum ($20\%$), Fundamentales ($10\%$), Risk ($5\%$).
-Ante fuentes faltantes ($None$) o anuladas por baja calidad:
+#### 3. Arquitectura de 6 Pilares y Normalización Adaptativa de SMI:
+Pesos base canónicos:
+- **Social (SSI):** $30\%$
+- **Prediction Markets (PMS):** $15\%$
+- **News / Catalysts:** $20\%$
+- **Market Momentum:** $20\%$
+- **Fundamentals:** $10\%$
+- **Risk / Safety:** $5\%$
+
+Ante fuentes no disponibles ($None$ o $N=0$):
 $$w_i^{\text{active}} = \frac{w_i}{\sum_{j \in \text{active}} w_j}$$
+
 - **Source Agreement ($\in [-1.0, +1.0]$) — Pairwise Directional Concordance:**
   $$\text{Agreement} = \frac{1}{\binom{N}{2}} \sum_{i < j} \text{Concordance}(d_i, d_j), \quad \text{Concordance}(d_i, d_j) = \text{sign}(d_i \cdot d_j) \cdot \min\left(1.0, \frac{|d_i| + |d_j|}{1.5}\right)$$
-  *(donde $|d_k| < 0.10 \implies \text{Concordance} = 0$; garantiza concordancia direccional estricta $[-1.0, +1.0]$ y descarta la dispersión de $\sigma$ que penalizaba intensidades dispares en la misma dirección).*
-- Si $\text{Agreement} < 0.30$, la **Confianza** del sistema se penaliza proporcionalmente por dispersión o contradicción entre fuentes.
+  *(donde $|d_k| < 0.10 \implies \text{Concordance} = 0$). Incluye el vector de dirección de riesgo corregido.*
 
 ---
 
-### C. Divergence Engine (Detección de Desacoples Tripartitos)
+### C. Ciclo Cerrado de Optimización (Backtesting $\to$ Pesos Dinámicos)
 
-El sistema nunca promedia a ciegas señales contradictorias:
+El sistema soporta retroalimentación adaptativa en ciclo cerrado (`ENABLE_DYNAMIC_WEIGHT_FEEDBACK`):
+* **Compuerta Muestral:** $N_{\text{trades}} \ge 30$ en horizonte de $3\text{D}$.
+* **Modulación por $\Delta\text{Sharpe}$:**
+  $$\kappa = 1.0 + \text{clip}\left(\frac{\Delta\text{Sharpe}_{\text{3D}}}{2.0}, -0.5, +0.5\right)$$
+  $$w_{\text{prediction}}^* = \text{clip}(0.15 \times \kappa, 0.05, 0.25)$$
+* **Conservación de Suma:** Los 5 pilares restantes se re-escalan proporcionalmente garantizando que $\sum_{i=1}^6 w_i \equiv 1.0000$.
 
-| Tipo de Divergencia | Condición Cuantitativa | Implicación de Mercado | Severidad de Alerta |
+---
+
+### D. Normalización Invariante a Escala (MACD & ATR)
+El umbral de compresión y cruce del histograma MACD no es absoluto en dólares; se normaliza dinámicamente como:
+$$\text{MACD\_Threshold} = \min(0.08 \times \text{ATR}, 0.0020 \times \text{Price})$$
+Garantizando simetría cuantitativa entre activos de bajo precio ($SPCE $\approx \$3$) y alto precio ($ASTS/RKLB $\approx \$30\text{--}\$80$).
+
+---
+
+### E. Divergence Engine (Detección de Desacoples Tripartitos)
+
+| Tipo de Divergencia | Condición Cuantitativa | Implicación de Mercado | Severidad |
 | :--- | :--- | :--- | :---: |
 | **`BULLISH_DIVERGENCE`** | $\text{SSI} \ge 70$ y $\text{PMS} \ge 60$, pero $\text{Price} < \text{EMA200}$ o Retorno $< -5\%$ | Oportunidad de compra por desacople / infravaloración temporal. | **`HIGH`** |
 | **`BEARISH_DIVERGENCE`** | Precio en máximos / extendido, pero $\text{SSI} \le 40$ o $\text{PMS} \le 40$ | Alerta de trampa alcista; alto riesgo de corrección. | **`HIGH`** |
@@ -137,12 +164,12 @@ El sistema nunca promedia a ciegas señales contradictorias:
 
 ---
 
-### D. Señales de Trading y Explicabilidad "WHY?"
+### F. Señales de Trading y Explicabilidad "WHY?"
 
 - **Estructura Desacoplada:**
   - `base_signal`: Enum canónico puro (`STRONG BUY`, `BUY`, `WATCH`, `HOLD`, `AVOID`, `STRONG AVOID`).
   - `signal_modifier`: Modificador cualitativo opcional (`OVEREXTENDED`, `NO MKT DATA`, `None`).
-  - `signal`: String compuesto formateado para presentación visual (ej. `"WATCH (OVEREXTENDED)"`, `"BUY (OVEREXTENDED)"`, `"STRONG BUY (NO MKT DATA)"`).
+  - `signal`: String compuesto para presentación visual (ej. `"WATCH (OVEREXTENDED)"`, `"BUY (OVEREXTENDED)"`).
 - **Umbrales del SMI y Gestión de Sobrecompra:**
   - **`85–100`**: **STRONG BUY** *(restringido preventivamente a `base_signal: WATCH` con `signal_modifier: OVEREXTENDED` si RSI > 75 por sobreextensión técnica)*.
   - **`75–84`**: **BUY** *(mantiene `base_signal: BUY` pero adjunta `signal_modifier: OVEREXTENDED` si RSI > 75)*.
@@ -150,82 +177,88 @@ El sistema nunca promedia a ciegas señales contradictorias:
   - **`50–64`**: **HOLD**
   - **`35–49`**: **AVOID**
   - **`0–34`**: **STRONG AVOID** *(emite alerta `CRITICAL` para preservación de capital)*.
-- **Motor "WHY?" con Jerarquía de Momentum Graduado:**
-  - $\Delta \ge +8.0\text{ pts}$: `+ Rapid SMI acceleration (+X.X pts in 24h): strong momentum expansion`
-  - $\Delta \ge +4.0\text{ pts}$: `+ SMI momentum rising (+X.X pts in 24h)`
-  - $\Delta \le -8.0\text{ pts}$: `- Severe SMI breakdown (X.X pts in 24h): rapid sentiment drop`
-  - $\Delta \le -4.0\text{ pts}$: `- SMI momentum deteriorating (X.X pts in 24h)`
-  - Micro-ruido ($|\Delta| < 4.0$) se ignora para no contaminar el reporte.
-- **Deduplicación Semántica de Alertas:**
-  - Alertas de catalizadores críticos (`CRITICAL_CATALYST`) se deduplican por categoría.
-  - El panel de notificaciones del cliente web ([`AlertsManager.tsx`](frontend/src/components/AlertsManager.tsx)) usa un registro de claves para prevenir re-notificaciones en los ciclos periódicos de polling.
 
 ---
 
-## 4. 🧪 Motor de Backtesting y Validación de Hipótesis
+### G. Jerarquización de Prediction Markets (Directos vs Sectoriales)
 
-Módulo [`app/backtesting/engine.py`](file:///d:/Mis%20Cosas/test/Space%20Sentiment%20Index/app/backtesting/engine.py) diseñado para responder a la pregunta de investigación central:
-> *¿Aporta la incorporación de Polymarket valor predictivo incremental sobre X + Mercado?*
-
-- **Model A (Control Baseline):** `Model A (X Social + Technical + News Baseline)` — Evaluación sin Polymarket con redistribución adaptativa del 25% entre los pilares de Social, Noticias, Momentum, Riesgo y Análisis Técnico.
-- **Model B (Tratamiento SMIE):** `Model B (Multi-Source with Polymarket PMS)` — Incorporación de los mercados de predicción de Polymarket.
-- **Aislamiento Multi-Ticker:** Agrupación estricta por ticker antes del cálculo de retornos futuros a 1D, 3D y 5D para prevenir contaminación cruzada de precios.
-- **Métricas calculadas:**
-  - **Win Rate (%)**
-  - **Profit Factor** ($\frac{\sum \text{Gains}}{\sum \text{Losses}}$)
-  - **Expectancy ($E$)**
-  - **Max Drawdown (%)**
-  - **Sharpe Ratio** (anualizado $\times \sqrt{252}$)
-  - **Sortino Ratio** (desviación a la baja)
+En el endpoint `/api/tickers/{ticker}` y la pestaña modal de predicciones:
+* **Prioridad #1 — Contratos Directos:** Contratos cuyo ticker coincide con el activo seleccionado (ej. `ASTS` $\to$ lanzamiento comercial de BlueBird). Se ordenan siempre en primer lugar.
+* **Prioridad #2 — Catalizadores Sectoriales (SpaceX / NASA / Space Force):** Contratos macro que impactan al activo mediante la matriz `DEFAULT_EVENT_COMPANY_MAPPINGS`.
+* **Metadatos:** Cada contrato incluye `is_direct: bool`, `event_role: "DIRECT" | "SECTOR_CATALYST"` e `impact_weight: float`.
+* **Sub-Filtros en UI:** Pestañas para alternar entre `Todos`, `🎯 Directos $TICKER` y `🌐 Sectoriales / SpaceX`.
 
 ---
 
-## 5. 💻 Endpoints REST API y Comandos CLI
+## 4. 🔔 Sistema de Alertas y Notificaciones de Escritorio (Windows Toast)
+
+Reconstruido con arquitectura robusta en [`AlertsManager.tsx`](frontend/src/components/AlertsManager.tsx):
+1. **Silent Cold-Start Seeding:** Al cargar o recargar la página ($F5$), las alertas existentes en el servidor se marcan como conocidas sin emitir ningún toast ni sonido.
+2. **Disparo Exclusivo por Deltas:** Solo las alertas genuinamente nuevas generadas por ejecuciones posteriores del pipeline emiten notificación.
+3. **Registro Persistente e Idempotente (`localStorage: smie_desktop_notified_v1`):** Con auto-pruning de 100 registros.
+4. **Compuerta de Frescura:** Alertas con antigüedad $> 30\text{ min}$ o inactivas se suprimen del popup del SO.
+5. **Panel de Preferencias:**
+   - Toggle directo de Notificaciones de Windows.
+   - Selector de severidad: *🔴 Solo Críticas* / *🟠 Críticas + Altas* / *⚪ Todas*.
+   - Botón de prueba interactiva de sonido/toast.
+
+---
+
+## 5. 🧪 Motor de Backtesting Físico y Continuo
+
+Módulo [`app/backtesting/engine.py`](file:///d:/Mis%20Cosas/test/Space%20Sentiment%20Index/app/backtesting/engine.py):
+- **Horizonte Físico Continuo:** Búsqueda temporal basada en $t_{\text{target}} = t_{\text{entry}} + \text{timedelta}(\text{days}=H)$ con tolerancia acotada, resolviendo desfases en frecuencias horarias.
+- **Paridad Bayesiana:** Reproduce fielmente el shrinkage ($N/10$) y exclusión de pilares vacíos ($N=0$) a partir de `post_count`, `news_count` y `prediction_count` persistidos en snapshots.
+- **Model A vs Model B:**
+  - **Model A (Control Baseline):** Sin Polymarket con redistribución adaptativa.
+  - **Model B (SMIE Multi-Source):** Incorporando Prediction Markets.
+- **Métricas:** Win Rate, Profit Factor, Expectancy, Max Drawdown, Sharpe Ratio anualizado, Sortino Ratio y $\Delta\text{Sharpe}$.
+
+---
+
+## 6. 💻 Endpoints REST API y CLI
 
 ### Endpoints REST (`FastAPI`)
-- `GET /api/dashboard`: Ranking global con columnas `smi`, `ssi`, `pms`, `market_score`, `signal`, `base_signal`, `signal_modifier`, `confidence`, `data_quality`, `is_stale`, `data_age_hours`, `divergence`.
-- `GET /api/tickers/{ticker}`: Detalle exhaustivo con desglose de 6 pilares, tweets, noticias, prediction markets filtrados por matriz de impacto y divergencias.
-- `GET /api/tickers/{ticker}/prediction-markets`: Lista de contratos de Polymarket asociados con YES/NO %, $\Delta_{24\text{h}}$, volumen, liquidez, spread y calidad.
+- `GET /api/dashboard`: Ranking global con columnas de 6 factores, contadores muestrales (`post_count`, `news_count`, `prediction_count`), `risk_score`, alertas y divergencias.
+- `GET /api/tickers/{ticker}`: Detalle completo con desglose de 6 pilares, `sample_counts`, datos técnicos (incluyendo ATR), catalizadores y prediction markets.
+- `GET /api/tickers/{ticker}/prediction-markets`: Contratos de Polymarket clasificados en Directos vs Sectoriales con probabilidad YES/NO, $\Delta_{24\text{h}}$, volumen, liquidez, spread y calidad.
 - `GET /api/tickers/{ticker}/divergences`: Historial de divergencias tripartitas.
-- `GET /api/tickers/{ticker}/history`: Series temporales multi-curva (`price`, `smi`, `ssi`, `pms`, `volume`).
-- `GET /api/reports/daily`: Reporte diario estructurado en JSON y Markdown.
-- `GET /api/backtest`: Métricas comparativas del backtest entre Model A y Model B.
-- `GET /api/health`: Diagnóstico granular por proveedor (`database`, `x_provider`, `polymarket_provider`, `market_provider`, `news_provider`).
+- `GET /api/tickers/{ticker}/history`: Series temporales históricas multi-curva (`price`, `smi`, `ssi`, `pms`, `volume`, `risk_score`).
+- `GET /api/reports/daily`: Reporte formal de inteligencia estructurado en JSON y Markdown.
+- `GET /api/backtest`: Métricas comparativas y calibración adaptativa de pesos.
+- `GET /api/health`: Diagnóstico de salud por subsistema.
 
-### Comandos CLI (`python -m app.cli <comando>`)
-- `run-all`: Ejecuta el pipeline completo de SMIE y muestra el ranking.
-- `analyze <TICKER>`: Desglose analítico completo de un ticker con explicaciones "WHY?".
-- `daily-report`: Genera e imprime el reporte diario del sector espacial.
-- `backtest`: Ejecuta el análisis comparativo cuantitativo entre Model A y Model B.
-- `collect-social` / `collect-polymarket` / `collect-news` / `collect-market`: Ingestión granular por fuente.
+### Comandos CLI (`python -m app.cli.commands <comando>`)
+- `run-all`: Ejecuta el pipeline completo de SMIE y genera snapshots.
+- `analyze <TICKER>`: Desglose analítico con árbol de razones "WHY?".
+- `daily-report`: Imprime el reporte diario del sector espacial.
+- `backtest`: Ejecuta el motor de backtesting comparativo.
+- `collect-social` / `collect-polymarket` / `collect-news` / `collect-market`: Ingestión granular.
 - `calculate-divergences`: Evaluación de divergencias activas.
 
 ---
 
-## 6. 🌐 Frontend Terminal Web (React + TS + Vite)
+## 7. 🌐 Frontend Terminal Web (React + TS + Vite)
 
-- **Dashboard Principal:** Tabla terminal interactiva estilo Bloomberg y vista alternativa en tarjetas con badges de frescura/obsolescencia de datos.
-- **Detalle de Ticker:** Modal con medidores `SMI`, `SSI` y `PMS`, pestañas para **Prediction Markets** (filtrados por relevancia semántica), **X Social Feed**, **Noticias** y **Divergencias**.
-- **Gráfico Multi-Serie Interactivo SVG:** Toggles interactivos para encender/apagar curvas individuales (Price, SMI, SSI, PMS) y tooltip sincronizado.
-- **Alertas y Notificaciones de Escritorio:** Deduplicación estricta para notificar novedades una sola vez por evento.
-- **Modal de Inducción y Manual de Uso (`AboutModal.tsx`):** Accesible al hacer clic en el logo del cohete (`🚀`) o en el botón *"Manual de Uso"*.
+- **Dashboard Principal:** Tabla terminal estilo Bloomberg con 6 pilares visibles (Social, PMS, News, Momentum, Tech, Risk/Safety), tarjetas informativas y badges de vigencia de datos.
+- **Detalle de Ticker:** Modal interactivo con gráfico multi-curva SVG, desglose de 6 factores, barra de *Data Depth* (`xxP / xxN / xxM`), medidor ATR y pestañas especializadas.
+- **Alertas & Radar:** Menú desplegable con filtro por categorías, indicador de no leídas, panel de ajustes de notificación y arranque silencioso en recargas.
 
 ---
 
-## 7. 🛰️ Universo de Cobertura Inicial
-
+## 8. 🛰️ Universo de Cobertura Inicial
 1. **ASTS** — AST SpaceMobile Inc.
 2. **RKLB** — Rocket Lab USA Inc.
 3. **SATL** — Satellogic Inc.
 4. **SPCE** — Virgin Galactic Holdings Inc.
-5. **SPCX** — Procure Space ETF / Proxy de Eventos Sectoriales (SpaceX Starship, Artemis, FCC).
+5. **SPCX** — Procure Space ETF / Proxy Sectorial (SpaceX Starship, Artemis, FCC).
 
 ---
 
-## 8. 🛡️ Suite de Pruebas Automatizadas
+## 9. 🛡️ Suite de Pruebas Automatizadas
 
-El proyecto cuenta con **58 tests unitarios automatizados** que validan la matemática, algoritmos y estabilidad:
+El proyecto cuenta con **71 tests unitarios automatizados** que cubren matemática, scoring, divergencias, persistencia, backtesting, endpoints REST y NLP:
 ```powershell
 python -m pytest tests/ -v
 ```
-*(Resultados: 58 passed en 1.50s, 0 warnings).*
+*(Resultado actual: **71 passed en 1.9s, 0 warnings/failures**).*

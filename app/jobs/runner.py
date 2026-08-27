@@ -161,10 +161,12 @@ async def run_full_pipeline() -> Dict[str, Any]:
             pms_confidence = 0.0
             pms_quality = 50.0
             pms_breakdown = {}
+            prediction_count = 0
             try:
                 # Filter directly from in-memory poly_markets (single network fetch for the entire sector)
                 direct_markets = [m for m in poly_markets if m.ticker and m.ticker.upper() == ticker.upper()]
                 sector_events = [m for m in poly_markets if m.event_key is not None and (not m.ticker or m.ticker.upper() != ticker.upper())]
+                prediction_count = len(direct_markets) + len(sector_events)
                 
                 pms_score, pms_confidence, pms_quality, pms_breakdown = calculate_prediction_market_score(
                     ticker=ticker,
@@ -221,17 +223,15 @@ async def run_full_pipeline() -> Dict[str, Any]:
             tech_score_raw = None
             raw_market_df = None
             try:
-                mkt_data = await market_provider.get_market_data(ticker=ticker)
-                if mkt_data.status == "AVAILABLE" and mkt_data.raw_df is not None:
-                    raw_market_df = mkt_data.raw_df
+                mkt_data = await market_provider.fetch_market_data(ticker)
+                raw_market_df = mkt_data.raw_df
+                if mkt_data.status == "AVAILABLE" and raw_market_df is not None:
                     indicators = calculate_technical_indicators(raw_market_df)
                     indicators["price"] = mkt_data.price
                     indicators["volume"] = mkt_data.volume
                     indicators["status"] = "AVAILABLE"
-                    
-                    tech_score = calculate_technical_score(indicators)
-                    indicators["technical_score"] = tech_score
-                    tech_score_raw = tech_score
+                    tech_score_raw = calculate_technical_score(indicators)
+                    indicators["technical_score"] = tech_score_raw
                 else:
                     indicators["status"] = mkt_data.status
 
@@ -285,7 +285,8 @@ async def run_full_pipeline() -> Dict[str, Any]:
                 previous_smi_3d=prev_smi_3d,
                 previous_smi_5d=prev_smi_5d,
                 post_count=len(recent_posts),
-                news_count=len(recent_news)
+                news_count=len(recent_news),
+                prediction_count=prediction_count
             )
 
             # Signal & Explanation generation
@@ -330,6 +331,9 @@ async def run_full_pipeline() -> Dict[str, Any]:
                 "confidence": smi_dict["confidence"],
                 "data_completeness": smi_dict["data_quality"],
                 "data_quality": smi_dict["data_quality"],
+                "post_count": len(recent_posts),
+                "news_count": len(recent_news),
+                "prediction_count": prediction_count,
                 "price": indicators.get("price"),
                 "volume": indicators.get("volume"),
                 "explanation": signal_res["explanation"]
@@ -348,7 +352,10 @@ async def run_full_pipeline() -> Dict[str, Any]:
                 "signal": signal_res["signal"],
                 "confidence": smi_dict["confidence"],
                 "data_quality": smi_dict["data_quality"],
-                "divergence": signal_res["divergence"]
+                "divergence": signal_res["divergence"],
+                "post_count": len(recent_posts),
+                "news_count": len(recent_news),
+                "prediction_count": prediction_count
             }
 
         finish_job_run(db, job_run.id, status="SUCCESS", records=records_processed)

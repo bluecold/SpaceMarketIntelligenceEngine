@@ -238,7 +238,11 @@ def get_recent_prediction_markets(
     ticker: Optional[str] = None,
     mappings: Optional[Dict[str, Dict[str, float]]] = None
 ) -> List[PredictionMarketModel]:
-    """Get active prediction markets, filtered by ticker and relevant cross-company event mappings."""
+    """
+    Get active prediction markets, filtered and prioritized:
+    1. Direct contracts for the specified ticker (top priority).
+    2. Sector & Macro events with an impact mapping on the ticker.
+    """
     query = db.query(PredictionMarketModel).filter(PredictionMarketModel.status == "ACTIVE")
     all_active = query.order_by(desc(PredictionMarketModel.quality_score)).all()
     
@@ -248,21 +252,22 @@ def get_recent_prediction_markets(
     ticker_up = ticker.upper()
     event_maps = mappings or DEFAULT_EVENT_COMPANY_MAPPINGS
 
-    filtered = []
+    direct_markets = []
+    sector_markets = []
+
     for m in all_active:
         # 1. Direct market for this ticker
         if m.ticker and m.ticker.upper() == ticker_up:
-            filtered.append(m)
-            continue
+            direct_markets.append(m)
         # 2. Sector event market with an impact mapping on this ticker
-        if m.event_key and m.event_key in event_maps and ticker_up in event_maps[m.event_key]:
-            filtered.append(m)
-            continue
+        elif m.event_key and m.event_key in event_maps and ticker_up in event_maps[m.event_key]:
+            sector_markets.append(m)
         # 3. Macro / unmapped global market with no ticker and no event_key
-        if not m.ticker and not m.event_key:
-            filtered.append(m)
+        elif not m.ticker and not m.event_key:
+            sector_markets.append(m)
 
-    return filtered
+    # Return direct company markets first, followed by relevant sector events
+    return direct_markets + sector_markets
 
 
 def save_divergences(db: Session, ticker: str, divergences_data: List[Dict[str, Any]]) -> int:
@@ -358,6 +363,9 @@ def save_ssi_snapshot(db: Session, data: Dict[str, Any]) -> SSISnapshotModel:
         confidence=data["confidence"],
         data_completeness=data["data_completeness"],
         data_quality=data.get("data_quality", data["data_completeness"]),
+        post_count=data.get("post_count"),
+        news_count=data.get("news_count"),
+        prediction_count=data.get("prediction_count"),
         price=data.get("price"),
         volume=data.get("volume"),
         explanation=data.get("explanation")

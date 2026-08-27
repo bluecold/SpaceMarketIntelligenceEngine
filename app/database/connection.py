@@ -1,8 +1,11 @@
 import os
+import logging
 from sqlite3 import Connection as SQLiteConnection
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, event, text, inspect
 from sqlalchemy.orm import sessionmaker, declarative_base
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # Ensure data directory exists
 os.makedirs("data", exist_ok=True)
@@ -51,8 +54,11 @@ def init_db():
     
     Base.metadata.create_all(bind=engine)
 
-    # SQLite column auto-migrations for backward compatibility
+    # SQLite column auto-migrations with schema introspection and precise error logging
     with engine.connect() as conn:
+        inspector = inspect(conn)
+        existing_tables = set(inspector.get_table_names())
+
         columns_to_check = [
             ("tickers", "sector", "VARCHAR(100) DEFAULT 'Space Technology'"),
             ("tickers", "is_private_or_test", "BOOLEAN DEFAULT 0"),
@@ -79,10 +85,27 @@ def init_db():
             ("ssi_snapshots", "signal_modifier", "VARCHAR(50)"),
             ("ssi_snapshots", "data_quality", "FLOAT DEFAULT 100.0"),
             ("ssi_snapshots", "volume", "FLOAT"),
+            ("ssi_snapshots", "post_count", "INTEGER"),
+            ("ssi_snapshots", "news_count", "INTEGER"),
+            ("ssi_snapshots", "prediction_count", "INTEGER"),
         ]
+
         for table, col, col_type in columns_to_check:
-            try:
-                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type};"))
-                conn.commit()
-            except Exception:
-                pass  # Column already exists
+            if table not in existing_tables:
+                logger.warning(f"Auto-migration skipped: Table '{table}' does not exist in database.")
+                continue
+
+            existing_cols = {c["name"] for c in inspector.get_columns(table)}
+            if col not in existing_cols:
+                try:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type};"))
+                    conn.commit()
+                    logger.info(f"Auto-migrated database schema: added column '{col}' ({col_type}) to table '{table}'.")
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if "duplicate column name" in err_str:
+                        # Benign race condition where column was concurrently added
+                        pass
+                    else:
+                        logger.error(f"Critical auto-migration error while adding '{col}' to '{table}': {e}", exc_info=True)
+                        raise

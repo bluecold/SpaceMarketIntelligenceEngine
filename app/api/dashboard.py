@@ -73,6 +73,9 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                 "confidence": round(ssi_snap.confidence, 1),
                 "data_quality": round(ssi_snap.data_quality if ssi_snap.data_quality is not None else ssi_snap.data_completeness, 1),
                 "data_completeness": round(ssi_snap.data_completeness, 1),
+                "post_count": ssi_snap.post_count,
+                "news_count": ssi_snap.news_count,
+                "prediction_count": ssi_snap.prediction_count,
                 "price": ssi_snap.price,
                 "market_status": mkt_snap.market_status if mkt_snap else "AVAILABLE",
                 "timestamp": ssi_snap.timestamp.isoformat() + "Z" if ssi_snap.timestamp else None,
@@ -83,7 +86,7 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
             # Check if active alert applies
             snap_iso = ssi_snap.timestamp.isoformat() + "Z" if ssi_snap.timestamp else None
 
-            if "STRONG BUY" in ssi_snap.signal:
+            if ssi_snap.signal and "STRONG BUY" in ssi_snap.signal:
                 alerts.append({
                     "id": f"{symbol}:STRONG_BUY:{ssi_snap.id if hasattr(ssi_snap, 'id') else '0'}",
                     "ticker": symbol,
@@ -95,7 +98,7 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                     "age_hours": age_hours,
                     "is_active": not is_stale
                 })
-            elif "STRONG AVOID" in ssi_snap.signal:
+            elif ssi_snap.signal and "STRONG AVOID" in ssi_snap.signal:
                 alerts.append({
                     "id": f"{symbol}:STRONG_AVOID:{ssi_snap.id if hasattr(ssi_snap, 'id') else '0'}",
                     "ticker": symbol,
@@ -143,11 +146,11 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
             rankings.append({
                 "ticker": symbol,
                 "name": ticker_config.name,
-                "smi": 50.0,
-                "ssi": 50.0,
+                "smi": None,
+                "ssi": None,
                 "pms": None,
-                "delta_1d": 0.0,
-                "social_score": 50.0,
+                "delta_1d": None,
+                "social_score": None,
                 "prediction_score": None,
                 "news_score": None,
                 "momentum_score": None,
@@ -161,6 +164,9 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                 "confidence": 0.0,
                 "data_quality": 0.0,
                 "data_completeness": 0.0,
+                "post_count": 0,
+                "news_count": 0,
+                "prediction_count": 0,
                 "price": None,
                 "market_status": "DATA_UNAVAILABLE",
                 "timestamp": None,
@@ -168,8 +174,11 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                 "is_stale": False
             })
 
-    # Sort rankings by SMI descending
-    rankings.sort(key=lambda x: x["smi"], reverse=True)
+    # Sort rankings by SMI descending, safely placing None values at the bottom
+    rankings.sort(
+        key=lambda x: (x["smi"] is not None, x["smi"] if x["smi"] is not None else -1.0),
+        reverse=True
+    )
 
     return {
         "title": "SPACE MARKET INTELLIGENCE ENGINE",

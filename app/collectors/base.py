@@ -72,6 +72,10 @@ class MarketProviderInterface(ABC):
         """Fetch market data and historical price candles for a ticker."""
         pass
 
+    async def fetch_market_data(self, ticker: str) -> MarketData:
+        """Fetch market data alias."""
+        return await self.get_market_data(ticker)
+
 
 class PredictionMarketProvider(ABC):
     @abstractmethod

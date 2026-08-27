@@ -59,3 +59,8 @@ class YFinanceMarketProvider(MarketProviderInterface):
                 status="DATA_UNAVAILABLE",
                 raw_df=None
             )
+
+    async def fetch_market_data(self, ticker: str) -> MarketData:
+        """Alias for get_market_data to maintain backwards compatibility."""
+        return await self.get_market_data(ticker)
+

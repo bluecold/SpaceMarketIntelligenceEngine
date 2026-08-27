@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  Bell, AlertTriangle, Zap, TrendingUp, Check,
-  Clock, ShieldAlert, Radio, ExternalLink, CheckCheck, Filter
+  Bell, Zap, Check,
+  Clock, Radio, ExternalLink, CheckCheck, Settings,
+  ShieldCheck, ShieldAlert
 } from 'lucide-react';
 import { AlertItem } from '../types';
 
@@ -11,24 +12,81 @@ interface AlertsManagerProps {
 }
 
 type FilterCategory = 'ALL' | 'CRITICAL' | 'DIVERGENCES' | 'SIGNALS' | 'SYSTEM';
+type NotificationSeverity = 'CRITICAL' | 'HIGH' | 'ALL';
 
-const STORAGE_KEY = 'smie_read_alerts_v1';
+interface NotificationSettings {
+  desktopEnabled: boolean;
+  minSeverity: NotificationSeverity;
+}
+
+const READ_STORAGE_KEY = 'smie_read_alerts_v1';
+const NOTIFIED_STORAGE_KEY = 'smie_desktop_notified_v1';
+const SETTINGS_STORAGE_KEY = 'smie_alert_settings_v1';
+
+const DEFAULT_SETTINGS: NotificationSettings = {
+  desktopEnabled: true,
+  minSeverity: 'CRITICAL'
+};
 
 export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTicker }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [permission, setPermission] = useState<NotificationPermission>('default');
   const [activeFilter, setActiveFilter] = useState<FilterCategory>('ALL');
+
+  // Read alerts tracker
   const [readIds, setReadIds] = useState<Set<string>>(() => {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = localStorage.getItem(READ_STORAGE_KEY);
       return stored ? new Set(JSON.parse(stored)) : new Set();
     } catch {
       return new Set();
     }
   });
 
+  // User notification preferences
+  const [settings, setSettings] = useState<NotificationSettings>(() => {
+    try {
+      const stored = localStorage.getItem(SETTINGS_STORAGE_KEY);
+      return stored ? { ...DEFAULT_SETTINGS, ...JSON.parse(stored) } : DEFAULT_SETTINGS;
+    } catch {
+      return DEFAULT_SETTINGS;
+    }
+  });
+
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const notifiedRef = useRef<Set<string>>(new Set());
+  const isInitialMountRef = useRef<boolean>(true);
+
+  // Persistent notified registry (persisted in localStorage, loaded into ref)
+  const notifiedIdsRef = useRef<Set<string>>((() => {
+    try {
+      const stored = localStorage.getItem(NOTIFIED_STORAGE_KEY);
+      return stored ? new Set(JSON.parse(stored)) : new Set();
+    } catch {
+      return new Set();
+    }
+  })());
+
+  const saveNotifiedIds = (set: Set<string>) => {
+    try {
+      // Auto-prune to keep most recent 100 entries to avoid localStorage bloat
+      const arr = Array.from(set);
+      const pruned = arr.length > 100 ? arr.slice(arr.length - 100) : arr;
+      localStorage.setItem(NOTIFIED_STORAGE_KEY, JSON.stringify(pruned));
+    } catch (e) {
+      console.warn('Failed to save notified alerts', e);
+    }
+  };
+
+  const updateSettings = (newSettings: Partial<NotificationSettings>) => {
+    const updated = { ...settings, ...newSettings };
+    setSettings(updated);
+    try {
+      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(updated));
+    } catch (e) {
+      console.warn('Failed to save alert settings', e);
+    }
+  };
 
   // Close dropdown on click outside
   useEffect(() => {
@@ -55,12 +113,27 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
     if ('Notification' in window) {
       const res = await Notification.requestPermission();
       setPermission(res);
-      if (res === 'granted' && alerts.length > 0) {
+      if (res === 'granted') {
         new Notification('🚀 SMIE Real-Time Alerts Enabled', {
-          body: `Monitoring active aerospace signals. ${alerts.length} active alerts in radar.`,
+          body: `Monitoreo de señales activado. Modo: ${settings.minSeverity === 'CRITICAL' ? 'Solo Críticas' : settings.minSeverity === 'HIGH' ? 'Críticas y Altas' : 'Todas'}.`,
           icon: '🚀'
         });
       }
+    }
+  };
+
+  const triggerTestNotification = () => {
+    if (permission !== 'granted') {
+      requestNotificationPermission();
+      return;
+    }
+    try {
+      new Notification('🔔 SMIE Intelligence Alert Test', {
+        body: 'Notificaciones de Windows funcionando correctamente en tiempo real.',
+        icon: '🚀'
+      });
+    } catch (e) {
+      console.warn('Error launching test notification', e);
     }
   };
 
@@ -68,55 +141,100 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
     return al.id || `${al.ticker}:${al.type}:${al.timestamp || index}`;
   };
 
-  // Trigger desktop notification ONLY when brand new alerts arrive
+  const isAlertActive = (al: AlertItem): boolean => {
+    if (al.is_active !== undefined) return al.is_active;
+    if (al.age_hours !== undefined && al.age_hours !== null) return al.age_hours < 6.0;
+    return true;
+  };
+
+  // --- COLD START PROTECTION & REAL-TIME DISPATCH ---
   useEffect(() => {
-    if (permission !== 'granted' || !alerts || alerts.length === 0) return;
+    if (!alerts || alerts.length === 0) return;
+
+    // 1. SILENT COLD-START SEEDING:
+    // On the initial page mount or reload (F5), seed all existing server alerts
+    // into the notified set WITHOUT firing any Windows notification.
+    if (isInitialMountRef.current) {
+      isInitialMountRef.current = false;
+      const updatedSet = new Set(notifiedIdsRef.current);
+      alerts.forEach((al, idx) => {
+        updatedSet.add(getAlertKey(al, idx));
+      });
+      notifiedIdsRef.current = updatedSet;
+      saveNotifiedIds(updatedSet);
+      return;
+    }
+
+    // 2. DISPATCH ONLY TRULY NEW ARRIVING ALERTS (subsequent polling / job triggers)
+    if (permission !== 'granted' || !settings.desktopEnabled) return;
+
+    const newToNotify: AlertItem[] = [];
+    const updatedSet = new Set(notifiedIdsRef.current);
 
     alerts.forEach((alert, idx) => {
       const key = getAlertKey(alert, idx);
-      if (!notifiedRef.current.has(key)) {
-        notifiedRef.current.add(key);
-        try {
-          const timeStr = alert.timestamp
-            ? new Date(alert.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
-            : '';
-          new Notification(`SMIE [${alert.level}] ${alert.ticker}`, {
-            body: `${timeStr ? `[${timeStr}] ` : ''}${alert.message}`,
-            icon: '🚀'
-          });
-        } catch (e) {
-          console.warn('Could not fire desktop notification', e);
-        }
+      if (updatedSet.has(key)) return;
+
+      // Mark as processed in registry immediately to ensure idempotency
+      updatedSet.add(key);
+
+      // Freshness check: must be active and <= 30 minutes old
+      const isActive = isAlertActive(alert);
+      const isFresh = alert.age_hours === undefined || alert.age_hours === null || alert.age_hours <= 0.5;
+      if (!isActive || !isFresh) return;
+
+      // Severity check based on user preferences
+      const isCritical = alert.level === 'CRITICAL';
+      const isHigh = alert.level === 'HIGH';
+      if (settings.minSeverity === 'CRITICAL' && !isCritical) return;
+      if (settings.minSeverity === 'HIGH' && !isCritical && !isHigh) return;
+
+      newToNotify.push(alert);
+    });
+
+    notifiedIdsRef.current = updatedSet;
+    saveNotifiedIds(updatedSet);
+
+    // Fire notifications for qualifying new alerts
+    newToNotify.forEach((alert) => {
+      try {
+        const timeStr = alert.timestamp
+          ? new Date(alert.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+          : '';
+        new Notification(`SMIE [${alert.level}] ${alert.ticker}`, {
+          body: `${timeStr ? `[${timeStr}] ` : ''}${alert.message}`,
+          icon: '🚀'
+        });
+      } catch (e) {
+        console.warn('Could not fire desktop notification', e);
       }
     });
-  }, [alerts, permission]);
+  }, [alerts, permission, settings]);
 
   const markAllAsRead = () => {
     const allKeys = new Set(readIds);
     alerts.forEach((al, idx) => allKeys.add(getAlertKey(al, idx)));
     setReadIds(allKeys);
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(allKeys)));
+      localStorage.setItem(READ_STORAGE_KEY, JSON.stringify(Array.from(allKeys)));
     } catch (e) {
       console.warn('Failed to save read alerts to localStorage', e);
     }
   };
 
   const handleAlertClick = (al: AlertItem, idx: number) => {
-    // Mark single alert as read
     const key = getAlertKey(al, idx);
     if (!readIds.has(key)) {
       const updated = new Set(readIds);
       updated.add(key);
       setReadIds(updated);
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(updated)));
+        localStorage.setItem(READ_STORAGE_KEY, JSON.stringify(Array.from(updated)));
       } catch (e) {
         console.warn('Failed to save read alerts to localStorage', e);
       }
     }
 
-    // Close dropdown and navigate to ticker detail modal
     setIsOpen(false);
     if (onSelectTicker) {
       onSelectTicker(al.ticker);
@@ -153,12 +271,6 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
     if (diffMin < 60) return `hace ${diffMin} min`;
     const diffHours = (diffMin / 60).toFixed(1);
     return `hace ${diffHours}h`;
-  };
-
-  const isAlertActive = (al: AlertItem): boolean => {
-    if (al.is_active !== undefined) return al.is_active;
-    if (al.age_hours !== undefined && al.age_hours !== null) return al.age_hours < 6.0;
-    return true;
   };
 
   // Filter calculations
@@ -236,8 +348,8 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
             position: 'absolute',
             top: '46px',
             right: '0',
-            width: '420px',
-            maxWidth: '92vw',
+            width: '440px',
+            maxWidth: '94vw',
             background: '#0c1322',
             border: '1px solid var(--border-color)',
             boxShadow: '0 16px 40px rgba(0, 0, 0, 0.85), 0 0 15px rgba(0, 242, 254, 0.1)',
@@ -262,27 +374,139 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
               </span>
             </div>
 
-            {unreadCount > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <button
-                onClick={markAllAsRead}
+                onClick={() => setShowSettings(!showSettings)}
                 style={{
-                  background: 'none',
-                  border: 'none',
-                  color: 'var(--text-muted)',
+                  background: showSettings ? 'rgba(0, 242, 254, 0.15)' : 'none',
+                  border: showSettings ? '1px solid var(--accent-cyan)' : 'none',
+                  color: showSettings ? 'var(--accent-cyan)' : 'var(--text-muted)',
                   cursor: 'pointer',
                   fontSize: '0.72rem',
                   display: 'flex',
                   alignItems: 'center',
                   gap: '4px',
-                  padding: '2px 6px',
-                  borderRadius: '4px'
+                  padding: '3px 7px',
+                  borderRadius: '6px'
                 }}
-                title="Marcar todas las alertas como leídas"
+                title="Configuración de notificaciones de Windows"
               >
-                <CheckCheck size={13} /> Marcar leídas
+                <Settings size={13} />
+                <span>Ajustes</span>
               </button>
-            )}
+
+              {unreadCount > 0 && (
+                <button
+                  onClick={markAllAsRead}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--text-muted)',
+                    cursor: 'pointer',
+                    fontSize: '0.72rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    padding: '2px 6px',
+                    borderRadius: '4px'
+                  }}
+                  title="Marcar todas las alertas como leídas"
+                >
+                  <CheckCheck size={13} /> Leídas
+                </button>
+              )}
+            </div>
           </div>
+
+          {/* Settings Panel (Toggleable) */}
+          {showSettings && (
+            <div
+              style={{
+                background: 'rgba(255, 255, 255, 0.03)',
+                border: '1px solid rgba(0, 242, 254, 0.2)',
+                borderRadius: '10px',
+                padding: '12px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px'
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#fff', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <ShieldCheck size={14} color="var(--accent-cyan)" /> Notificaciones de Windows
+                </span>
+                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '6px', fontSize: '0.75rem' }}>
+                  <input
+                    type="checkbox"
+                    checked={settings.desktopEnabled}
+                    onChange={(e) => updateSettings({ desktopEnabled: e.target.checked })}
+                    style={{ cursor: 'pointer' }}
+                  />
+                  <span style={{ color: settings.desktopEnabled ? 'var(--bullish-green)' : 'var(--text-muted)' }}>
+                    {settings.desktopEnabled ? 'Activadas' : 'Silenciadas'}
+                  </span>
+                </label>
+              </div>
+
+              {settings.desktopEnabled && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    Umbral de severidad para popup en Windows:
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    {(
+                      [
+                        { id: 'CRITICAL', label: '🔴 Solo Críticas' },
+                        { id: 'HIGH', label: '🟠 Críticas + Altas' },
+                        { id: 'ALL', label: '⚪ Todas' }
+                      ] as const
+                    ).map((lvl) => (
+                      <button
+                        key={lvl.id}
+                        onClick={() => updateSettings({ minSeverity: lvl.id })}
+                        style={{
+                          flex: 1,
+                          padding: '4px 6px',
+                          fontSize: '0.7rem',
+                          fontWeight: settings.minSeverity === lvl.id ? 700 : 500,
+                          borderRadius: '6px',
+                          border: settings.minSeverity === lvl.id ? '1px solid var(--accent-cyan)' : '1px solid rgba(255,255,255,0.08)',
+                          background: settings.minSeverity === lvl.id ? 'rgba(0, 242, 254, 0.15)' : 'rgba(255,255,255,0.02)',
+                          color: settings.minSeverity === lvl.id ? '#fff' : 'var(--text-muted)',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        {lvl.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '4px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>
+                  🛡️ Carga inicial protegida (sin spam en F5)
+                </span>
+                <button
+                  onClick={triggerTestNotification}
+                  style={{
+                    background: 'rgba(255, 255, 255, 0.05)',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    color: 'var(--accent-cyan)',
+                    padding: '3px 8px',
+                    borderRadius: '4px',
+                    fontSize: '0.7rem',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px'
+                  }}
+                >
+                  <Zap size={11} /> Probar aviso
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Filter Pills */}
           <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '4px' }}>
@@ -316,7 +540,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
             ))}
           </div>
 
-          {/* Desktop Notification Banner */}
+          {/* Desktop Permission Request Banner (if not yet granted) */}
           {permission !== 'granted' && (
             <div
               onClick={requestNotificationPermission}
@@ -336,7 +560,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
               }}
             >
               <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Zap size={14} /> Activar notificaciones de escritorio en tiempo real
+                <Zap size={14} /> Activar notificaciones en Windows (solo nuevas señales)
               </span>
               <span style={{ fontWeight: 700, fontSize: '0.72rem', textDecoration: 'underline' }}>
                 Activar

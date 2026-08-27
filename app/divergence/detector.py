@@ -1,7 +1,11 @@
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime, timezone
 from app.config import settings
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class DivergenceResult(BaseModel):
@@ -14,7 +18,7 @@ class DivergenceResult(BaseModel):
     strength: float  # 0.0 to 1.0
     confidence: float  # 0.0 to 1.0
     description: str
-    timestamp: datetime = datetime.now(timezone.utc)
+    timestamp: datetime = Field(default_factory=utc_now)
 
 
 def detect_divergences(

@@ -3,7 +3,8 @@ import { TickerDetailResponse, HistoryPoint } from '../types';
 import { HistoryChart } from './HistoryChart';
 import {
   X, CheckCircle, AlertTriangle, MessageSquare, Newspaper,
-  Zap, Layers, TrendingUp, DollarSign, Activity, Compass, ExternalLink, ShieldCheck
+  Zap, Layers, TrendingUp, DollarSign, Activity, Compass, ExternalLink, ShieldCheck,
+  Target, Globe
 } from 'lucide-react';
 
 interface TickerDetailProps {
@@ -16,6 +17,7 @@ export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose }) =
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'prediction' | 'social' | 'news' | 'divergences' | 'technical'>('prediction');
+  const [marketFilter, setMarketFilter] = useState<'ALL' | 'DIRECT' | 'SECTOR'>('ALL');
 
   useEffect(() => {
     Promise.all([
@@ -45,8 +47,8 @@ export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose }) =
 
   if (!detail) return null;
 
-  const smiVal = detail.header.smi ?? detail.header.ssi ?? 50.0;
-  const ssiVal = detail.header.ssi ?? 50.0;
+  const smiVal = detail.header.smi ?? detail.header.ssi;
+  const ssiVal = detail.header.ssi;
   const pmsVal = detail.header.pms;
 
   const getSignalClass = (signal: string) => {
@@ -92,15 +94,19 @@ export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose }) =
           <div style={{ display: 'flex', gap: '20px', alignItems: 'center', textAlign: 'right' }}>
             <div>
               <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>SMI (INTEGRAL)</div>
-              <div style={{ fontSize: '2rem', fontFamily: 'var(--font-heading)', fontWeight: 800, color: 'var(--accent-cyan)' }}>
-                {smiVal.toFixed(1)} <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>/100</span>
+              <div style={{ fontSize: '2rem', fontFamily: 'var(--font-heading)', fontWeight: 800, color: smiVal !== null && smiVal !== undefined ? 'var(--accent-cyan)' : 'var(--text-muted)' }}>
+                {smiVal !== null && smiVal !== undefined ? (
+                  <>{smiVal.toFixed(1)} <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>/100</span></>
+                ) : (
+                  '—'
+                )}
               </div>
             </div>
 
             <div style={{ borderLeft: '1px solid var(--border-color)', paddingLeft: '16px' }}>
               <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>SSI (SOCIAL)</div>
-              <div style={{ fontSize: '1.4rem', fontWeight: 700, color: 'var(--bullish-green)' }}>
-                {ssiVal.toFixed(1)}
+              <div style={{ fontSize: '1.4rem', fontWeight: 700, color: ssiVal !== null && ssiVal !== undefined ? 'var(--bullish-green)' : 'var(--text-muted)' }}>
+                {ssiVal !== null && ssiVal !== undefined ? ssiVal.toFixed(1) : '—'}
               </div>
             </div>
 
@@ -119,41 +125,55 @@ export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose }) =
         </div>
 
         {/* Multivariable 6 Pillars Grid */}
-        <div className="tech-grid" style={{ marginBottom: '20px' }}>
-          <div className="tech-item">
-            <div className="tech-key">SOCIAL SSI (30%)</div>
-            <div className="tech-val" style={{ color: 'var(--bullish-green)' }}>
-              {detail.score_breakdown.social_score?.toFixed(1) ?? '--'}
+        <div style={{ marginBottom: '20px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
+            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              SMIE Multi-Factor 6 Pillars Architecture
+            </span>
+            <div style={{ display: 'flex', gap: '14px', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+              <span>Confidence: <strong style={{ color: '#fff' }}>{detail.header.confidence ? `${detail.header.confidence.toFixed(0)}%` : '0%'}</strong></span>
+              <span>Data Quality: <strong style={{ color: 'var(--accent-cyan)' }}>{detail.header.data_quality ? `${detail.header.data_quality.toFixed(0)}%` : '0%'}</strong></span>
+              {detail.sample_counts && (
+                <span>Data Depth: <strong style={{ color: '#e2e8f0' }}>{detail.sample_counts.post_count}P / {detail.sample_counts.news_count}N / {detail.sample_counts.prediction_count}M</strong></span>
+              )}
             </div>
           </div>
-          <div className="tech-item">
-            <div className="tech-key">POLYMARKET PMS (15%)</div>
-            <div className="tech-val" style={{ color: 'var(--accent-cyan)' }}>
-              {detail.score_breakdown.prediction_score ? `${detail.score_breakdown.prediction_score.toFixed(1)}` : 'N/A'}
+          <div className="tech-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
+            <div className="tech-item">
+              <div className="tech-key">SOCIAL SSI (30%)</div>
+              <div className="tech-val" style={{ color: 'var(--bullish-green)' }}>
+                {detail.score_breakdown.social_score !== null && detail.score_breakdown.social_score !== undefined ? detail.score_breakdown.social_score.toFixed(1) : '—'}
+              </div>
             </div>
-          </div>
-          <div className="tech-item">
-            <div className="tech-key">NEWS / CATALYSTS (20%)</div>
-            <div className="tech-val" style={{ color: '#f59e0b' }}>
-              {detail.score_breakdown.news_score ? `${detail.score_breakdown.news_score.toFixed(1)}` : 'N/A'}
+            <div className="tech-item">
+              <div className="tech-key">POLYMARKET PMS (15%)</div>
+              <div className="tech-val" style={{ color: 'var(--accent-cyan)' }}>
+                {detail.score_breakdown.prediction_score !== null && detail.score_breakdown.prediction_score !== undefined ? detail.score_breakdown.prediction_score.toFixed(1) : '—'}
+              </div>
             </div>
-          </div>
-          <div className="tech-item">
-            <div className="tech-key">MARKET MOMENTUM (20%)</div>
-            <div className="tech-val" style={{ color: '#38bdf8' }}>
-              {detail.score_breakdown.momentum_score ? `${detail.score_breakdown.momentum_score.toFixed(1)}` : 'N/A'}
+            <div className="tech-item">
+              <div className="tech-key">NEWS / CATALYSTS (20%)</div>
+              <div className="tech-val" style={{ color: '#f59e0b' }}>
+                {detail.score_breakdown.news_score !== null && detail.score_breakdown.news_score !== undefined ? detail.score_breakdown.news_score.toFixed(1) : '—'}
+              </div>
             </div>
-          </div>
-          <div className="tech-item">
-            <div className="tech-key">CONFIDENCE</div>
-            <div className="tech-val" style={{ color: '#fff' }}>
-              {detail.header.confidence ? `${detail.header.confidence.toFixed(0)}%` : '0%'}
+            <div className="tech-item">
+              <div className="tech-key">MARKET MOMENTUM (20%)</div>
+              <div className="tech-val" style={{ color: '#38bdf8' }}>
+                {detail.score_breakdown.momentum_score !== null && detail.score_breakdown.momentum_score !== undefined ? detail.score_breakdown.momentum_score.toFixed(1) : '—'}
+              </div>
             </div>
-          </div>
-          <div className="tech-item">
-            <div className="tech-key">DATA QUALITY</div>
-            <div className="tech-val" style={{ color: 'var(--accent-cyan)' }}>
-              {detail.header.data_quality ? `${detail.header.data_quality.toFixed(0)}%` : '0%'}
+            <div className="tech-item" title="Pilar modular: al no haber feed fundamental conectado, su 10% se redistribuye proporcionalmente en el SMI">
+              <div className="tech-key">FUNDAMENTALS (10%)</div>
+              <div className="tech-val" style={{ color: '#a78bfa', fontSize: detail.score_breakdown.fundamental_score ? undefined : '0.9rem' }}>
+                {detail.score_breakdown.fundamental_score !== null && detail.score_breakdown.fundamental_score !== undefined ? detail.score_breakdown.fundamental_score.toFixed(1) : '— (Modular)'}
+              </div>
+            </div>
+            <div className="tech-item">
+              <div className="tech-key">RISK / SAFETY (5%)</div>
+              <div className="tech-val" style={{ color: detail.score_breakdown.risk_score !== null && detail.score_breakdown.risk_score !== undefined ? (detail.score_breakdown.risk_score >= 60 ? 'var(--bullish-green)' : detail.score_breakdown.risk_score <= 35 ? 'var(--bearish-red)' : 'var(--neutral-yellow)') : 'var(--text-muted)' }}>
+                {detail.score_breakdown.risk_score !== null && detail.score_breakdown.risk_score !== undefined ? detail.score_breakdown.risk_score.toFixed(1) : '—'}
+              </div>
             </div>
           </div>
         </div>
@@ -232,84 +252,259 @@ export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose }) =
         </div>
 
         {/* TAB 1: Prediction Markets (Polymarket) */}
-        {activeTab === 'prediction' && (
-          <div>
-            {detail.prediction_markets && detail.prediction_markets.length > 0 ? (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '12px' }}>
-                {detail.prediction_markets.map((m) => (
-                  <div
-                    key={m.id}
+        {activeTab === 'prediction' && (() => {
+          const allMarkets = detail.prediction_markets || [];
+          const directMarkets = allMarkets.filter((m) => m.is_direct || (m.ticker && m.ticker.toUpperCase() === detail.ticker.toUpperCase()));
+          const sectorMarkets = allMarkets.filter((m) => !m.is_direct && (!m.ticker || m.ticker.toUpperCase() !== detail.ticker.toUpperCase()));
+
+          const displayedMarkets = marketFilter === 'DIRECT'
+            ? directMarkets
+            : marketFilter === 'SECTOR'
+            ? sectorMarkets
+            : allMarkets;
+
+          return (
+            <div>
+              {/* Prediction Sub-Filter Pills & PMS Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button
+                    onClick={() => setMarketFilter('ALL')}
                     style={{
-                      background: 'rgba(255, 255, 255, 0.03)',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: '10px',
-                      padding: '16px'
+                      background: marketFilter === 'ALL' ? 'rgba(0, 242, 254, 0.15)' : 'rgba(255, 255, 255, 0.04)',
+                      border: marketFilter === 'ALL' ? '1px solid var(--accent-cyan)' : '1px solid rgba(255, 255, 255, 0.08)',
+                      color: marketFilter === 'ALL' ? 'var(--accent-cyan)' : 'var(--text-muted)',
+                      borderRadius: '20px',
+                      padding: '4px 12px',
+                      fontSize: '0.72rem',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease'
                     }}
                   >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px' }}>
-                      <div>
-                        <span style={{ fontSize: '0.7rem', textTransform: 'uppercase', color: 'var(--accent-cyan)', fontWeight: 700 }}>
-                          {m.category}
-                        </span>
-                        <h4 style={{ margin: '4px 0 8px 0', fontSize: '1rem', color: '#fff' }}>{m.title}</h4>
-                      </div>
-                      <div style={{ textAlign: 'right' }}>
-                        <span
-                          style={{
-                            fontSize: '0.72rem',
-                            fontWeight: 700,
-                            padding: '3px 8px',
-                            borderRadius: '6px',
-                            background: m.quality_score >= 50 ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
-                            color: m.quality_score >= 50 ? 'var(--bullish-green)' : 'var(--bearish-red)',
-                            border: `1px solid ${m.quality_score >= 50 ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)'}`
-                          }}
-                        >
-                          Quality: {m.quality_score}/100
-                        </span>
-                      </div>
-                    </div>
+                    Todos ({allMarkets.length})
+                  </button>
 
-                    {/* Probability Bar */}
-                    <div style={{ margin: '12px 0 8px 0' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', fontWeight: 700, marginBottom: '4px' }}>
-                        <span style={{ color: 'var(--bullish-green)' }}>YES: {m.yes_probability}%</span>
-                        <span style={{ color: 'var(--bearish-red)' }}>NO: {m.no_probability}%</span>
-                      </div>
-                      <div style={{ height: '8px', width: '100%', background: 'rgba(239,68,68,0.4)', borderRadius: '4px', overflow: 'hidden' }}>
-                        <div
-                          style={{
-                            height: '100%',
-                            width: `${m.yes_probability}%`,
-                            background: 'var(--bullish-green)',
-                            borderRadius: '4px 0 0 4px',
-                            transition: 'width 0.5s ease'
-                          }}
-                        />
-                      </div>
-                    </div>
+                  <button
+                    onClick={() => setMarketFilter('DIRECT')}
+                    style={{
+                      background: marketFilter === 'DIRECT' ? 'rgba(16, 185, 129, 0.18)' : 'rgba(255, 255, 255, 0.04)',
+                      border: marketFilter === 'DIRECT' ? '1px solid var(--bullish-green)' : '1px solid rgba(255, 255, 255, 0.08)',
+                      color: marketFilter === 'DIRECT' ? 'var(--bullish-green)' : 'var(--text-muted)',
+                      borderRadius: '20px',
+                      padding: '4px 12px',
+                      fontSize: '0.72rem',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    <Target size={12} />
+                    <span>Directos ${detail.ticker} ({directMarkets.length})</span>
+                  </button>
 
-                    {/* Market Depth Metrics */}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '10px' }}>
-                      <span>Vol: <b style={{ color: '#fff' }}>${(m.volume / 1000).toFixed(1)}k</b></span>
-                      <span>Liquidity: <b style={{ color: '#fff' }}>${(m.liquidity / 1000).toFixed(1)}k</b></span>
-                      <span>Spread: <b style={{ color: '#fff' }}>{(m.spread * 100).toFixed(1)}¢</b></span>
-                      {m.url && (
-                        <a href={m.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-cyan)', display: 'flex', alignItems: 'center', gap: '3px', textDecoration: 'none' }}>
-                          View on Polymarket <ExternalLink size={12} />
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                  <button
+                    onClick={() => setMarketFilter('SECTOR')}
+                    style={{
+                      background: marketFilter === 'SECTOR' ? 'rgba(168, 85, 247, 0.18)' : 'rgba(255, 255, 255, 0.04)',
+                      border: marketFilter === 'SECTOR' ? '1px solid #c084fc' : '1px solid rgba(255, 255, 255, 0.08)',
+                      color: marketFilter === 'SECTOR' ? '#c084fc' : 'var(--text-muted)',
+                      borderRadius: '20px',
+                      padding: '4px 12px',
+                      fontSize: '0.72rem',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    <Globe size={12} />
+                    <span>Sectoriales / SpaceX ({sectorMarkets.length})</span>
+                  </button>
+                </div>
+
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                  PMS Ponderado: <strong style={{ color: 'var(--accent-cyan)' }}>{detail.header.pms ? `${detail.header.pms.toFixed(1)}/100` : '—'}</strong>
+                </div>
               </div>
-            ) : (
-              <div style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)', background: 'rgba(0,0,0,0.2)', borderRadius: '8px' }}>
-                No active Polymarket contracts mapped directly to this ticker yet.
-              </div>
-            )}
-          </div>
-        )}
+
+              {/* Markets List */}
+              {displayedMarkets.length > 0 ? (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '12px' }}>
+                  {displayedMarkets.map((m) => {
+                    const isDirect = m.is_direct || (m.ticker && m.ticker.toUpperCase() === detail.ticker.toUpperCase());
+                    const impactBeta = m.impact_weight !== undefined && m.impact_weight !== null ? m.impact_weight : null;
+
+                    return (
+                      <div
+                        key={m.id}
+                        style={{
+                          background: isDirect ? 'rgba(16, 185, 129, 0.04)' : 'rgba(255, 255, 255, 0.03)',
+                          border: isDirect ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid var(--border-color)',
+                          borderLeft: isDirect ? '4px solid var(--bullish-green)' : '4px solid #a855f7',
+                          borderRadius: '10px',
+                          padding: '16px',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        {/* Top Tagging & Quality Bar */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px', marginBottom: '6px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                            {/* Role Badge */}
+                            {isDirect ? (
+                              <span
+                                style={{
+                                  fontSize: '0.68rem',
+                                  fontWeight: 800,
+                                  background: 'rgba(16, 185, 129, 0.15)',
+                                  color: 'var(--bullish-green)',
+                                  border: '1px solid rgba(16, 185, 129, 0.4)',
+                                  padding: '2px 7px',
+                                  borderRadius: '4px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '4px'
+                                }}
+                              >
+                                <Target size={11} /> CONTRATO DIRECTO ${detail.ticker}
+                              </span>
+                            ) : (
+                              <span
+                                style={{
+                                  fontSize: '0.68rem',
+                                  fontWeight: 800,
+                                  background: 'rgba(168, 85, 247, 0.15)',
+                                  color: '#c084fc',
+                                  border: '1px solid rgba(168, 85, 247, 0.4)',
+                                  padding: '2px 7px',
+                                  borderRadius: '4px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '4px'
+                                }}
+                              >
+                                <Globe size={11} /> CATALIZADOR SECTORIAL ({m.ticker || 'SPCX / Macro'})
+                              </span>
+                            )}
+
+                            {/* Impact Beta pill if sector catalyst */}
+                            {!isDirect && impactBeta !== null && (
+                              <span
+                                style={{
+                                  fontSize: '0.68rem',
+                                  fontWeight: 600,
+                                  background: impactBeta >= 0 ? 'rgba(0, 242, 254, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                                  color: impactBeta >= 0 ? 'var(--accent-cyan)' : 'var(--bearish-red)',
+                                  border: `1px solid ${impactBeta >= 0 ? 'rgba(0, 242, 254, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
+                                  padding: '2px 6px',
+                                  borderRadius: '4px'
+                                }}
+                              >
+                                Beta en ${detail.ticker}: {impactBeta >= 0 ? `+${(impactBeta * 100).toFixed(0)}%` : `${(impactBeta * 100).toFixed(0)}%`}
+                              </span>
+                            )}
+
+                            <span style={{ fontSize: '0.68rem', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 600 }}>
+                              {m.category}
+                            </span>
+                          </div>
+
+                          <div style={{ textAlign: 'right' }}>
+                            <span
+                              style={{
+                                fontSize: '0.72rem',
+                                fontWeight: 700,
+                                padding: '3px 8px',
+                                borderRadius: '6px',
+                                background: m.quality_score >= 50 ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
+                                color: m.quality_score >= 50 ? 'var(--bullish-green)' : 'var(--bearish-red)',
+                                border: `1px solid ${m.quality_score >= 50 ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)'}`
+                              }}
+                            >
+                              Calidad: {m.quality_score.toFixed(0)}/100
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Title & Description */}
+                        <h4 style={{ margin: '6px 0 6px 0', fontSize: '0.96rem', color: '#fff', lineHeight: '1.4' }}>
+                          {m.title}
+                        </h4>
+                        {m.description && (
+                          <p style={{ margin: '0 0 10px 0', fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.35' }}>
+                            {m.description}
+                          </p>
+                        )}
+
+                        {/* Probability Bar */}
+                        <div style={{ margin: '10px 0 8px 0' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', fontWeight: 700, marginBottom: '4px' }}>
+                            <span style={{ color: 'var(--bullish-green)' }}>YES: {m.yes_probability.toFixed(1)}%</span>
+                            <span style={{ color: 'var(--bearish-red)' }}>NO: {m.no_probability.toFixed(1)}%</span>
+                          </div>
+                          <div style={{ height: '8px', width: '100%', background: 'rgba(239,68,68,0.4)', borderRadius: '4px', overflow: 'hidden' }}>
+                            <div
+                              style={{
+                                height: '100%',
+                                width: `${m.yes_probability}%`,
+                                background: 'var(--bullish-green)',
+                                borderRadius: '4px 0 0 4px',
+                                transition: 'width 0.5s ease'
+                              }}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Market Depth Metrics */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '10px', flexWrap: 'wrap', gap: '8px' }}>
+                          <span>Vol: <b style={{ color: '#fff' }}>${(m.volume / 1000).toFixed(1)}k</b></span>
+                          <span>Liquidity: <b style={{ color: '#fff' }}>${(m.liquidity / 1000).toFixed(1)}k</b></span>
+                          <span>Spread: <b style={{ color: '#fff' }}>{(m.spread * 100).toFixed(1)}¢</b></span>
+                          {m.url && (
+                            <a href={m.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-cyan)', display: 'flex', alignItems: 'center', gap: '3px', textDecoration: 'none', fontWeight: 600 }}>
+                              Ver en Polymarket <ExternalLink size={12} />
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div style={{ textAlign: 'center', padding: '36px 16px', color: 'var(--text-muted)', background: 'rgba(0,0,0,0.2)', borderRadius: '10px', border: '1px dashed rgba(255,255,255,0.08)' }}>
+                  <p style={{ margin: '0 0 8px 0', fontSize: '0.88rem', color: 'var(--text-dim)' }}>
+                    {marketFilter === 'DIRECT'
+                      ? `Actualmente no hay apuestas directas en Polymarket con ticker específico $${detail.ticker}.`
+                      : 'No hay contratos de predicción para el filtro seleccionado.'}
+                  </p>
+                  {marketFilter === 'DIRECT' && sectorMarkets.length > 0 && (
+                    <button
+                      onClick={() => setMarketFilter('SECTOR')}
+                      style={{
+                        background: 'rgba(168, 85, 247, 0.15)',
+                        border: '1px solid #c084fc',
+                        color: '#c084fc',
+                        borderRadius: '6px',
+                        padding: '6px 14px',
+                        fontSize: '0.78rem',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        marginTop: '6px'
+                      }}
+                    >
+                      Ver {sectorMarkets.length} Catalizadores Sectoriales (SpaceX / NASA / Space Force)
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* TAB 2: Social Feed */}
         {activeTab === 'social' && (
@@ -455,7 +650,7 @@ export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose }) =
 
         {/* TAB 5: Technical Data */}
         {activeTab === 'technical' && (
-          <div className="tech-grid">
+          <div className="tech-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
             <div className="tech-item">
               <div className="tech-key">PRICE</div>
               <div className="tech-val">{detail.technical_data.price ? `$${detail.technical_data.price.toFixed(2)}` : 'N/A'}</div>
@@ -473,12 +668,22 @@ export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose }) =
               <div className="tech-val">{detail.technical_data.macd_histogram ? detail.technical_data.macd_histogram.toFixed(2) : 'N/A'}</div>
             </div>
             <div className="tech-item">
+              <div className="tech-key">ATR (14)</div>
+              <div className="tech-val">{detail.technical_data.atr !== null && detail.technical_data.atr !== undefined ? `$${detail.technical_data.atr.toFixed(2)}` : 'N/A'}</div>
+            </div>
+            <div className="tech-item">
               <div className="tech-key">VOL RATIO</div>
               <div className="tech-val">{detail.technical_data.volume_ratio ? `${detail.technical_data.volume_ratio.toFixed(2)}x` : 'N/A'}</div>
             </div>
             <div className="tech-item">
               <div className="tech-key">TECH SCORE</div>
               <div className="tech-val">{detail.technical_data.technical_score !== null ? `${detail.technical_data.technical_score}/40` : 'N/A'}</div>
+            </div>
+            <div className="tech-item">
+              <div className="tech-key">RISK / SAFETY</div>
+              <div className="tech-val" style={{ color: detail.score_breakdown.risk_score !== null && detail.score_breakdown.risk_score !== undefined ? (detail.score_breakdown.risk_score >= 60 ? 'var(--bullish-green)' : detail.score_breakdown.risk_score <= 35 ? 'var(--bearish-red)' : 'var(--neutral-yellow)') : 'var(--text-muted)' }}>
+                {detail.score_breakdown.risk_score !== null && detail.score_breakdown.risk_score !== undefined ? `${detail.score_breakdown.risk_score.toFixed(1)}/100` : 'N/A'}
+              </div>
             </div>
           </div>
         )}

@@ -142,5 +142,29 @@ def test_news_score_respects_relevance_weighting():
     assert res["news_score"] > 70.0
 
 
+def test_high_keyword_disambiguation_false_positives():
+    """
+    Verify that phrases like 'high risk', 'high cash burn', or 'all-time high short interest'
+    are properly classified as BEARISH without false positive bullish hits from 'high'.
+    """
+    classifier = HeuristicSentimentClassifier()
+
+    # 1. High risk & high cash burn (must be BEARISH)
+    res_risk = classifier.analyze("ASTS faces high risk and high cash burn ahead of commercial service.")
+    assert res_risk.label == "BEARISH"
+    assert res_risk.score < 0.0
+
+    # 2. Short interest at all-time high (must be BEARISH)
+    res_short = classifier.analyze("RKLB short interest hits an all-time high amid market selloff.")
+    assert res_short.label == "BEARISH"
+    assert res_short.score < 0.0
+
+    # 3. All-time high in price / stock context (must be BULLISH)
+    res_ath = classifier.analyze("ASTS reaches an all-time high after successful commercial satellite launch milestone.")
+    assert res_ath.label == "BULLISH"
+    assert res_ath.score > 0.0
+
+
+
 
 

@@ -147,3 +147,29 @@ def test_bearish_confirmation_critical_alert():
     assert bear_conf_alert is not None
     assert bear_conf_alert["level"] == "CRITICAL"
 
+
+def test_divergence_result_default_factory_dynamic_timestamp():
+    """Verify that DivergenceResult timestamp is dynamically generated via default_factory, not module import time."""
+    from datetime import datetime, timezone
+    import time
+    from app.divergence.detector import DivergenceResult
+
+    t_before = datetime.now(timezone.utc)
+    time.sleep(0.01)
+    res = DivergenceResult(
+        ticker="ASTS",
+        type="BULLISH_DIVERGENCE",
+        source_a="X_SOCIAL",
+        source_b="PRICE_ACTION",
+        direction="BULLISH",
+        strength=0.8,
+        confidence=0.8,
+        description="Test divergence"
+    )
+    time.sleep(0.01)
+    t_after = datetime.now(timezone.utc)
+
+    assert res.timestamp >= t_before
+    assert res.timestamp <= t_after
+
+

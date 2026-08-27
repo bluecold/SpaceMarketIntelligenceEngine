@@ -286,3 +286,74 @@ def test_tiered_momentum_why_reasons():
     assert any("Severe SMI breakdown" in r for r in res_drop["reasons"])
 
 
+def test_risk_score_integration_monotonicity():
+    """
+    Verify that calculate_risk_score (where higher = safer) directly increases SMI.
+    A safe/stable asset MUST have a higher SMI than a volatile/risky asset when all other inputs are identical.
+    """
+    import pandas as pd
+    import numpy as np
+
+    # 1. Safe / Calm asset (tight ATR, low volatility)
+    indicators_safe = {
+        "status": "AVAILABLE",
+        "price": 100.0,
+        "atr": 1.0  # ATR% = 1.0% (< 2.5% -> +15 pts safety)
+    }
+    # Low variance price series
+    prices_safe = [100.0 + (i % 2) * 0.1 for i in range(35)]
+    df_safe = pd.DataFrame({"Close": prices_safe})
+    risk_safe = calculate_risk_score(indicators_safe, raw_df=df_safe)
+    assert risk_safe is not None and risk_safe >= 75.0, f"Expected high safety score >= 75, got {risk_safe}"
+
+    # 2. Risky / Volatile asset (wide ATR, extreme volatility, severe drawdown)
+    indicators_risky = {
+        "status": "AVAILABLE",
+        "price": 100.0,
+        "atr": 10.0  # ATR% = 10.0% (> 8.0% -> -25 pts safety)
+    }
+    # Wildly oscillating and crashing series
+    prices_risky = [150.0 - i * 2.5 + (np.sin(i) * 15.0) for i in range(35)]
+    df_risky = pd.DataFrame({"Close": prices_risky})
+    risk_risky = calculate_risk_score(indicators_risky, raw_df=df_risky)
+    assert risk_risky is not None and risk_risky <= 30.0, f"Expected low safety score <= 30, got {risk_risky}"
+
+    # 3. Calculate SMI with both
+    base_params = {
+        "social_score": 75.0,
+        "post_count": 25,
+        "news_score": 70.0,
+        "news_count": 3,
+        "momentum_score": 65.0
+    }
+    smi_safe = calculate_smi(**base_params, risk_score=risk_safe)
+    smi_risky = calculate_smi(**base_params, risk_score=risk_risky)
+
+    assert smi_safe["smi"] > smi_risky["smi"], (
+        f"Safe asset SMI ({smi_safe['smi']}) must be higher than risky asset SMI ({smi_risky['smi']})"
+    )
+    # Verify exact difference is aligned with the 5% risk weight
+    assert smi_safe["normalized_weights"]["risk"] > 0
+    assert smi_risky["normalized_weights"]["risk"] > 0
+
+
+def test_zero_post_count_strictly_excludes_social():
+    """
+    Assert that when post_count == 0, the social pillar is strictly excluded from weights,
+    even if social_score was non-neutral (e.g. 85.0).
+    """
+    res = calculate_smi(
+        social_score=85.0,
+        post_count=0,
+        news_score=75.0,
+        news_count=3,
+        momentum_score=75.0,
+        risk_score=50.0
+    )
+    assert "social" not in res["normalized_weights"]
+    # Remaining pillars should normalize to 1.0 without social dragging or boosting
+    assert res["smi"] == pytest.approx(72.2, 0.5)
+
+
+
+

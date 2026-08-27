@@ -1,14 +1,74 @@
 import json
 import logging
+import re
 from typing import List, Optional
 from datetime import datetime, timezone
 import httpx
-from app.config import settings
+from app.config import settings, INITIAL_TICKERS, DEFAULT_EVENT_COMPANY_MAPPINGS
 from app.collectors.base import PredictionMarketProvider, PredictionMarketData, MarketProbabilityPoint
 from app.collectors.mock_polymarket_provider import MockPolymarketProvider
 from app.prediction.quality import calculate_market_quality
 
 logger = logging.getLogger("SMIE.PolymarketProvider")
+
+
+def match_ticker_from_text(text: str) -> Optional[str]:
+    """
+    Matches a space sector ticker symbol from text (title, slug, description)
+    using word boundaries to prevent substring false positives.
+    """
+    if not text:
+        return None
+    for cfg in INITIAL_TICKERS:
+        patterns = [
+            rf"\b{re.escape(cfg.symbol)}\b",
+            rf"\${re.escape(cfg.symbol)}\b"
+        ]
+        for alias in cfg.aliases:
+            clean = alias.lstrip("$")
+            patterns.append(rf"\b{re.escape(clean)}\b")
+            patterns.append(rf"\${re.escape(clean)}\b")
+
+        for pat in patterns:
+            if re.search(pat, text, re.IGNORECASE):
+                return cfg.symbol
+    return None
+
+
+def match_event_key_from_text(text: str) -> Optional[str]:
+    """
+    Matches an event_key from DEFAULT_EVENT_COMPANY_MAPPINGS using semantic keyword signatures.
+    """
+    if not text:
+        return None
+    text_lower = text.lower()
+
+    # 1. Starlink direct-to-cell / FCC approval
+    if ("starlink" in text_lower and any(w in text_lower for w in ["cell", "fcc", "direct", "t-mobile", "broadband"])) or "direct-to-cell" in text_lower:
+        return "spacex_starlink_direct_to_cell_fcc_approval"
+
+    # 2. Starship orbital / flight tests / upper stage catch
+    if any(w in text_lower for w in ["starship", "super heavy", "starbase", "orbital catch", "orbital flight"]):
+        return "spacex_starship_orbital_success"
+
+    # 3. NASA Artemis / Moon contract expansion
+    if any(w in text_lower for w in ["artemis", "lunar gateway", "moon lander", "hls", "artemis contract", "nasa moon"]):
+        return "nasa_artemis_moon_contract_expansion"
+
+    # 4. US Space Force SDA defense contracts
+    if any(w in text_lower for w in ["space force", "space development agency", "sda", "defense space", "nssl", "tranche 3", "tranche 2", "tranche 1"]):
+        return "us_space_force_sda_defense_contracts"
+
+    # 5. Commercial launch cadence records
+    if any(w in text_lower for w in ["launch cadence", "orbital launches", "annual launches", "launch record", "cadence record"]):
+        return "commercial_launch_cadence_record"
+
+    # 6. Direct key match if event_key or slug matches any key in DEFAULT_EVENT_COMPANY_MAPPINGS
+    for k in DEFAULT_EVENT_COMPANY_MAPPINGS.keys():
+        if k in text_lower or k.replace("_", "-") in text_lower:
+            return k
+
+    return None
 
 
 class PolymarketGammaProvider(PredictionMarketProvider):
@@ -47,6 +107,14 @@ class PolymarketGammaProvider(PredictionMarketProvider):
                                 markets_list.append(market_data)
                                 
                     if markets_list:
+                        if ticker:
+                            ticker_up = ticker.upper()
+                            filtered = [
+                                m for m in markets_list
+                                if (m.ticker and m.ticker.upper() == ticker_up)
+                                or (m.event_key and m.event_key in DEFAULT_EVENT_COMPANY_MAPPINGS and ticker_up in DEFAULT_EVENT_COMPANY_MAPPINGS[m.event_key])
+                            ]
+                            return filtered if filtered else markets_list
                         return markets_list
                         
                 logger.warning(f"Polymarket Gamma API returned status {resp.status_code}. Using fallback mock data.")
@@ -138,11 +206,20 @@ class PolymarketGammaProvider(PredictionMarketProvider):
 
             qual = calculate_market_quality(liquidity=liquidity, volume=volume, spread=spread, end_date=end_date)
 
+            title_text = m.get("question") or event.get("title", "Space Market Event")
+            desc_text = m.get("description") or event.get("description", "")
+            slug_text = event.get("slug", "") or m.get("slug", "")
+            combined_text = f"{title_text} {slug_text} {desc_text}"
+
+            resolved_ticker = ticker or match_ticker_from_text(combined_text)
+            resolved_event_key = match_event_key_from_text(combined_text)
+
             return PredictionMarketData(
                 external_id=str(m.get("id") or m.get("conditionId") or event.get("id")),
-                ticker=ticker,
-                title=m.get("question") or event.get("title", "Space Market Event"),
-                description=m.get("description") or event.get("description"),
+                ticker=resolved_ticker,
+                event_key=resolved_event_key,
+                title=title_text,
+                description=desc_text if desc_text else None,
                 category="SPACE",
                 status="ACTIVE",
                 created_at=datetime.now(timezone.utc),

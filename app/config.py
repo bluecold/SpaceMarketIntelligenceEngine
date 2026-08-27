@@ -131,6 +131,12 @@ class Settings(BaseSettings):
     WEIGHT_FUNDAMENTALS: float = 0.10  # Fundamentals
     WEIGHT_RISK: float = 0.05          # Risk / Safety
     
+    # Dynamic Backtesting Weight Feedback (Closed-Loop Optimization)
+    ENABLE_DYNAMIC_WEIGHT_FEEDBACK: bool = False
+    DYNAMIC_WEIGHT_MIN_TRADES: int = 30
+    DYNAMIC_WEIGHT_PRED_MIN: float = 0.05
+    DYNAMIC_WEIGHT_PRED_MAX: float = 0.25
+    
     # Signal thresholds
     THRESHOLD_STRONG_BUY: float = 85.0
     THRESHOLD_BUY: float = 75.0

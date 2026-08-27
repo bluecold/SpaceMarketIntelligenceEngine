@@ -145,6 +145,96 @@ def test_ssi_snapshot_model_base_signal_persistence():
         db.close()
 
 
+def test_dashboard_returns_null_when_no_data_and_no_imputation():
+    """
+    Test Rule in Spec & Architecture:
+    If no snapshot data exists for a ticker, SMI, SSI, and subscores MUST be null / None.
+    Fake imputation (e.g. 50.0) is strictly forbidden.
+    """
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from app.main import app
+    from app.database.connection import get_db
+    from app.database.models import Base
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool
+    )
+    Base.metadata.create_all(engine)
+    TestSession = sessionmaker(bind=engine)
+
+    def override_get_db():
+        db = TestSession()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        response = client.get("/api/dashboard")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["rankings"]) == 5
+        for item in data["rankings"]:
+            assert item["smi"] is None, f"Expected None for smi without data, got {item['smi']}"
+            assert item["ssi"] is None, f"Expected None for ssi without data, got {item['ssi']}"
+            assert item["social_score"] is None
+            assert item["delta_1d"] is None
+            assert item["pms"] is None
+            assert item["signal"] == "N/A"
+            assert item["market_status"] == "DATA_UNAVAILABLE"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_init_db_auto_migration_idempotent():
+    """Verify that init_db safely introspects and migrates database columns without errors."""
+    from app.database.connection import init_db
+    # First execution creates tables and runs migrations
+    init_db()
+    # Second execution must be strictly idempotent and not throw errors
+    init_db()
+
+
+def test_ticker_detail_and_prediction_markets_api_endpoints():
+    """Verify that /api/tickers/{ticker} and /api/tickers/{ticker}/prediction-markets return 200 with direct vs sector metadata."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    client = TestClient(app)
+    for ticker in ["ASTS", "RKLB", "SPCE", "SATL", "SPCX"]:
+        # Test Detail endpoint
+        res_detail = client.get(f"/api/tickers/{ticker}")
+        assert res_detail.status_code == 200
+        detail_data = res_detail.json()
+        assert detail_data["ticker"] == ticker
+        assert "prediction_markets" in detail_data
+        assert "sample_counts" in detail_data
+
+        # If prediction markets exist, direct contracts must have is_direct == True
+        for m in detail_data["prediction_markets"]:
+            assert "is_direct" in m
+            assert "event_role" in m
+            if m.get("ticker") and m["ticker"].upper() == ticker:
+                assert m["is_direct"] is True
+                assert m["event_role"] == "DIRECT"
+
+        # Test prediction markets standalone endpoint
+        res_pm = client.get(f"/api/tickers/{ticker}/prediction-markets")
+        assert res_pm.status_code == 200
+        pm_data = res_pm.json()
+        assert isinstance(pm_data, list)
+
+
+
+
+
 
 
 
