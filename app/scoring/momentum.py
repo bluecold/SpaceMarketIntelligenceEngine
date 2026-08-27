@@ -1,6 +1,7 @@
 from typing import Dict, Any, Optional
 import pandas as pd
 import numpy as np
+from app.config import settings
 
 
 def calculate_momentum_score(
@@ -45,9 +46,12 @@ def calculate_momentum_score(
             weighted_ret = (0.5 * ret_1d) + (0.3 * ret_3d) + (0.2 * ret_5d)
             score += np.clip(weighted_ret * 2.0, -25.0, 25.0)
 
-    # 3. Volume confirmation
-    if vol_ratio and vol_ratio >= 1.3:
-        score += min(10.0, (vol_ratio - 1.0) * 8.0)
+    # 3. Volume confirmation (Option A: Institutional confirmation >= 1.2x, weakness penalty < 0.8x)
+    if vol_ratio is not None:
+        if vol_ratio >= settings.VOLUME_RATIO_INSTITUTIONAL_BUY:
+            score += min(10.0, (vol_ratio - 1.0) * 8.0)
+        elif vol_ratio < settings.VOLUME_RATIO_WEAKNESS:
+            score -= 5.0
 
     # 4. Overbought Penalty (extreme RSI > 75 dampens momentum quality)
     if rsi and rsi > 75.0:

@@ -73,13 +73,15 @@ def calculate_technical_score(indicators: Dict[str, Any]) -> Optional[float]:
             else:
                 total_score += 0.0
 
-    # 5. Volume Ratio (Max 5 points)
+    # 5. Volume Ratio (Max 5 points - Option A Institutional Alignment)
     if vol_ratio is not None:
         if vol_ratio >= 1.5:
             total_score += 5.0
-        elif 1.2 <= vol_ratio < 1.5:
+        elif vol_ratio >= 1.2:
             total_score += 3.0
-        else:
+        elif vol_ratio >= 1.0:
             total_score += 1.0
+        else:
+            total_score += 0.0  # Sub-average volume (< 1.0x) provides no confirmation
 
     return min(40.0, round(total_score, 1))

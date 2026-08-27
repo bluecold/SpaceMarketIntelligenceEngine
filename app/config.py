@@ -147,6 +147,12 @@ class Settings(BaseSettings):
     # Divergence Engine thresholds
     DIVERGENCE_EARLY_REVERSAL_DELTA: float = 15.0  # 24h probability change threshold (+/- 15 pp)
     
+    # Strategy & Volume Thresholds (Option A - Institutional Quality)
+    VOLUME_RATIO_INSTITUTIONAL_BUY: float = 1.2  # +20% volume threshold for institutional confirmation
+    VOLUME_RATIO_MIN_CONFIRMATION: float = 1.0   # Baseline 20-period average volume
+    VOLUME_RATIO_WEAKNESS: float = 0.8           # -20% volume threshold indicating lack of conviction
+    CLOSE_POSITION_MIN_BULLISH: float = 0.60     # Top third close for bullish candle control
+    
     # Scheduler
     ENABLE_SCHEDULER: bool = False
     JOB_INTERVAL_MINUTES: int = 60
