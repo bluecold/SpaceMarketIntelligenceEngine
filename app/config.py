@@ -152,6 +152,7 @@ class Settings(BaseSettings):
     VOLUME_RATIO_MIN_CONFIRMATION: float = 1.0   # Baseline 20-period average volume
     VOLUME_RATIO_WEAKNESS: float = 0.8           # -20% volume threshold indicating lack of conviction
     CLOSE_POSITION_MIN_BULLISH: float = 0.60     # Top third close for bullish candle control
+    ATR_NORMALIZED_K: float = 0.08               # Scale-invariant volatility multiplier (8% of ATR)
     
     # Scheduler
     ENABLE_SCHEDULER: bool = False

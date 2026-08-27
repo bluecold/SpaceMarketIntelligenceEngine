@@ -207,3 +207,40 @@ def test_capital_preservation_flat_gate_on_conflicting_or_low_data():
     assert "LOW DATA QUALITY" in res_low_data["signal"]
 
 
+def test_atr_volatility_normalization_scale_invariance():
+    """
+    Validates that EMA distance in momentum scoring is normalized by ATR units (Z_atr),
+    achieving mathematical scale invariance across low-priced high-vol microcaps ($SPCE)
+    and high-priced low-vol ETFs ($SPCX).
+    """
+    # Asset 1: Low-price high-volatility ($2.00, ATR=$0.20 -> 10% ATR)
+    # Price is 1 ATR above EMA200 ($2.20 vs $2.00)
+    ind_spce = {
+        "status": "AVAILABLE",
+        "price": 2.20,
+        "ema200": 2.00,
+        "atr": 0.20,
+        "rsi14": 55.0,
+        "volume_ratio": 1.2
+    }
+    mom_spce = calculate_momentum_score(ind_spce)
+
+    # Asset 2: High-price low-volatility ($140.00, ATR=$1.40 -> 1% ATR)
+    # Price is 1 ATR above EMA200 ($141.40 vs $140.00)
+    ind_spcx = {
+        "status": "AVAILABLE",
+        "price": 141.40,
+        "ema200": 140.00,
+        "atr": 1.40,
+        "rsi14": 55.0,
+        "volume_ratio": 1.2
+    }
+    mom_spcx = calculate_momentum_score(ind_spcx)
+
+    # Both are exactly +1.0 ATR above their EMA200 trend, so both receive identical scale-invariant momentum bonus!
+    assert mom_spce is not None
+    assert mom_spcx is not None
+    assert mom_spce == mom_spcx == 61.6, f"Expected identical ATR-normalized scores (61.6), got SPCE={mom_spce}, SPCX={mom_spcx}"
+
+
+

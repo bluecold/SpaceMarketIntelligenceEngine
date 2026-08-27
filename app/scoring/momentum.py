@@ -26,13 +26,20 @@ def calculate_momentum_score(
     # Base baseline momentum score
     score = 50.0
 
-    # 1. EMA200 Distance
+    # 1. EMA200 Distance (ATR-Normalized Scale Invariance)
+    atr = indicators.get("atr")
     if ema200 and ema200 > 0:
-        dist_pct = ((price - ema200) / ema200) * 100.0
-        if dist_pct > 0:
-            score += min(20.0, dist_pct * 1.5)
+        if atr and atr > 0:
+            # Express distance in ATR units (Z_atr = (Price - EMA) / ATR)
+            # 1 full ATR above EMA200 maps to +10.0 momentum points (capped at +/-20.0 for 2 ATRs)
+            z_atr = (price - ema200) / atr
+            score += float(np.clip(z_atr * 10.0, -20.0, 20.0))
         else:
-            score += max(-20.0, dist_pct * 1.5)
+            dist_pct = ((price - ema200) / ema200) * 100.0
+            if dist_pct > 0:
+                score += min(20.0, dist_pct * 1.5)
+            else:
+                score += max(-20.0, dist_pct * 1.5)
 
     # 2. Short term price returns from dataframe
     if raw_df is not None:
