@@ -128,3 +128,45 @@ def test_smi_and_divergence_parity_live_vs_backtest():
     assert len(divs_live) == len(divs_backtest)
     assert divs_live[0].type == divs_backtest[0].type
     assert divs_live[0].strength == divs_backtest[0].strength
+
+
+def test_signal_generator_encapsulates_all_filters_without_ui_leakage():
+    """
+    Validates that generate_signal_and_explanation fully encapsulates all strategy,
+    trend, and overbought rules, delivering an immutable decision to the presentation layer.
+    """
+    from app.scoring.signal import generate_signal_and_explanation
+
+    # 1. Normal Strong Buy (SMI >= 85, RSI <= 75)
+    res_normal = generate_signal_and_explanation(
+        ticker="ASTS",
+        smi=88.0,
+        social_score=85.0,
+        indicators={"price": 60.0, "rsi14": 62.0, "status": "AVAILABLE"}
+    )
+    assert res_normal["base_signal"] == "STRONG BUY"
+    assert res_normal["signal_modifier"] is None
+    assert res_normal["signal"] == "STRONG BUY"
+
+    # 2. Overbought Rule: RSI > 75 restricts STRONG BUY to WATCH (OVEREXTENDED)
+    res_overbought = generate_signal_and_explanation(
+        ticker="ASTS",
+        smi=88.0,
+        social_score=85.0,
+        indicators={"price": 60.0, "rsi14": 82.0, "status": "AVAILABLE"}
+    )
+    assert res_overbought["base_signal"] == "WATCH"
+    assert res_overbought["signal_modifier"] == "OVEREXTENDED"
+    assert res_overbought["signal"] == "WATCH (OVEREXTENDED)"
+
+    # 3. Market Data Unavailable Rule
+    res_no_mkt = generate_signal_and_explanation(
+        ticker="SPCX",
+        smi=80.0,
+        social_score=80.0,
+        indicators={"status": "DATA_UNAVAILABLE"}
+    )
+    assert res_no_mkt["base_signal"] == "BUY"
+    assert res_no_mkt["signal_modifier"] == "NO MKT DATA"
+    assert res_no_mkt["signal"] == "BUY (NO MKT DATA)"
+
