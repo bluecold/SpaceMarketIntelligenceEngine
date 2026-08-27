@@ -303,7 +303,9 @@ async def run_full_pipeline() -> Dict[str, Any]:
                 prediction_score=pms_score,
                 prediction_delta_24h=pms_breakdown.get("pms_delta_24h"),
                 prediction_data=pms_breakdown,
-                news_score=news_score
+                news_score=news_score,
+                source_agreement=smi_dict.get("source_agreement"),
+                data_quality=smi_dict.get("data_quality")
             )
 
             # Save detected divergences to database

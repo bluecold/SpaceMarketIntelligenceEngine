@@ -170,3 +170,40 @@ def test_signal_generator_encapsulates_all_filters_without_ui_leakage():
     assert res_no_mkt["signal_modifier"] == "NO MKT DATA"
     assert res_no_mkt["signal"] == "BUY (NO MKT DATA)"
 
+
+def test_capital_preservation_flat_gate_on_conflicting_or_low_data():
+    """
+    Validates that when sources are in severe conflict (source_agreement <= -0.60)
+    or data quality is low (< 30%), the system prioritizes Capital Preservation (FLAT/WATCH)
+    over forced aggressive trades.
+    """
+    from app.scoring.signal import generate_signal_and_explanation
+
+    # 1. High SMI (86.0) but extreme source discordance (-0.80) -> Dampened to WATCH (CONFLICTING SOURCES)
+    res_discordant = generate_signal_and_explanation(
+        ticker="RKLB",
+        smi=86.0,
+        social_score=95.0,
+        prediction_score=15.0,
+        source_agreement=-0.80,
+        data_quality=80.0,
+        indicators={"price": 60.0, "rsi14": 55.0, "status": "AVAILABLE"}
+    )
+    assert res_discordant["base_signal"] == "WATCH"
+    assert res_discordant["signal_modifier"] == "CONFLICTING SOURCES"
+    assert "CONFLICTING SOURCES" in res_discordant["signal"]
+
+    # 2. High SMI (78.0) but low data quality (16.6%) -> Dampened to WATCH (LOW DATA QUALITY)
+    res_low_data = generate_signal_and_explanation(
+        ticker="SATL",
+        smi=78.0,
+        social_score=78.0,
+        source_agreement=1.0,
+        data_quality=16.6,
+        indicators={"price": 5.0, "rsi14": 55.0, "status": "AVAILABLE"}
+    )
+    assert res_low_data["base_signal"] == "WATCH"
+    assert res_low_data["signal_modifier"] == "LOW DATA QUALITY"
+    assert "LOW DATA QUALITY" in res_low_data["signal"]
+
+

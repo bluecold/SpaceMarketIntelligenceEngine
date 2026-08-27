@@ -18,11 +18,14 @@ def generate_signal_and_explanation(
     prediction_score: Optional[float] = None,
     prediction_delta_24h: Optional[float] = None,
     prediction_data: Optional[Dict[str, Any]] = None,
-    news_score: Optional[float] = None
+    news_score: Optional[float] = None,
+    source_agreement: Optional[float] = None,
+    data_quality: Optional[float] = None
 ) -> Dict[str, Any]:
     """
     Generates quantitative trading signal, multi-source divergence detection,
     structured alerts, and natural language "WHY?" explanations according to SMIE v2.0.
+    Enforces Capital Preservation / Flat gates when edge is unproven or data is in acute conflict.
     """
     indicators = indicators or {}
     social_stats = social_stats or {}
@@ -59,6 +62,19 @@ def generate_signal_and_explanation(
         base_signal = "STRONG AVOID"
 
     signal_modifier = None
+
+    # Capital Preservation Gate 1: Acute Source Contradiction (source_agreement <= -0.60)
+    # When sources strongly diverge, never force an aggressive BUY trade.
+    if source_agreement is not None and source_agreement <= -0.60:
+        if base_signal in ["STRONG BUY", "BUY"]:
+            base_signal = "WATCH"
+            signal_modifier = "CONFLICTING SOURCES"
+
+    # Capital Preservation Gate 2: Low Data Quality (< 30.0%)
+    if data_quality is not None and data_quality < 30.0:
+        if base_signal in ["STRONG BUY", "BUY"]:
+            base_signal = "WATCH"
+            signal_modifier = "LOW DATA QUALITY"
 
     # Special Rule: Overbought restriction (RSI > 75 restricts STRONG BUY to WATCH, warns on BUY)
     is_overbought = False
