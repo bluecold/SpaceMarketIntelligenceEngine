@@ -3,11 +3,16 @@ import pandas as pd
 import numpy as np
 
 
-def calculate_momentum_score(indicators: Dict[str, Any], raw_df: Optional[pd.DataFrame] = None) -> Optional[float]:
+def calculate_momentum_score(
+    indicators: Dict[str, Any],
+    raw_df: Optional[pd.DataFrame] = None,
+    at_index: Optional[int] = None
+) -> Optional[float]:
     """
     Computes Price Momentum Score (0 to 100).
     Evaluates short-term returns (1d, 3d, 5d), distance from EMA200, volume ratio,
     with penalties for extreme RSI / overextension.
+    Supports `at_index` slicing for historical backtesting parity without lookahead bias.
     """
     if indicators.get("status") != "AVAILABLE" or indicators.get("price") is None:
         return None
@@ -29,14 +34,16 @@ def calculate_momentum_score(indicators: Dict[str, Any], raw_df: Optional[pd.Dat
             score += max(-20.0, dist_pct * 1.5)
 
     # 2. Short term price returns from dataframe
-    if raw_df is not None and len(raw_df) >= 6:
-        close = raw_df['Close']
-        ret_1d = ((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2]) * 100.0
-        ret_3d = ((close.iloc[-1] - close.iloc[-4]) / close.iloc[-4]) * 100.0
-        ret_5d = ((close.iloc[-1] - close.iloc[-6]) / close.iloc[-6]) * 100.0
-        
-        weighted_ret = (0.5 * ret_1d) + (0.3 * ret_3d) + (0.2 * ret_5d)
-        score += np.clip(weighted_ret * 2.0, -25.0, 25.0)
+    if raw_df is not None:
+        df_slice = raw_df.iloc[: at_index + 1] if at_index is not None else raw_df
+        if len(df_slice) >= 6:
+            close = df_slice['Close']
+            ret_1d = ((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2]) * 100.0
+            ret_3d = ((close.iloc[-1] - close.iloc[-4]) / close.iloc[-4]) * 100.0
+            ret_5d = ((close.iloc[-1] - close.iloc[-6]) / close.iloc[-6]) * 100.0
+            
+            weighted_ret = (0.5 * ret_1d) + (0.3 * ret_3d) + (0.2 * ret_5d)
+            score += np.clip(weighted_ret * 2.0, -25.0, 25.0)
 
     # 3. Volume confirmation
     if vol_ratio and vol_ratio >= 1.3:

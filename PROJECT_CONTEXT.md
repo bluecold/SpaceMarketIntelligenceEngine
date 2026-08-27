@@ -257,8 +257,9 @@ Módulo [`app/backtesting/engine.py`](file:///d:/Mis%20Cosas/test/Space%20Sentim
 
 ## 9. 🛡️ Suite de Pruebas Automatizadas
 
-El proyecto cuenta con **71 tests unitarios automatizados** que cubren matemática, scoring, divergencias, persistencia, backtesting, endpoints REST y NLP:
+El proyecto cuenta con **74 tests unitarios automatizados** que cubren matemática, scoring, divergencias, persistencia, backtesting, paridad determinista live/backtest y NLP:
 ```powershell
 python -m pytest tests/ -v
 ```
-*(Resultado actual: **71 passed en 1.9s, 0 warnings/failures**).*
+*(Resultado actual: **74 passed en 2.4s, 0 warnings/failures**).*
+- Incluye el módulo `tests/test_strategy_parity.py` que certifica matemáticamente la paridad idéntica entre la ejecución en vivo y el cálculo histórico sin sesgo de anticipación (*Lookahead Bias*).
