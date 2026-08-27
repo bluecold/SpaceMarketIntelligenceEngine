@@ -67,7 +67,7 @@ Abre tu navegador en: **`http://localhost:8000`**
   ```bash
   python -m app.cli.commands calculate-divergences
   ```
-- **Ejecutar suite de tests automatizados (77 tests unitarios):**
+- **Ejecutar suite de tests automatizados (78 tests unitarios):**
   ```bash
   python -m pytest tests/ -v
   ```

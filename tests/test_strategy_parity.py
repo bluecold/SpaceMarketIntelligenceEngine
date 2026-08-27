@@ -243,4 +243,62 @@ def test_atr_volatility_normalization_scale_invariance():
     assert mom_spce == mom_spcx == 61.6, f"Expected identical ATR-normalized scores (61.6), got SPCE={mom_spce}, SPCX={mom_spcx}"
 
 
+def test_support_resistance_fixed_lookback_and_candlestick_conviction():
+    """
+    Validates:
+    1. Fixed S/R lookback window (100 bars) produces identical levels regardless of whether
+       100 bars or 500 bars are loaded in memory (zero payload size coupling).
+    2. Candlestick anatomy correctly applies Doji precedence and graduated scoring (+1.0 strong vs +0.5 moderate).
+    3. Risk:Reward gate is computed symmetrically.
+    """
+    df_long = generate_synthetic_ohlcv(200)
+    df_short = df_long.iloc[-100:]
+
+    res_long = calculate_technical_indicators(df_long)
+    res_short = calculate_technical_indicators(df_short)
+
+    # 1. Fixed lookback ensures nearest S/R and RR gate are identical
+    assert res_long["nearest_support"] == res_short["nearest_support"]
+    assert res_long["nearest_resistance"] == res_short["nearest_resistance"]
+    assert res_long["passes_rr_gate"] == res_short["passes_rr_gate"]
+
+    # 2. Candlestick conviction tests on synthetic bars
+    # A. Doji bar (Open=50.0, Close=50.02, High=52.0, Low=48.0 -> pct_body < 0.15)
+    df_doji = pd.DataFrame({
+        "Open": [50.0] * 10,
+        "High": [52.0] * 10,
+        "Low": [48.0] * 10,
+        "Close": [50.02] * 10,
+        "Volume": [100000] * 10
+    })
+    res_doji = calculate_technical_indicators(df_doji)
+    assert res_doji["candle_score"] == 0.0
+    assert "Doji" in res_doji["candle_label"]
+
+    # B. Strong Bullish Marubozu (Open=50.0, Close=59.0, High=60.0, Low=49.5 -> pct_body = 9/10.5 = 85.7% >= 55%)
+    df_strong_bull = pd.DataFrame({
+        "Open": [50.0] * 10,
+        "High": [60.0] * 10,
+        "Low": [49.5] * 10,
+        "Close": [59.0] * 10,
+        "Volume": [100000] * 10
+    })
+    res_strong_bull = calculate_technical_indicators(df_strong_bull)
+    assert res_strong_bull["candle_score"] == 1.0
+    assert "Alcista fuerte" in res_strong_bull["candle_label"]
+
+    # C. Moderate Bullish with long upper shadow (Open=50.0, Close=52.0, High=60.0, Low=49.0 -> pct_body = 2/11 = 18.1% < 55%)
+    df_mod_bull = pd.DataFrame({
+        "Open": [50.0] * 10,
+        "High": [60.0] * 10,
+        "Low": [49.0] * 10,
+        "Close": [52.0] * 10,
+        "Volume": [100000] * 10
+    })
+    res_mod_bull = calculate_technical_indicators(df_mod_bull)
+    assert res_mod_bull["candle_score"] == 0.5
+    assert "Alcista moderada" in res_mod_bull["candle_label"]
+
+
+
 

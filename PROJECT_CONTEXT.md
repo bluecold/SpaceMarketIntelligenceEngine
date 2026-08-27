@@ -257,9 +257,9 @@ Módulo [`app/backtesting/engine.py`](file:///d:/Mis%20Cosas/test/Space%20Sentim
 
 ## 9. 🛡️ Suite de Pruebas Automatizadas
 
-El proyecto cuenta con **77 tests unitarios automatizados** que cubren matemática, scoring, divergencias, persistencia, backtesting, paridad determinista live/backtest, normalización de umbrales por volatilidad ATR y compuertas de preservación de capital (FLAT / Cash):
+El proyecto cuenta con **78 tests unitarios automatizados** que cubren matemática, scoring, divergencias, persistencia, backtesting, paridad determinista live/backtest, ventanas fijas de S/R desacopladas del payload, graduación de velas y compuertas de preservación de capital:
 ```powershell
 python -m pytest tests/ -v
 ```
-*(Resultado actual: **77 passed en 1.7s, 0 warnings/failures**).*
-- Incluye el módulo `tests/test_strategy_parity.py` que certifica matemáticamente la paridad idéntica entre la ejecución en vivo y el cálculo histórico sin sesgo de anticipación (*Lookahead Bias*), la invarianza de escala mediante unidades ATR ($Z_{\text{ATR}} = \frac{\text{Price} - \text{EMA}}{\text{ATR}}$) y las compuertas de preservación de capital (`HOLD/WATCH` ante contradicción severa de fuentes o baja calidad de datos).
+*(Resultado actual: **78 passed en 1.8s, 0 warnings/failures**).*
+- Incluye el módulo `tests/test_strategy_parity.py` que certifica matemáticamente la paridad idéntica entre la ejecución en vivo y el cálculo histórico sin sesgo de anticipación (*Lookahead Bias*), invarianza de escala ATR, niveles de soporte/resistencia calculados sobre ventanas fijas de 100 velas independientes del tamaño del historial de red y puntuación anatómica de velas con precedencia de Doji corregida.
