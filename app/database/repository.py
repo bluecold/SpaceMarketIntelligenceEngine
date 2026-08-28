@@ -102,7 +102,8 @@ def save_social_posts(db: Session, posts_data: List[Dict[str, Any]]) -> int:
                 recency_weight=data.get("recency_weight", 1.0),
                 catalyst=data.get("catalyst"),
                 catalyst_direction=data.get("catalyst_direction"),
-                catalyst_importance=data.get("catalyst_importance", "MEDIUM")
+                catalyst_importance=data.get("catalyst_importance", "MEDIUM"),
+                source=data.get("source", "MOCK" if str(tweet_id).startswith("mock_") else "LIVE")
             )
             db.add(post)
             existing_posts[tweet_id] = post
@@ -201,6 +202,7 @@ def save_prediction_markets(db: Session, markets: List[PredictionMarketData]) ->
                 event_key=m.event_key,
                 polarity=getattr(m, "polarity", 1),
                 url=m.url,
+                source=getattr(m, "source", "MOCK" if str(m.external_id).startswith("mock_") or "mock" in str(m.external_id) else "LIVE"),
                 collected_at=now
             )
             db.add(market_db)
@@ -399,6 +401,7 @@ def save_alerts(db: Session, ticker: str, alerts_data: List[Dict[str, Any]]) -> 
             existing.level = al_level
             existing.message = item.get("message", existing.message)
             existing.category = al_category
+            existing.data_source = item.get("data_source", getattr(existing, "data_source", "LIVE") or "LIVE")
         else:
             new_alert = AlertModel(
                 alert_id=alert_id,
@@ -407,6 +410,7 @@ def save_alerts(db: Session, ticker: str, alerts_data: List[Dict[str, Any]]) -> 
                 category=al_category,
                 level=al_level,
                 message=item.get("message", ""),
+                data_source=item.get("data_source", "LIVE"),
                 timestamp=now,
                 last_seen=now,
                 resolved_at=None

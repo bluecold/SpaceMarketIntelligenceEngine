@@ -106,3 +106,43 @@ def calculate_fundamental_score(fund_data: Optional[Dict[str, Any]]) -> Optional
     )
 
     return max(0.0, min(100.0, round(weighted_score, 1)))
+
+
+def get_fundamental_runway_info(fund_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Calculates runway months, annual burn rate, and capital raise / dilution risk tier.
+    """
+    if not fund_data or not isinstance(fund_data, dict):
+        return {"runway_months": None, "risk_tier": "UNKNOWN", "cash": None, "burn": None, "debt": None}
+
+    total_cash = fund_data.get("total_cash")
+    free_cashflow = fund_data.get("free_cashflow")
+    total_debt = fund_data.get("total_debt") or 0.0
+
+    if free_cashflow is not None and free_cashflow < 0 and total_cash is not None and total_cash > 0:
+        annual_burn = abs(free_cashflow)
+        runway_months = (total_cash / annual_burn) * 12.0
+        if runway_months < 6.0:
+            risk_tier = "CRITICAL"
+        elif runway_months < 12.0:
+            risk_tier = "HIGH"
+        else:
+            risk_tier = "LOW"
+        return {
+            "runway_months": round(runway_months, 1),
+            "risk_tier": risk_tier,
+            "cash": total_cash,
+            "burn": annual_burn,
+            "debt": total_debt
+        }
+    elif free_cashflow is not None and free_cashflow >= 0:
+        return {
+            "runway_months": 999.0,  # Cash flow positive
+            "risk_tier": "SAFE",
+            "cash": total_cash,
+            "burn": 0.0,
+            "debt": total_debt
+        }
+
+    return {"runway_months": None, "risk_tier": "UNKNOWN", "cash": total_cash, "burn": None, "debt": total_debt}
+

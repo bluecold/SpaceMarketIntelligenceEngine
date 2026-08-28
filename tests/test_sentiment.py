@@ -214,6 +214,13 @@ def test_detect_catalysts_word_boundaries_and_bearish_priority():
     assert top_cat == "LAUNCH_DELAY"
     assert top_dir == "BEARISH"
 
+    # 4. Catastrophic Launch Failure / Explosion must prioritize CRITICAL BEARISH LAUNCH_FAILURE over BULLISH LAUNCH
+    text_fail = "Terrible news: launch failure destroyed the payload after booster explosion during stage 1 ascent."
+    top_fail_cat, top_fail_dir, top_fail_imp = detect_catalyst(text_fail)
+    assert top_fail_cat == "LAUNCH_FAILURE"
+    assert top_fail_dir == "BEARISH"
+    assert top_fail_imp == "CRITICAL"
+
 
 def test_signal_reasons_deduplicates_and_ranks_catalysts():
     """

@@ -65,12 +65,14 @@ def init_db():
             ("social_posts", "catalyst", "VARCHAR(50)"),
             ("social_posts", "catalyst_direction", "VARCHAR(20)"),
             ("social_posts", "catalyst_importance", "VARCHAR(20) DEFAULT 'MEDIUM'"),
+            ("social_posts", "source", "VARCHAR(20) DEFAULT 'LIVE'"),
             ("news_items", "catalyst", "VARCHAR(50)"),
             ("news_items", "catalyst_direction", "VARCHAR(20)"),
             ("news_items", "catalyst_importance", "VARCHAR(20) DEFAULT 'MEDIUM'"),
             ("prediction_markets", "event_key", "VARCHAR(100)"),
             ("prediction_markets", "polarity", "INTEGER DEFAULT 1"),
             ("prediction_markets", "url", "VARCHAR(500)"),
+            ("prediction_markets", "source", "VARCHAR(20) DEFAULT 'LIVE'"),
             ("market_snapshots", "technical_score", "FLOAT"),
             ("market_snapshots", "atr", "FLOAT"),
             ("market_snapshots", "volume_ratio", "FLOAT"),
@@ -95,7 +97,33 @@ def init_db():
             ("ssi_snapshots", "news_source", "VARCHAR(20) DEFAULT 'LIVE'"),
             ("ssi_snapshots", "market_source", "VARCHAR(20) DEFAULT 'LIVE'"),
             ("divergences", "last_seen", "DATETIME"),
+            ("alerts", "data_source", "VARCHAR(20) DEFAULT 'LIVE'"),
         ]
+
+        # Relax NOT NULL constraint on ssi_snapshots.social_score and ssi if present from older schema
+        if "ssi_snapshots" in existing_tables:
+            cols = inspector.get_columns("ssi_snapshots")
+            not_null_targets = [
+                c["name"] for c in cols
+                if c["name"] in ["social_score", "ssi"] and not c.get("nullable", True)
+            ]
+            if not_null_targets:
+                logger.info("Migrating ssi_snapshots table to make social_score and ssi nullable...")
+                try:
+                    conn.execute(text("ALTER TABLE ssi_snapshots RENAME TO _ssi_snapshots_old;"))
+                    # Recreate new table from Base.metadata
+                    Base.metadata.tables["ssi_snapshots"].create(conn)
+                    # Copy matching columns
+                    old_col_names = [c["name"] for c in cols]
+                    new_col_names = [c["name"] for c in inspect(conn).get_columns("ssi_snapshots")]
+                    shared_cols = [c for c in old_col_names if c in new_col_names]
+                    cols_str = ", ".join(shared_cols)
+                    conn.execute(text(f"INSERT INTO ssi_snapshots ({cols_str}) SELECT {cols_str} FROM _ssi_snapshots_old;"))
+                    conn.execute(text("DROP TABLE _ssi_snapshots_old;"))
+                    conn.commit()
+                    logger.info("Successfully migrated ssi_snapshots table to nullable social_score/ssi schema.")
+                except Exception as mig_err:
+                    logger.warning(f"Error during ssi_snapshots nullable migration: {mig_err}")
 
         for table, col, col_type in columns_to_check:
             if table not in existing_tables:
@@ -116,3 +144,14 @@ def init_db():
                     else:
                         logger.error(f"Critical auto-migration error while adding '{col}' to '{table}': {e}", exc_info=True)
                         raise
+
+        # Purge legacy mock data if live strict governance (ALLOW_MOCK_FALLBACK=False) is enforced
+        if not getattr(settings, "ALLOW_MOCK_FALLBACK", False):
+            try:
+                conn.execute(text("DELETE FROM social_posts WHERE tweet_id LIKE 'mock_%' OR source = 'MOCK';"))
+                conn.execute(text("DELETE FROM news_items WHERE url LIKE 'mock_%' OR source = 'Mock News';"))
+                conn.execute(text("DELETE FROM prediction_markets WHERE external_id LIKE 'mock_%' OR external_id LIKE 'poly-%-flight-2026';"))
+                conn.commit()
+                logger.info("Purged synthetic mock data from database under strict LIVE data governance.")
+            except Exception as purge_err:
+                logger.warning(f"Note on mock data purge: {purge_err}")

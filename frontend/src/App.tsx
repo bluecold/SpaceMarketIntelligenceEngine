@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { Header } from './components/Header';
 import { Dashboard } from './components/Dashboard';
 import { TickerDetail } from './components/TickerDetail';
@@ -12,6 +12,8 @@ export const App: React.FC = () => {
   const [showAboutModal, setShowAboutModal] = useState<boolean>(false);
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
+  const jobPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastFetchedRef = useRef<number>(Date.now());
 
   const fetchDashboard = () => {
     fetch('/api/dashboard')
@@ -24,6 +26,7 @@ export const App: React.FC = () => {
       .then((data) => {
         setDashboard(data);
         setLoading(false);
+        lastFetchedRef.current = Date.now();
       })
       .catch((err) => {
         console.error('Failed to fetch dashboard', err);
@@ -33,30 +36,67 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     fetchDashboard();
+
+    // 1. Periodic 1-hour background refresh matching backend scheduler cadence (60m)
+    const hourlyInterval = setInterval(() => {
+      fetchDashboard();
+    }, 3600000);
+
+    // 2. Focus refresh: update if user returns to tab after >= 15 min idle
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        const elapsed = Date.now() - lastFetchedRef.current;
+        if (elapsed >= 900000) { // 15 minutes
+          fetchDashboard();
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      clearInterval(hourlyInterval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (jobPollRef.current) {
+        clearInterval(jobPollRef.current);
+        jobPollRef.current = null;
+      }
+    };
   }, []);
 
   const handleTriggerAnalysis = async () => {
     setIsAnalyzing(true);
+    if (jobPollRef.current) {
+      clearInterval(jobPollRef.current);
+      jobPollRef.current = null;
+    }
+
     try {
       const resp = await fetch('/api/jobs/run', { method: 'POST' });
       if (resp.status === 202) {
         const data = await resp.json();
         const jobId = data.job_id;
         if (jobId) {
-          const pollInterval = setInterval(async () => {
+          jobPollRef.current = setInterval(async () => {
             try {
               const statusRes = await fetch(`/api/jobs/${jobId}`);
               if (statusRes.ok) {
                 const job = await statusRes.json();
                 if (job.status === 'SUCCESS' || job.status === 'ERROR') {
-                  clearInterval(pollInterval);
+                  if (jobPollRef.current) {
+                    clearInterval(jobPollRef.current);
+                    jobPollRef.current = null;
+                  }
                   setIsAnalyzing(false);
                   fetchDashboard();
                 }
               }
             } catch (pollErr) {
               console.error('Error polling job status:', pollErr);
-              clearInterval(pollInterval);
+              if (jobPollRef.current) {
+                clearInterval(jobPollRef.current);
+                jobPollRef.current = null;
+              }
               setIsAnalyzing(false);
               fetchDashboard();
             }

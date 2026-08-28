@@ -5,6 +5,7 @@ export interface AlertItem {
   category?: 'SIGNAL' | 'DIVERGENCE' | 'CATALYST' | 'SYSTEM' | string;
   level: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'WARNING';
   message: string;
+  data_source?: 'LIVE' | 'DEGRADED' | 'MOCK' | string;
   timestamp?: string | null;
   age_hours?: number | null;
   is_active?: boolean;

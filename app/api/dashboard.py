@@ -57,14 +57,15 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
             rankings.append({
                 "ticker": symbol,
                 "name": ticker_config.name,
-                "smi": round(smi_val, 1),
-                "ssi": round(ssi_val, 1),
+                "smi": round(smi_val, 1) if smi_val is not None else None,
+                "ssi": round(ssi_val, 1) if ssi_val is not None else None,
                 "pms": round(ssi_snap.prediction_score, 1) if ssi_snap.prediction_score is not None else None,
-                "delta_1d": ssi_snap.ssi_momentum_1d,
-                "social_score": round(ssi_snap.social_score, 1),
+                "delta_1d": round(ssi_snap.ssi_momentum_1d, 1) if ssi_snap.ssi_momentum_1d is not None else 0.0,
+                "social_score": round(ssi_snap.social_score, 1) if ssi_snap.social_score is not None else None,
                 "prediction_score": round(ssi_snap.prediction_score, 1) if ssi_snap.prediction_score is not None else None,
                 "news_score": round(ssi_snap.news_score, 1) if ssi_snap.news_score is not None else None,
                 "momentum_score": round(ssi_snap.momentum_score, 1) if ssi_snap.momentum_score is not None else None,
+                "fundamental_score": round(ssi_snap.fundamental_score, 1) if ssi_snap.fundamental_score is not None else None,
                 "risk_score": round(ssi_snap.risk_score, 1) if ssi_snap.risk_score is not None else None,
                 "technical_score": ssi_snap.technical_score,
                 "market_score": round((ssi_snap.technical_score / 40.0) * 100.0, 1) if ssi_snap.technical_score is not None else None,
@@ -72,9 +73,9 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                 "base_signal": base_sig,
                 "signal_modifier": mod_sig,
                 "divergence": primary_div,
-                "confidence": round(ssi_snap.confidence, 1),
-                "data_quality": round(ssi_snap.data_quality if ssi_snap.data_quality is not None else ssi_snap.data_completeness, 1),
-                "data_completeness": round(ssi_snap.data_completeness, 1),
+                "confidence": round(ssi_snap.confidence, 1) if ssi_snap.confidence is not None else 0.0,
+                "data_quality": round(ssi_snap.data_quality if ssi_snap.data_quality is not None else (ssi_snap.data_completeness or 0.0), 1),
+                "data_completeness": round(ssi_snap.data_completeness, 1) if ssi_snap.data_completeness is not None else 0.0,
                 "post_count": ssi_snap.post_count,
                 "news_count": ssi_snap.news_count,
                 "prediction_count": ssi_snap.prediction_count,
@@ -93,6 +94,7 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
             # If no database alerts exist yet, provide fallback alerts from snapshot
             if not db_alerts:
                 snap_iso = ssi_snap.timestamp.isoformat() + "Z" if ssi_snap.timestamp else None
+                smi_disp = f"(SMI: {smi_val:.0f}/100)" if smi_val is not None else ""
 
                 if ssi_snap.signal and "STRONG BUY" in ssi_snap.signal:
                     alerts.append({
@@ -101,7 +103,8 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                         "type": "STRONG_BUY",
                         "category": "SIGNAL",
                         "level": "CRITICAL",
-                        "message": f"🚀 {symbol} issued a STRONG BUY signal (SMI: {smi_val:.0f}/100)",
+                        "message": f"🚀 {symbol} issued a STRONG BUY signal {smi_disp}".strip(),
+                        "data_source": getattr(ssi_snap, "data_source", "LIVE") or "LIVE",
                         "timestamp": snap_iso,
                         "age_hours": age_hours,
                         "is_active": not is_stale
@@ -113,7 +116,8 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                         "type": "STRONG_AVOID",
                         "category": "SIGNAL",
                         "level": "CRITICAL",
-                        "message": f"🛑 {symbol} issued a STRONG AVOID signal (SMI: {smi_val:.0f}/100) — high capital risk",
+                        "message": f"🛑 {symbol} issued a STRONG AVOID signal {smi_disp} — high capital risk".strip(),
+                        "data_source": getattr(ssi_snap, "data_source", "LIVE") or "LIVE",
                         "timestamp": snap_iso,
                         "age_hours": age_hours,
                         "is_active": not is_stale
@@ -138,6 +142,7 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                         "category": "DIVERGENCE",
                         "level": d_level,
                         "message": f"⚠️ {symbol}: {d.description}",
+                        "data_source": getattr(ssi_snap, "data_source", "LIVE") or "LIVE",
                         "timestamp": div_iso,
                         "age_hours": div_age,
                         "is_active": not is_stale
@@ -152,6 +157,7 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                     "category": "SYSTEM",
                     "level": "WARNING",
                     "message": f"⏳ {symbol} data is {age_hours:.1f}h old (Pipeline awaiting scheduled execution)",
+                    "data_source": getattr(ssi_snap, "data_source", "LIVE") or "LIVE",
                     "timestamp": ssi_snap.timestamp.isoformat() + "Z" if ssi_snap.timestamp else None,
                     "age_hours": age_hours,
                     "is_active": False
@@ -209,6 +215,7 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                 "category": al.category,
                 "level": al.level,
                 "message": al.message,
+                "data_source": getattr(al, "data_source", "LIVE") or "LIVE",
                 "timestamp": al.timestamp.isoformat() + "Z" if al.timestamp else None,
                 "age_hours": al_age,
                 "is_active": not is_snap_stale

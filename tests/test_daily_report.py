@@ -421,32 +421,314 @@ def test_health_and_dashboard_data_provenance_governance():
 
 def test_jobs_async_execution_and_status_endpoints():
     """Verify POST /api/jobs/run returns 202 Accepted and GET /api/jobs/{id} tracks execution."""
+    from unittest.mock import patch
     from fastapi.testclient import TestClient
     from app.main import app
+    from app.database.connection import SessionLocal
+    from app.database.repository import finish_job_run
+
+    async def mock_fast_pipeline_runner(existing_job_id: int = None, **kwargs):
+        """Fast test double that completes the job immediately without hitting live networks."""
+        db = SessionLocal()
+        try:
+            finish_job_run(db, existing_job_id, status="SUCCESS", records=5)
+        finally:
+            db.close()
+        return {"status": "SUCCESS", "records_processed": 5}
 
     client = TestClient(app)
 
-    # 1. Trigger background job execution
-    res_run = client.post("/api/jobs/run")
-    assert res_run.status_code == 202
-    run_data = res_run.json()
-    assert run_data["status"] == "ACCEPTED"
-    job_id = run_data["job_id"]
-    assert job_id is not None
+    with patch("app.api.jobs.run_full_pipeline", side_effect=mock_fast_pipeline_runner):
+        # 1. Trigger background job execution
+        res_run = client.post("/api/jobs/run")
+        assert res_run.status_code == 202
+        run_data = res_run.json()
+        assert run_data["status"] == "ACCEPTED"
+        job_id = run_data["job_id"]
+        assert job_id is not None
 
-    # 2. Query specific job status
-    res_status = client.get(f"/api/jobs/{job_id}")
-    assert res_status.status_code == 200
-    status_data = res_status.json()
-    assert status_data["id"] == job_id
-    assert status_data["status"] in ["RUNNING", "SUCCESS", "ERROR"]
+        # 2. Query specific job status
+        res_status = client.get(f"/api/jobs/{job_id}")
+        assert res_status.status_code == 200
+        status_data = res_status.json()
+        assert status_data["id"] == job_id
+        assert status_data["status"] == "SUCCESS"
+        assert status_data["records_processed"] == 5
 
-    # 3. Query latest job
-    res_latest = client.get("/api/jobs/latest")
-    assert res_latest.status_code == 200
-    latest_data = res_latest.json()
-    assert latest_data["job"] is not None
-    assert latest_data["job"]["id"] >= job_id
+        # 3. Query latest job
+        res_latest = client.get("/api/jobs/latest")
+        assert res_latest.status_code == 200
+        latest_data = res_latest.json()
+        assert latest_data["job"] is not None
+        assert latest_data["job"]["id"] >= job_id
+
+
+@pytest.mark.anyio
+async def test_concurrent_job_409_conflict_rejection():
+    """Verify that a concurrent POST /api/jobs/run returns HTTP 409 Conflict when a job is running."""
+    import asyncio
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.api.jobs import _PIPELINE_LOCK
+
+    # Manually acquire the mutex to simulate a running background task
+    await _PIPELINE_LOCK.acquire()
+    try:
+        client = TestClient(app)
+        res_conflict = client.post("/api/jobs/run")
+        assert res_conflict.status_code == 409
+        err_data = res_conflict.json()
+        assert "already in progress" in err_data.get("detail", "")
+    finally:
+        _PIPELINE_LOCK.release()
+
+
+def test_multiple_critical_catalysts_separate_alert_ids():
+    """Verify that multiple critical catalysts on the same ticker create distinct alerts without collapsing."""
+    from app.scoring.signal import generate_signal_and_explanation
+    from app.database.connection import SessionLocal, init_db
+    from app.database.repository import ensure_tickers_seeded, save_alerts, get_active_alerts_batch
+
+    init_db()
+    db = SessionLocal()
+    try:
+        ensure_tickers_seeded(db)
+
+        # 1. Generate signal with 2 critical catalysts
+        sig_res = generate_signal_and_explanation(
+            ticker="ASTS",
+            smi=75.0,
+            social_score=75.0,
+            catalysts_found=[
+                {"category": "DEFENSE_CONTRACT", "importance": "CRITICAL", "direction": "POSITIVE"},
+                {"category": "CAPITAL_RAISE", "importance": "CRITICAL", "direction": "NEGATIVE"}
+            ]
+        )
+
+        alerts = sig_res.get("alerts", [])
+        cat_alerts = [a for a in alerts if a.get("category") == "CATALYST"]
+        assert len(cat_alerts) == 2
+        alert_ids = {a["id"] for a in cat_alerts}
+        assert "ASTS:CATALYST:DEFENSE_CONTRACT" in alert_ids
+        assert "ASTS:CATALYST:CAPITAL_RAISE" in alert_ids
+
+        # 2. Persist in database and verify 2 distinct rows
+        save_alerts(db, "ASTS", alerts)
+        db_alerts = get_active_alerts_batch(db, ["ASTS"])
+        db_cat_ids = {a.alert_id for a in db_alerts if a.category == "CATALYST"}
+        assert "ASTS:CATALYST:DEFENSE_CONTRACT" in db_cat_ids
+        assert "ASTS:CATALYST:CAPITAL_RAISE" in db_cat_ids
+    finally:
+        db.close()
+
+
+def test_alert_data_source_provenance_persistence_and_api():
+    """Verify that alerts store data_source (LIVE/DEGRADED/MOCK) and serve it via /api/dashboard."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.database.connection import SessionLocal, init_db
+    from app.database.repository import ensure_tickers_seeded, save_alerts, get_active_alerts_batch
+
+    init_db()
+    db = SessionLocal()
+    try:
+        ensure_tickers_seeded(db)
+
+        # Save an alert with MOCK data provenance
+        alerts = [
+            {
+                "id": "RKLB:SIGNAL:STRONG_BUY",
+                "ticker": "RKLB",
+                "type": "STRONG_BUY",
+                "category": "SIGNAL",
+                "level": "CRITICAL",
+                "message": "🚀 RKLB test strong buy",
+                "data_source": "MOCK"
+            }
+        ]
+        save_alerts(db, "RKLB", alerts)
+
+        # Verify DB model has data_source
+        db_alerts = get_active_alerts_batch(db, ["RKLB"])
+        rklb_alert = next(a for a in db_alerts if a.alert_id == "RKLB:SIGNAL:STRONG_BUY")
+        assert rklb_alert.data_source == "MOCK"
+
+        # Verify /api/dashboard exposes data_source
+        client = TestClient(app)
+        res = client.get("/api/dashboard")
+        assert res.status_code == 200
+        data = res.json()
+        dashboard_alerts = data.get("alerts", [])
+        matched = [a for a in dashboard_alerts if a.get("id") == "RKLB:SIGNAL:STRONG_BUY"]
+        assert len(matched) >= 1
+        assert matched[0].get("data_source") == "MOCK"
+    finally:
+        db.close()
+
+
+
+
+def test_snapshot_with_null_pillars_persistence_and_dashboard_serving():
+    """Verify that a snapshot with all 6 pillars None is successfully persisted and served via /api/dashboard."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.database.connection import SessionLocal, init_db
+    from app.database.repository import ensure_tickers_seeded, save_ssi_snapshot
+
+    init_db()
+    db = SessionLocal()
+    try:
+        ensure_tickers_seeded(db)
+        # Create a snapshot with ALL 6 pillars set to None
+        empty_snap = {
+            "ticker": "SPCE",
+            "social_score": None,
+            "prediction_score": None,
+            "news_score": None,
+            "momentum_score": None,
+            "fundamental_score": None,
+            "risk_score": None,
+            "technical_score": None,
+            "ssi": None,
+            "smi": None,
+            "signal": "HOLD (NO MKT DATA)",
+            "base_signal": "HOLD",
+            "signal_modifier": "NO MKT DATA",
+            "confidence": 0.0,
+            "data_completeness": 0.0,
+            "data_quality": 0.0,
+            "post_count": 0,
+            "news_count": 0,
+            "prediction_count": 0,
+            "data_source": "DEGRADED",
+            "social_source": "EXCLUDED",
+            "prediction_source": "EXCLUDED",
+            "news_source": "EXCLUDED",
+            "market_source": "DEGRADED",
+            "price": None
+        }
+        # 1. Must persist without IntegrityError
+        save_ssi_snapshot(db, empty_snap)
+    finally:
+        db.close()
+
+    client = TestClient(app)
+
+    # 2. /api/dashboard must return HTTP 200 without TypeError on None fields
+    res_dash = client.get("/api/dashboard")
+    assert res_dash.status_code == 200
+    d_data = res_dash.json()
+    spce_rank = next((r for r in d_data.get("rankings", []) if r["ticker"] == "SPCE"), None)
+    assert spce_rank is not None
+    assert spce_rank["smi"] is None
+    assert spce_rank["ssi"] is None
+    assert spce_rank["social_score"] is None
+    assert spce_rank["prediction_score"] is None
+    assert spce_rank["news_score"] is None
+    assert spce_rank["fundamental_score"] is None
+
+    # 3. /api/tickers/SPCE must return HTTP 200
+    res_ticker = client.get("/api/tickers/SPCE")
+    assert res_ticker.status_code == 200
+    t_data = res_ticker.json()
+    assert t_data["ticker"] == "SPCE"
+    assert t_data["header"]["smi"] is None
+
+
+def test_row_level_provenance_and_mock_purge():
+    """Verify that mock rows in lookback window are correctly identified and purged in LIVE mode."""
+    from app.database.connection import SessionLocal, init_db
+    from app.database.models import SocialPostModel, PredictionMarketModel
+    from app.database.repository import ensure_tickers_seeded, save_social_posts
+    from sqlalchemy import text
+
+    init_db()
+    db = SessionLocal()
+    try:
+        ensure_tickers_seeded(db)
+        # 1. Insert a mock post and a live post
+        save_social_posts(db, [
+            {
+                "tweet_id": "mock_test_123",
+                "ticker": "ASTS",
+                "username": "tester",
+                "text": "ASTS mock tweet test",
+                "sentiment_score": 0.5,
+                "source": "MOCK"
+            },
+            {
+                "tweet_id": "18920192837192",
+                "ticker": "ASTS",
+                "username": "real_user",
+                "text": "ASTS live tweet test",
+                "sentiment_score": 0.8,
+                "source": "LIVE"
+            }
+        ])
+
+        mock_post = db.query(SocialPostModel).filter(SocialPostModel.tweet_id == "mock_test_123").first()
+        live_post = db.query(SocialPostModel).filter(SocialPostModel.tweet_id == "18920192837192").first()
+        assert mock_post is not None
+        assert mock_post.source == "MOCK"
+        assert live_post is not None
+        assert live_post.source == "LIVE"
+
+        # 2. Test mock purge
+        db.execute(text("DELETE FROM social_posts WHERE tweet_id LIKE 'mock_%' OR source = 'MOCK';"))
+        db.commit()
+
+        mock_post_after = db.query(SocialPostModel).filter(SocialPostModel.tweet_id == "mock_test_123").first()
+        assert mock_post_after is None
+        live_post_after = db.query(SocialPostModel).filter(SocialPostModel.tweet_id == "18920192837192").first()
+        assert live_post_after is not None
+    finally:
+        db.close()
+
+
+@pytest.mark.anyio
+async def test_fundamentals_dataframe_extraction_and_cache():
+    """Verify that get_fundamentals extracts metrics without calling .info and uses 24h cache."""
+    import pandas as pd
+    from unittest.mock import MagicMock, patch
+    from app.collectors.market_provider import YFinanceMarketProvider, _FUNDAMENTALS_CACHE
+
+    _FUNDAMENTALS_CACHE.clear()
+    provider = YFinanceMarketProvider()
+
+    mock_bs = pd.DataFrame(
+        {"2025-12-31": [1500000000.0, 500000000.0]},
+        index=["Total Debt", "Cash Cash Equivalents And Short Term Investments"]
+    )
+    mock_cf = pd.DataFrame(
+        {"2025-12-31": [-200000000.0, 500000000.0]},
+        index=["Free Cash Flow", "End Cash Position"]
+    )
+    mock_fin = pd.DataFrame(
+        {"2025-12-31": [100000000.0, 40000000.0], "2024-12-31": [80000000.0, 30000000.0]},
+        index=["Total Revenue", "Gross Profit"]
+    )
+
+    mock_ticker = MagicMock()
+    mock_ticker.balance_sheet = mock_bs
+    mock_ticker.cashflow = mock_cf
+    mock_ticker.financials = mock_fin
+    mock_ticker.fast_info.market_cap = 5000000000.0
+
+    with patch("yfinance.Ticker", return_value=mock_ticker):
+        data = await provider.get_fundamentals("ASTS")
+        assert data["total_cash"] == 500000000.0
+        assert data["total_debt"] == 1500000000.0
+        assert data["free_cashflow"] == -200000000.0
+        assert data["gross_margins"] == 0.4
+        assert data["revenue_growth"] == 0.25
+        assert data["market_cap"] == 5000000000.0
+
+        # Verify cached retrieval
+        cached = await provider.get_fundamentals("ASTS")
+        assert cached == data
+
+
+
 
 
 

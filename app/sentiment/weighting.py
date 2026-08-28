@@ -40,8 +40,17 @@ CATALYST_CONFIG = {
         "direction": "BEARISH",
         "importance": "HIGH"
     },
+    "LAUNCH_FAILURE": {
+        "keywords": [
+            "launch failure", "failed launch", "explosion", "exploded", "exploding",
+            "rud", "rapid unscheduled disassembly", "lost vehicle", "mission failure",
+            "payload lost", "booster lost", "crash", "crashed", "engine failure"
+        ],
+        "direction": "BEARISH",
+        "importance": "CRITICAL"
+    },
     "LAUNCH_DELAY": {
-        "keywords": ["delay", "delayed", "rescheduled", "postponed", "launch abort", "anomaly"],
+        "keywords": ["delay", "delayed", "rescheduled", "postponed", "launch abort", "anomaly", "scrubbed", "scrub", "grounded", "hold"],
         "direction": "BEARISH",
         "importance": "HIGH"
     },

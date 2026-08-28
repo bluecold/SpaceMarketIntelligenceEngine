@@ -319,27 +319,68 @@ async def run_full_pipeline(existing_job_id: Optional[int] = None) -> Dict[str, 
                 prediction_data=pms_breakdown,
                 news_score=news_score,
                 source_agreement=smi_dict.get("source_agreement"),
-                data_quality=smi_dict.get("data_quality")
+                data_quality=smi_dict.get("data_quality"),
+                fundamentals=fundamentals_data,
+                fundamental_score=fundamental_score
             )
+
+            # --- STEP 6: DETERMINE DATA PROVENANCE & SAVE STATEFUL DATA ---
+            # 1. Social Provenance from actual posts in window
+            if len(recent_posts) == 0:
+                soc_src = "EXCLUDED"
+            else:
+                is_mock_p = lambda p: getattr(p, "source", "") == "MOCK" or str(p.tweet_id).startswith("mock_")
+                mock_p_count = sum(1 for p in recent_posts if is_mock_p(p))
+                if mock_p_count == len(recent_posts) or settings.X_PROVIDER.lower() == "mock":
+                    soc_src = "MOCK"
+                elif mock_p_count > 0:
+                    soc_src = "DEGRADED"
+                else:
+                    soc_src = "LIVE"
+
+            # 2. Prediction Market Provenance from actual markets in window
+            if not settings.POLYMARKET_ENABLED or prediction_count == 0:
+                pred_src = "EXCLUDED"
+            else:
+                is_mock_m = lambda m: getattr(m, "source", "") == "MOCK" or str(m.external_id).startswith("mock_") or "mock" in str(m.external_id)
+                mock_m_count = sum(1 for m in relevant_markets if is_mock_m(m))
+                if mock_m_count == len(relevant_markets) or settings.POLYMARKET_PROVIDER.lower() == "mock":
+                    pred_src = "MOCK"
+                elif mock_m_count > 0:
+                    pred_src = "DEGRADED"
+                else:
+                    pred_src = "LIVE"
+
+            # 3. News Provenance from actual news in window
+            if len(recent_news) == 0:
+                news_src = "EXCLUDED"
+            else:
+                is_mock_n = lambda n: getattr(n, "source", "") == "Mock News" or str(n.url).startswith("mock_")
+                mock_n_count = sum(1 for n in recent_news if is_mock_n(n))
+                if mock_n_count == len(recent_news):
+                    news_src = "MOCK"
+                elif mock_n_count > 0:
+                    news_src = "DEGRADED"
+                else:
+                    news_src = "LIVE"
+
+            mkt_src = "LIVE" if (indicators.get("status") == "AVAILABLE" and indicators.get("price") is not None) else "DEGRADED"
+
+            if soc_src == "MOCK" or pred_src == "MOCK" or news_src == "MOCK":
+                overall_data_src = "MOCK"
+            elif soc_src in ["EXCLUDED", "DEGRADED"] or pred_src in ["EXCLUDED", "DEGRADED"] or news_src in ["EXCLUDED", "DEGRADED"] or mkt_src == "DEGRADED":
+                overall_data_src = "DEGRADED"
+            else:
+                overall_data_src = "LIVE"
 
             # Save detected divergences to database (creates new episodes, updates active ones, resolves ceased ones)
             save_divergences(db, ticker, signal_res.get("active_divergences", []))
 
-            # Save stateful alerts to database (signals, momentum buy, critical catalysts, divergences)
-            save_alerts(db, ticker, signal_res.get("alerts", []))
-
-            # --- STEP 6: DETERMINE DATA PROVENANCE & SAVE IMMUTABLE SMI SNAPSHOT ---
-            soc_src = "MOCK" if settings.X_PROVIDER.lower() == "mock" else ("LIVE" if len(recent_posts) > 0 else "EXCLUDED")
-            pred_src = "EXCLUDED" if not settings.POLYMARKET_ENABLED else ("MOCK" if settings.POLYMARKET_PROVIDER.lower() == "mock" else ("LIVE" if prediction_count > 0 else "EXCLUDED"))
-            news_src = "LIVE" if len(recent_news) > 0 else "EXCLUDED"
-            mkt_src = "LIVE" if (indicators.get("status") == "AVAILABLE" and indicators.get("price") is not None) else "DEGRADED"
-
-            if soc_src == "MOCK" or pred_src == "MOCK":
-                overall_data_src = "MOCK"
-            elif soc_src == "EXCLUDED" or pred_src == "EXCLUDED" or news_src == "EXCLUDED" or mkt_src == "DEGRADED":
-                overall_data_src = "DEGRADED"
-            else:
-                overall_data_src = "LIVE"
+            # Tag each alert with its underlying data provenance and save to database
+            alerts_to_save = signal_res.get("alerts", [])
+            for al in alerts_to_save:
+                al["data_source"] = overall_data_src
+            save_alerts(db, ticker, alerts_to_save)
 
             snapshot_data = {
                 "ticker": ticker,
@@ -374,8 +415,11 @@ async def run_full_pipeline(existing_job_id: Optional[int] = None) -> Dict[str, 
                 "explanation": signal_res["explanation"]
             }
 
-            save_ssi_snapshot(db, snapshot_data)
-            records_processed += 1
+            try:
+                save_ssi_snapshot(db, snapshot_data)
+                records_processed += 1
+            except Exception as snap_err:
+                logger.error(f"Error persisting snapshot for {ticker}: {snap_err}")
 
             if signal_res.get("alerts"):
                 collected_alerts.extend(signal_res["alerts"])

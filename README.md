@@ -2,27 +2,27 @@
 
 **Motor cuantitativo multivariable de análisis e inteligencia de mercado para el sector espacial y aeroespacial.**
 
-SMIE sintetiza de forma desacoplada la **narrativa social (X/Twitter)**, las **probabilidades implícitas en Prediction Markets (Polymarket)**, los **catalizadores sectoriales (Google News)**, los **factores fundamentales** y la **acción técnica del precio y riesgo (yfinance)** para generar índices cuantitativos no sesgados, señales explicables y detección temprana de divergencias tripartitas.
+SMIE sintetiza de forma desacoplada la **narrativa social (X/Twitter)**, las **probabilidades implícitas en Prediction Markets (Polymarket)**, los **catalizadores sectoriales (Google News)**, los **factores fundamentales y de supervivencia de caja** y la **acción técnica del precio y riesgo (yfinance)** para generar índices cuantitativos no sesgados, señales explicables y detección temprana de divergencias tripartitas.
 
 > 📖 **Documentación de arquitectura y contexto:** Consulta [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) y la especificación [`SPACE_MARKET_INTELLIGENCE_ENGINE_SPEC.md`](SPACE_MARKET_INTELLIGENCE_ENGINE_SPEC.md).
 
 ---
 
-## 📐 Métricas Clave
+## 📐 Métricas y Capacidades Clave
 
 - **`SMI` (Space Market Intelligence Index, 0–100):** Índice integral ponderado maestro con arquitectura multivariable de 6 pilares y normalización adaptativa dinámica de pesos según disponibilidad y calidad de fuentes.
-- **`SSI` (Space Sentiment Index, 0–100):** Mide exclusivamente el sentimiento social puro de X/Twitter con engagement logarítmico, decaimiento temporal, contracción bayesiana para muestras pequeñas ($1 \le N < 10$) y exclusión estricta en $N=0$.
+- **`SSI` (Space Sentiment Index, 0–100):** Mide exclusivamente el sentimiento social puro de X/Twitter con engagement logarítmico, decaimiento temporal, ponderación por confianza del clasificador, contracción bayesiana para muestras pequeñas ($1 \le N < 10$) y exclusión estricta en $N=0$.
 - **`PMS` (Prediction Market Score, 0–100):** Probabilidad agregada de éxito de eventos espaciales implícita en Polymarket (con regla de exclusión si `quality_score < 30` o sin mercados activos y filtrado por matriz de impacto de eventos sectoriales).
 - **`Prediction Markets Categorization`:** Clasificación y jerarquización de contratos de Polymarket en *🎯 Contratos Directos del Activo* (primer orden de prioridad) y *🌐 Catalizadores Sectoriales (SpaceX / NASA / Space Force)* con sub-filtros interactivos en la UI.
 - **`Risk / Safety Score` (0–100):** Métrica cuantitativa de seguridad y compresión de riesgo calculada a partir de ATR normalizado, posición frente a bandas de Bollinger y drawdown.
-- **`Canonical Signals`:** Desacoplamiento estricto entre `base_signal` canónico (`STRONG BUY`, `BUY`, `WATCH`, `HOLD`, `AVOID`, `STRONG AVOID`) y `signal_modifier` (`OVEREXTENDED`, `NO MKT DATA`).
+- **`Canonical Signals & Dilution Modifiers`:** Desacoplamiento estricto entre `base_signal` canónico (`STRONG BUY`, `BUY`, `WATCH`, `HOLD`, `AVOID`, `STRONG AVOID`) y `signal_modifier` (`OVEREXTENDED`, `DILUTION RISK`, `CONFLICTING SOURCES`, `LOW DATA QUALITY`, `NO MKT DATA`).
 - **`Market Score` (0–100):** Confirmación técnica del precio basada en EMA200, RSI(14) con suavizado Wilder RMA, Bollinger Bands, MACD normalizado por ATR/Precio y ratio de volumen.
-- **`Fundamental Health Score` (0–100):** Salud financiera sectorial basada en Cash Runway (40%), Solvencia y Deuda Neta/EBITDA (25%), Crecimiento de Ingresos YoY (20%) y Márgenes Brutos (15%), elevando la calidad de datos al 100%.
-- **`Async Background Pipeline with Mutex Locking`:** Ejecución de trabajos no bloqueante vía FastAPI `BackgroundTasks`, respuesta inmediata HTTP 202 Accepted, mutex anti-colisión y sondeo asíncrono con telemetría completa.
-- **`Strict Indicator Depth Gates & Adaptive Normalization`:** EMA200 rigurosa con compuerta de historial ($N \ge 200$) y re-escalado adaptativo del Technical Scorer sin penalizar activos jóvenes.
-- **`Divergence Engine & Risk Hierarchy`:** Detecta desacoples estructurales (ej. *Bullish Divergence: Social/Polymarket Bullish vs. Price Bearish*, *Early Reversal* con $\Delta_{24\text{h}}$ dinámico) y alertas de severidad simétrica (`CRITICAL` para `STRONG BUY`, `STRONG AVOID` y `BEARISH_CONFIRMATION`).
+- **`Fundamental Health & Capital Raise Risk`:** Salud financiera sectorial basada en Cash Runway (40%), Solvencia (25%), Crecimiento YoY (20%) y Márgenes (15%). Detección por umbral: activa alertas críticas `CAPITAL_RAISE_RISK` y modificadores de dilución cuando el runway cae por debajo de 6 meses.
+- **`Catastrophic Catalyst Coverage`:** Categoría dedicada `LAUNCH_FAILURE` con importancia `CRITICAL` y sesgo `BEARISH` para explosiones, fallos de lanzamiento, anomalías de cohetes y pérdidas de payload.
+- **`Data Provenance & Live Data Governance`:** Trazabilidad estricta a nivel de fila (`source` en `social_posts` y `prediction_markets`), cálculo dinámico de procedencia (`LIVE`, `DEGRADED`, `MOCK`), purga automática de datos sintéticos y distintivos visuales en el radar de alertas y notificaciones.
+- **`Atomic Mutex Locking (HTTP 409)`:** Ejecución asíncrona no bloqueante vía FastAPI `BackgroundTasks`, respuesta inmediata HTTP 202 Accepted, adquisición atómica anti-carrera y rechazo instantáneo HTTP 409 Conflict.
+- **`Episode-Based Desktop Notifications`:** Notificaciones de escritorio en tiempo real (Windows Toast) con arranque en frío silencioso, claves por episodio (`{alert_id}@{opened_at}`) que permiten alertar oportunamente sobre reaperturas sin duplicados intermedios.
 - **`Closed-Loop Dynamic Weight Calibration`:** Retroalimentación empírica en ciclo cerrado desde el motor de backtesting hacia las ponderaciones del SMI basada en $\Delta\text{Sharpe}$ y compuertas de significancia bilateral ($N \ge 30$).
-- **`Desktop Notifications with Silent Cold-Start`:** Notificaciones de escritorio en tiempo real (Windows Toast) con arranque en frío silencioso, registro persistente anti-duplicados y panel de preferencias de severidad.
 
 ---
 
@@ -91,4 +91,3 @@ Abre tu navegador en: **`http://localhost:8000`**
 - **SATL** — Satellogic
 - **SPCE** — Virgin Galactic
 - **SPCX** — Procure Space ETF / Proxy de Eventos Sectoriales (SpaceX Starship, Artemis, FCC)
-

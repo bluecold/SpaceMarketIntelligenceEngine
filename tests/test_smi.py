@@ -430,6 +430,42 @@ def test_fundamental_score_calculation_and_smi_full_coverage():
     assert res_full["confidence"] >= 90.0
 
 
+def test_fundamental_capital_raise_risk_alert_and_signal_modifier():
+    """Verify that runway < 6 months generates CAPITAL_RAISE_RISK alert and applies DILUTION RISK modifier."""
+    # 1. Distressed runway (3 months of cash left)
+    distressed_fund = {
+        "total_cash": 15_000_000,
+        "total_debt": 50_000_000,
+        "free_cashflow": -60_000_000,  # 3.0 months runway
+        "revenue_growth": 0.10,
+        "gross_margins": 0.30
+    }
+
+    # SMI is 85.0 (Strong Buy territory), but critical runway triggers dilution modifier
+    res = generate_signal_and_explanation(
+        ticker="ASTS",
+        smi=85.0,
+        social_score=85.0,
+        fundamentals=distressed_fund
+    )
+
+    # Signal is modified to include DILUTION RISK and downgraded from STRONG BUY
+    assert "DILUTION RISK" in res["signal"]
+    assert res["signal_modifier"] == "DILUTION RISK"
+    assert res["base_signal"] == "BUY"
+
+    # CRITICAL CAPITAL_RAISE_RISK alert is generated
+    cap_alerts = [a for a in res["alerts"] if a["type"] == "CAPITAL_RAISE_RISK"]
+    assert len(cap_alerts) == 1
+    assert cap_alerts[0]["level"] == "CRITICAL"
+    assert cap_alerts[0]["category"] == "FUNDAMENTAL"
+    assert "3.0 months of cash remaining" in cap_alerts[0]["message"]
+
+    # "WHY?" reasons include dilution warning
+    assert any("Critical Capital Raise Risk" in r for r in res["reasons"])
+
+
+
 
 
 

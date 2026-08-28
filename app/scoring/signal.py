@@ -2,6 +2,7 @@ from typing import Dict, Any, Optional, List, Set
 from app.config import settings
 from app.divergence.detector import detect_divergences, DivergenceResult
 from app.scoring.social import apply_bayesian_shrinkage
+from app.scoring.fundamentals import get_fundamental_runway_info
 from app.sentiment.weighting import IMPORTANCE_RANK
 
 
@@ -22,7 +23,9 @@ def generate_signal_and_explanation(
     prediction_data: Optional[Dict[str, Any]] = None,
     news_score: Optional[float] = None,
     source_agreement: Optional[float] = None,
-    data_quality: Optional[float] = None
+    data_quality: Optional[float] = None,
+    fundamentals: Optional[Dict[str, Any]] = None,
+    fundamental_score: Optional[float] = None
 ) -> Dict[str, Any]:
     """
     Generates quantitative trading signal, multi-source divergence detection,
@@ -56,6 +59,13 @@ def generate_signal_and_explanation(
     vol_ratio = indicators.get("volume_ratio")
     market_status = indicators.get("status", "AVAILABLE")
 
+    # Fundamental Runway & Burn analysis
+    runway_info = get_fundamental_runway_info(fundamentals)
+    runway_months = runway_info.get("runway_months")
+    risk_tier = runway_info.get("risk_tier")
+    cash_val = runway_info.get("cash")
+    burn_val = runway_info.get("burn")
+
     # 1. Base Signal Thresholds (Using SMI as the comprehensive index)
     if primary_index >= settings.THRESHOLD_STRONG_BUY:
         base_signal = "STRONG BUY"
@@ -73,7 +83,6 @@ def generate_signal_and_explanation(
     signal_modifier = None
 
     # Capital Preservation Gate 1: Acute Source Contradiction (source_agreement <= -0.60)
-    # When sources strongly diverge, never force an aggressive BUY trade.
     if source_agreement is not None and source_agreement <= -0.60:
         if base_signal in ["STRONG BUY", "BUY"]:
             base_signal = "WATCH"
@@ -84,6 +93,12 @@ def generate_signal_and_explanation(
         if base_signal in ["STRONG BUY", "BUY"]:
             base_signal = "WATCH"
             signal_modifier = "LOW DATA QUALITY"
+
+    # Capital Preservation Gate 3: Critical Cash Runway (< 6 months)
+    if runway_months is not None and runway_months < 6.0:
+        if base_signal in ["STRONG BUY", "BUY"]:
+            base_signal = "BUY" if base_signal == "STRONG BUY" else "WATCH"
+            signal_modifier = "DILUTION RISK" if not signal_modifier else f"{signal_modifier} | DILUTION RISK"
 
     # Special Rule: Overbought restriction (RSI > 75 restricts STRONG BUY to WATCH, warns on BUY)
     is_overbought = False
@@ -123,22 +138,28 @@ def generate_signal_and_explanation(
     alerts = []
     if base_signal == "STRONG BUY" or "STRONG BUY" in full_signal:
         alerts.append({
+            "id": f"{ticker}:SIGNAL:STRONG_BUY",
             "ticker": ticker,
             "type": "STRONG_BUY",
+            "category": "SIGNAL",
             "level": "CRITICAL",
             "message": f"🚀 {ticker} reached STRONG BUY signal (SMI: {primary_index}/100)"
         })
     elif base_signal == "STRONG AVOID":
         alerts.append({
+            "id": f"{ticker}:SIGNAL:STRONG_AVOID",
             "ticker": ticker,
             "type": "STRONG_AVOID",
+            "category": "SIGNAL",
             "level": "CRITICAL",
             "message": f"🛑 {ticker} issued STRONG AVOID signal (SMI: {primary_index}/100) — high capital risk"
         })
     elif base_signal == "BUY" and effective_mom >= 3.0:
         alerts.append({
+            "id": f"{ticker}:SIGNAL:MOMENTUM_BUY",
             "ticker": ticker,
             "type": "MOMENTUM_BUY",
+            "category": "SIGNAL",
             "level": "HIGH",
             "message": f"📈 {ticker} BUY signal confirmed with accelerating SMI (+{effective_mom} 1D)"
         })
@@ -150,8 +171,10 @@ def generate_signal_and_explanation(
             else "MEDIUM"
         )
         alerts.append({
+            "id": f"{ticker}:DIVERGENCE:{div.type}",
             "ticker": ticker,
             "type": div.type,
+            "category": "DIVERGENCE",
             "level": div_level,
             "message": f"⚠️ {ticker}: {div.description}"
         })
@@ -164,14 +187,47 @@ def generate_signal_and_explanation(
                 seen_cat_alerts.add(cat_key)
                 cat_name = cat_key.replace("_", " ").title()
                 alerts.append({
+                    "id": f"{ticker}:CATALYST:{cat_key}",
                     "ticker": ticker,
                     "type": "CRITICAL_CATALYST",
+                    "category": "CATALYST",
                     "level": "CRITICAL",
                     "message": f"⚡ Critical Catalyst detected on {ticker}: {cat_name}"
                 })
 
+    # Fundamental Balance Sheet & Runway Alerts
+    cash_m = (cash_val / 1e6) if cash_val else 0.0
+    burn_m = (burn_val / 1e6) if burn_val else 0.0
+    if runway_months is not None and runway_months < 6.0:
+        alerts.append({
+            "id": f"{ticker}:FUNDAMENTAL:CAPITAL_RAISE_RISK",
+            "ticker": ticker,
+            "type": "CAPITAL_RAISE_RISK",
+            "category": "FUNDAMENTAL",
+            "level": "CRITICAL",
+            "message": f"🚨 {ticker} Critical Runway Alert: {runway_months:.1f} months of cash remaining (${cash_m:.0f}M cash / ${burn_m:.0f}M annual burn) — acute dilution/capital raise risk"
+        })
+    elif runway_months is not None and runway_months < 12.0 and risk_tier == "HIGH":
+        alerts.append({
+            "id": f"{ticker}:FUNDAMENTAL:DILUTION_WATCH",
+            "ticker": ticker,
+            "type": "DILUTION_WATCH",
+            "category": "FUNDAMENTAL",
+            "level": "HIGH",
+            "message": f"⚠️ {ticker} Low Runway Alert: {runway_months:.1f} months of cash remaining (${cash_m:.0f}M cash) — watch for financing announcements"
+        })
+
     # 4. Build Detailed Multi-Source "WHY?" Reasons (Explanations)
     reasons = []
+
+    # Fundamental Balance Sheet reasons
+    if runway_months is not None:
+        if runway_months < 6.0:
+            reasons.append(f"- 🚨 Critical Capital Raise Risk: only {runway_months:.1f} months of cash runway remaining before dilution")
+        elif runway_months < 12.0:
+            reasons.append(f"- Low cash runway: {runway_months:.1f} months of liquidity available (${cash_m:.0f}M cash)")
+        elif runway_months >= 24.0 or runway_months == 999.0:
+            reasons.append(f"+ Strong balance sheet runway: >24 months of cash reserves (low dilution risk)")
 
     # Social Narrative reasons
     bull_pct = social_stats.get("weighted_bullish_pct", 0)

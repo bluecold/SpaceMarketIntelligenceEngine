@@ -17,18 +17,20 @@ _PIPELINE_LOCK = asyncio.Lock()
 
 
 async def _execute_pipeline_task(job_id: int):
-    """Worker task executed by BackgroundTasks holding the exclusive mutex lock."""
-    async with _PIPELINE_LOCK:
+    """Worker task executed by BackgroundTasks; releases the exclusive lock on exit."""
+    try:
+        logger.info(f"Starting background pipeline execution for job_id={job_id}...")
+        await run_full_pipeline(existing_job_id=job_id)
+    except Exception as e:
+        logger.exception(f"Fatal error in background pipeline task {job_id}: {e}")
+        db = SessionLocal()
         try:
-            logger.info(f"Starting background pipeline execution for job_id={job_id}...")
-            await run_full_pipeline(existing_job_id=job_id)
-        except Exception as e:
-            logger.exception(f"Fatal error in background pipeline task {job_id}: {e}")
-            db = SessionLocal()
-            try:
-                finish_job_run(db, job_id, status="ERROR", error=str(e))
-            finally:
-                db.close()
+            finish_job_run(db, job_id, status="ERROR", error=str(e))
+        finally:
+            db.close()
+    finally:
+        if _PIPELINE_LOCK.locked():
+            _PIPELINE_LOCK.release()
 
 
 @router.post("/api/jobs/run", status_code=202)
@@ -47,12 +49,20 @@ async def trigger_full_pipeline_job(
             detail="A pipeline execution is already in progress. Please wait for it to complete."
         )
 
-    # 1. Create Job record in database
-    job_run = create_job_run(db, "smie_full_pipeline")
-    job_id = job_run.id
+    # Acquire lock atomically in handler before responding
+    await _PIPELINE_LOCK.acquire()
 
-    # 2. Schedule background task
-    background_tasks.add_task(_execute_pipeline_task, job_id)
+    try:
+        # 1. Create Job record in database
+        job_run = create_job_run(db, "smie_full_pipeline")
+        job_id = job_run.id
+
+        # 2. Schedule background task that releases the lock in finally
+        background_tasks.add_task(_execute_pipeline_task, job_id)
+    except Exception:
+        if _PIPELINE_LOCK.locked():
+            _PIPELINE_LOCK.release()
+        raise
 
     return JSONResponse(
         status_code=202,

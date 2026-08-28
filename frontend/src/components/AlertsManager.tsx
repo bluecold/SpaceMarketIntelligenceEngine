@@ -149,7 +149,9 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
   };
 
   const getAlertKey = (al: AlertItem, index: number): string => {
-    return al.id || `${al.ticker}:${al.type}:${al.timestamp || index}`;
+    const baseId = al.id || `${al.ticker}:${al.type}`;
+    const ts = al.timestamp ? `@${al.timestamp}` : `:${index}`;
+    return `${baseId}${ts}`;
   };
 
   const isAlertActive = (al: AlertItem): boolean => {
@@ -212,7 +214,8 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
         const timeStr = alert.timestamp
           ? new Date(alert.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
           : '';
-        new Notification(`SMIE [${alert.level}] ${alert.ticker}`, {
+        const srcPrefix = alert.data_source && alert.data_source !== 'LIVE' ? `[${alert.data_source}] ` : '';
+        new Notification(`SMIE ${srcPrefix}[${alert.level}] ${alert.ticker}`, {
           body: `${timeStr ? `[${timeStr}] ` : ''}${alert.message}`,
           icon: '🚀'
         });
@@ -652,6 +655,23 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
                         >
                           {isActive ? '🟢 Vigente' : '⏳ Obsoleta'}
                         </span>
+
+                        {/* Data Provenance Badge if not LIVE */}
+                        {al.data_source && al.data_source !== 'LIVE' && (
+                          <span
+                            style={{
+                              fontSize: '0.64rem',
+                              fontWeight: 700,
+                              padding: '1px 5px',
+                              borderRadius: '3px',
+                              background: al.data_source === 'MOCK' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(234, 179, 8, 0.2)',
+                              color: al.data_source === 'MOCK' ? '#fca5a5' : '#fde047',
+                              border: `1px solid ${al.data_source === 'MOCK' ? 'rgba(239, 68, 68, 0.4)' : 'rgba(234, 179, 8, 0.4)'}`
+                            }}
+                          >
+                            {al.data_source}
+                          </span>
+                        )}
 
                         {!isRead && (
                           <span

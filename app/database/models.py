@@ -56,6 +56,9 @@ class SocialPostModel(Base):
     catalyst_direction = Column(String(20), nullable=True)
     catalyst_importance = Column(String(20), default="MEDIUM")  # LOW, MEDIUM, HIGH, CRITICAL
 
+    # Data Provenance: "LIVE", "MOCK", "TWIKIT"
+    source = Column(String(20), default="LIVE", index=True)
+
     ticker_rel = relationship("TickerModel", back_populates="social_posts")
 
 
@@ -106,6 +109,7 @@ class PredictionMarketModel(Base):
     polarity = Column(Integer, default=1) # +1 = Bullish when YES occurs, -1 = Bearish when YES occurs
     
     url = Column(String(500), nullable=True)
+    source = Column(String(20), default="LIVE", index=True) # "LIVE", "MOCK", "GAMMA_LIVE"
     collected_at = Column(DateTime, default=utc_now, index=True)
 
     snapshots = relationship("PredictionMarketSnapshotModel", back_populates="market_rel")
@@ -198,17 +202,17 @@ class SSISnapshotModel(Base):
     timestamp = Column(DateTime, default=utc_now, index=True)
 
     # Individual Pillar Scores (0 - 100)
-    social_score = Column(Float, nullable=False)       # Pure Social SSI
-    prediction_score = Column(Float, nullable=True)   # PMS Score
-    news_score = Column(Float, nullable=True)         # News Score
-    momentum_score = Column(Float, nullable=True)     # Momentum Score
-    fundamental_score = Column(Float, nullable=True)  # Fundamental Score
-    risk_score = Column(Float, nullable=True)         # Risk Score
-    technical_score = Column(Float, nullable=True)    # Technical Score (out of 40)
+    social_score = Column(Float, nullable=True)        # Pure Social SSI (nullable when N=0)
+    prediction_score = Column(Float, nullable=True)    # PMS Score
+    news_score = Column(Float, nullable=True)          # News Score
+    momentum_score = Column(Float, nullable=True)      # Momentum Score
+    fundamental_score = Column(Float, nullable=True)   # Fundamental Score
+    risk_score = Column(Float, nullable=True)          # Risk Score
+    technical_score = Column(Float, nullable=True)     # Technical Score (out of 40)
     
     # Composite Indices (0 - 100)
-    ssi = Column(Float, nullable=False)               # Social Sentiment Index
-    smi = Column(Float, nullable=True)                # Space Market Intelligence Index
+    ssi = Column(Float, nullable=True)                 # Social Sentiment Index (nullable when N=0)
+    smi = Column(Float, nullable=True)                 # Space Market Intelligence Index
     
     ssi_momentum_1d = Column(Float, default=0.0)
     ssi_momentum_3d = Column(Float, default=0.0)
@@ -261,6 +265,7 @@ class AlertModel(Base):
     category = Column(String(30), default="SIGNAL")  # SIGNAL, CATALYST, DIVERGENCE, SYSTEM
     level = Column(String(20), default="INFO")       # CRITICAL, HIGH, MEDIUM, WARNING, INFO
     message = Column(Text, nullable=False)
+    data_source = Column(String(20), default="LIVE", index=True) # "LIVE", "DEGRADED", "MOCK"
     timestamp = Column(DateTime, default=utc_now, index=True)
     last_seen = Column(DateTime, default=utc_now)
     resolved_at = Column(DateTime, nullable=True)
