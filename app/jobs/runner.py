@@ -261,6 +261,7 @@ async def run_full_pipeline(existing_job_id: Optional[int] = None) -> Dict[str, 
 
             # Extract fundamental data (Cash runway, solvency, growth, margins)
             fundamental_score = None
+            fund_raw = None
             try:
                 if hasattr(market_provider, "get_fundamentals"):
                     fund_raw = await market_provider.get_fundamentals(ticker)
@@ -320,7 +321,7 @@ async def run_full_pipeline(existing_job_id: Optional[int] = None) -> Dict[str, 
                 news_score=news_score,
                 source_agreement=smi_dict.get("source_agreement"),
                 data_quality=smi_dict.get("data_quality"),
-                fundamentals=fundamentals_data,
+                fundamentals=fund_raw,
                 fundamental_score=fundamental_score
             )
 

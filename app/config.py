@@ -107,6 +107,8 @@ class Settings(BaseSettings):
     X_AUTH_INFO_1: str = ""
     X_AUTH_INFO_2: str = ""
     X_PASSWORD: str = ""
+    X_AUTH_TOKEN: str = ""
+    X_CT0: str = ""
     X_COOKIES_FILE: str = "data/x_cookies.json"
     
     # Social Collector Params

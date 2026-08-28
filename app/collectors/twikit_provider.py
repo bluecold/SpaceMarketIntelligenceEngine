@@ -24,7 +24,16 @@ class TwikitProvider(XProvider):
             self.client = Client('en-US')
             cookies_file = settings.X_COOKIES_FILE
 
-            # 1. Check if saved cookies exist
+            # 1. Check if direct auth_token is configured in settings
+            if getattr(settings, "X_AUTH_TOKEN", ""):
+                auth_tok = settings.X_AUTH_TOKEN
+                ct0_tok = getattr(settings, "X_CT0", "") or "0"
+                self.client.set_cookies({"auth_token": auth_tok, "ct0": ct0_tok})
+                logger.info("Configured X session via X_AUTH_TOKEN cookie")
+                self._authenticated = True
+                return True
+
+            # 2. Check if saved cookies file exists
             if os.path.exists(cookies_file) and os.path.getsize(cookies_file) > 0:
                 try:
                     self.client.load_cookies(cookies_file)
@@ -34,7 +43,7 @@ class TwikitProvider(XProvider):
                 except Exception as e:
                     logger.warning(f"Failed to load cookies from {cookies_file}: {e}. Retrying login...")
 
-            # 2. If no valid cookies, perform login with credentials
+            # 3. If no valid cookies, perform login with credentials
             if settings.X_AUTH_INFO_1 and settings.X_PASSWORD:
                 logger.info(f"Logging in to X via Twikit with user: {settings.X_AUTH_INFO_1}...")
                 await self.client.login(
