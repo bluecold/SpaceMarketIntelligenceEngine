@@ -156,8 +156,23 @@ def test_dynamic_weight_calibration_closed_loop():
     }
     cal_small = calculate_calibrated_prediction_weight(mock_small_dataset, min_trades=30)
     assert not cal_small["is_calibrated"]
+    assert cal_small["sample_size"] == 10
     assert cal_small["calibrated_weight"] == 0.15
     assert sum(cal_small["effective_weights"].values()) == pytest.approx(1.0, abs=1e-4)
+
+    # Case 1b: Asymmetric sample size (Model A = 40, Model B = 12 < 30) -> min gate must block calibration
+    mock_asym_dataset = {
+        "evaluation_horizons": {
+            "3D": {
+                "model_a_baseline": {"metrics": {"total_trades": 40}},
+                "model_b_multisource": {"metrics": {"total_trades": 12}},
+                "hypothesis_analysis": {"sharpe_delta": +1.5, "win_rate_delta_pp": +10.0}
+            }
+        }
+    }
+    cal_asym = calculate_calibrated_prediction_weight(mock_asym_dataset, min_trades=30)
+    assert not cal_asym["is_calibrated"]
+    assert cal_asym["sample_size"] == 12
 
     # Case 2: Significant Outperformance (N=45 >= 30, Delta Sharpe = +1.0)
     mock_positive_alpha = {
@@ -198,6 +213,91 @@ def test_dynamic_weight_calibration_closed_loop():
     smi_res_cal = calculate_smi(social_score=80.0, prediction_score=20.0, prediction_quality=80.0, custom_weights=cal_pos["effective_weights"])
     # In positive alpha mode, prediction weight is higher (22.5% vs 15%), so low prediction (20.0) pulls SMI down more
     assert smi_res_cal["smi"] < smi_res_prior["smi"]
+
+
+def test_backtest_non_overlapping_trade_lockout():
+    """
+    Verify that 100 consecutive hourly buy signals evaluated with holding_period_days=3 (72 hours):
+    1. Opens exactly 1 trade at hour 0, locking until hour 72.
+    2. Opens exactly 1 subsequent trade at hour 72 (if data reaches hour 144) or only 1 trade in 100 hours.
+    3. Prevents trade count inflation from 100 overlapping snapshots.
+    """
+    from datetime import datetime, timedelta
+
+    base_time = datetime(2026, 8, 1, 10, 0, 0)
+    hourly_snaps = []
+
+    # 100 hourly snapshots with continuous BUY signals (SMI = 85.0)
+    for h in range(100):
+        hourly_snaps.append({
+            "ticker": "ASTS",
+            "timestamp": base_time + timedelta(hours=h),
+            "social_score": 85.0,
+            "post_count": 20,
+            "momentum_score": 80.0,
+            "news_score": 80.0,
+            "price": 10.0 + h * 0.1
+        })
+
+    res = evaluate_backtest_dataset(hourly_snaps, holding_period_days=3, buy_threshold=75.0)
+    metrics = res["model_a_baseline"]["metrics"]
+
+    # In 100 hours with a 72-hour lockout, only 1 non-overlapping trade can complete (entry at 0h, exit at 72h)
+    assert metrics["total_trades"] == 1
+    # Exit price at 72h is 10.0 + 72*0.1 = 17.2 -> return is +72.0%
+    assert metrics["avg_return"] == pytest.approx(72.0, abs=0.1)
+
+
+def test_calculate_financial_metrics_horizon_annualization():
+    """Verify that 3D and 5D holding periods scale Sharpe by sqrt(252/H), not sqrt(252)."""
+    import math
+    returns = [5.0, -2.0, 4.0, 6.0, -1.0, 3.0]
+
+    m1 = calculate_financial_metrics(returns, holding_period_days=1)
+    m3 = calculate_financial_metrics(returns, holding_period_days=3)
+    m5 = calculate_financial_metrics(returns, holding_period_days=5)
+
+    # Sharpe for 3D should be exactly Sharpe(1D) * sqrt(84) / sqrt(252) = Sharpe(1D) / sqrt(3)
+    ratio_3d = m3["sharpe_ratio"] / m1["sharpe_ratio"]
+    assert ratio_3d == pytest.approx(1.0 / math.sqrt(3), abs=0.02)
+
+    # Sharpe for 5D should be exactly Sharpe(1D) * sqrt(50.4) / sqrt(252) = Sharpe(1D) / sqrt(5)
+    ratio_5d = m5["sharpe_ratio"] / m1["sharpe_ratio"]
+    assert ratio_5d == pytest.approx(1.0 / math.sqrt(5), abs=0.02)
+
+
+def test_backtest_multi_ticker_chronological_equity_ordering():
+    """
+    Verify that trades from multiple tickers (e.g. ASTS in Jan, RKLB in Feb)
+    are ordered strictly chronologically before computing the equity curve and drawdown,
+    rather than grouping all ASTS trades then all RKLB trades.
+    """
+    from datetime import datetime, timedelta
+
+    t1 = datetime(2026, 1, 1, 10, 0, 0)
+    t2 = datetime(2026, 2, 1, 10, 0, 0)
+
+    # Interleaved multi-ticker trajectory across two distinct months
+    snapshots = [
+        # Month 1: ASTS (+20% gain)
+        {"ticker": "ASTS", "timestamp": t1, "social_score": 85.0, "news_score": 80.0, "momentum_score": 80.0, "price": 10.0},
+        {"ticker": "ASTS", "timestamp": t1 + timedelta(days=1), "social_score": 85.0, "news_score": 80.0, "momentum_score": 80.0, "price": 12.0},
+        # Month 2: RKLB (-10% loss)
+        {"ticker": "RKLB", "timestamp": t2, "social_score": 85.0, "news_score": 80.0, "momentum_score": 80.0, "price": 100.0},
+        {"ticker": "RKLB", "timestamp": t2 + timedelta(days=1), "social_score": 85.0, "news_score": 80.0, "momentum_score": 80.0, "price": 90.0},
+    ]
+
+    res = evaluate_backtest_dataset(snapshots, holding_period_days=1, buy_threshold=75.0)
+    metrics = res["model_a_baseline"]["metrics"]
+
+    assert metrics["total_trades"] == 2
+    assert metrics["win_rate"] == 50.0
+    # Chronological sequence: +20% (equity goes to 1.20), then -10% (equity goes to 1.20 * 0.9 = 1.08)
+    # Peak is 1.20, trough is 1.08 -> Max Drawdown is exactly (1.20 - 1.08)/1.20 = 10.0%
+    assert metrics["max_drawdown"] == 10.0
+
+
+
 
 
 

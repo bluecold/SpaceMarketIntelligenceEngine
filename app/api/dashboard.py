@@ -6,6 +6,7 @@ from app.database.repository import (
     get_latest_ssi_snapshots_batch,
     get_latest_market_snapshots_batch,
     get_active_divergences_batch,
+    get_active_alerts_batch,
     utc_now
 )
 from app.config import INITIAL_TICKERS
@@ -19,11 +20,13 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
     alerts = []
     
     ticker_symbols = [t.symbol for t in INITIAL_TICKERS]
+    now_dt = utc_now()
     
-    # 3 Consolidated Batch Queries (eliminates N+1 DB queries)
+    # 4 Consolidated Batch Queries (eliminates N+1 DB queries)
     ssi_snaps = get_latest_ssi_snapshots_batch(db, tickers=ticker_symbols)
     mkt_snaps = get_latest_market_snapshots_batch(db, tickers=ticker_symbols)
     divs_by_ticker = get_active_divergences_batch(db, hours=24, tickers=ticker_symbols)
+    db_alerts = get_active_alerts_batch(db, tickers=ticker_symbols)
     
     for ticker_config in INITIAL_TICKERS:
         symbol = ticker_config.symbol
@@ -33,7 +36,6 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
 
         if ssi_snap:
             # Stale Data Calculation
-            now_dt = utc_now()
             age_hours = None
             is_stale = False
             if ssi_snap.timestamp:
@@ -76,6 +78,11 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                 "post_count": ssi_snap.post_count,
                 "news_count": ssi_snap.news_count,
                 "prediction_count": ssi_snap.prediction_count,
+                "data_source": getattr(ssi_snap, "data_source", "LIVE") or "LIVE",
+                "social_source": getattr(ssi_snap, "social_source", "LIVE") or "LIVE",
+                "prediction_source": getattr(ssi_snap, "prediction_source", "LIVE") or "LIVE",
+                "news_source": getattr(ssi_snap, "news_source", "LIVE") or "LIVE",
+                "market_source": getattr(ssi_snap, "market_source", "LIVE") or "LIVE",
                 "price": ssi_snap.price,
                 "market_status": mkt_snap.market_status if mkt_snap else "AVAILABLE",
                 "timestamp": ssi_snap.timestamp.isoformat() + "Z" if ssi_snap.timestamp else None,
@@ -83,62 +90,69 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                 "is_stale": is_stale
             })
 
-            # Check if active alert applies
-            snap_iso = ssi_snap.timestamp.isoformat() + "Z" if ssi_snap.timestamp else None
+            # If no database alerts exist yet, provide fallback alerts from snapshot
+            if not db_alerts:
+                snap_iso = ssi_snap.timestamp.isoformat() + "Z" if ssi_snap.timestamp else None
 
-            if ssi_snap.signal and "STRONG BUY" in ssi_snap.signal:
-                alerts.append({
-                    "id": f"{symbol}:STRONG_BUY:{ssi_snap.id if hasattr(ssi_snap, 'id') else '0'}",
-                    "ticker": symbol,
-                    "type": "STRONG_BUY",
-                    "category": "SIGNAL",
-                    "level": "CRITICAL",
-                    "message": f"🚀 {symbol} issued a STRONG BUY signal (SMI: {smi_val:.0f}/100)",
-                    "timestamp": snap_iso,
-                    "age_hours": age_hours,
-                    "is_active": not is_stale
-                })
-            elif ssi_snap.signal and "STRONG AVOID" in ssi_snap.signal:
-                alerts.append({
-                    "id": f"{symbol}:STRONG_AVOID:{ssi_snap.id if hasattr(ssi_snap, 'id') else '0'}",
-                    "ticker": symbol,
-                    "type": "STRONG_AVOID",
-                    "category": "SIGNAL",
-                    "level": "CRITICAL",
-                    "message": f"🛑 {symbol} issued a STRONG AVOID signal (SMI: {smi_val:.0f}/100) — high capital risk",
-                    "timestamp": snap_iso,
-                    "age_hours": age_hours,
-                    "is_active": not is_stale
-                })
-            
-            for d in divs:
-                d_level = (
-                    "CRITICAL" if "BEARISH_CONFIRMATION" in d.type
-                    else "HIGH" if ("CONFIRMATION" in d.type or "DIVERGENCE" in d.type)
-                    else "MEDIUM"
-                )
-                div_iso = d.timestamp.isoformat() + "Z" if (hasattr(d, "timestamp") and d.timestamp) else snap_iso
-                alerts.append({
-                    "id": f"{symbol}:{d.type}:{d.id if hasattr(d, 'id') else '0'}",
-                    "ticker": symbol,
-                    "type": d.type,
-                    "category": "DIVERGENCE",
-                    "level": d_level,
-                    "message": f"⚠️ {symbol}: {d.description}",
-                    "timestamp": div_iso,
-                    "age_hours": age_hours,
-                    "is_active": not is_stale
-                })
+                if ssi_snap.signal and "STRONG BUY" in ssi_snap.signal:
+                    alerts.append({
+                        "id": f"{symbol}:SIGNAL:STRONG_BUY",
+                        "ticker": symbol,
+                        "type": "STRONG_BUY",
+                        "category": "SIGNAL",
+                        "level": "CRITICAL",
+                        "message": f"🚀 {symbol} issued a STRONG BUY signal (SMI: {smi_val:.0f}/100)",
+                        "timestamp": snap_iso,
+                        "age_hours": age_hours,
+                        "is_active": not is_stale
+                    })
+                elif ssi_snap.signal and "STRONG AVOID" in ssi_snap.signal:
+                    alerts.append({
+                        "id": f"{symbol}:SIGNAL:STRONG_AVOID",
+                        "ticker": symbol,
+                        "type": "STRONG_AVOID",
+                        "category": "SIGNAL",
+                        "level": "CRITICAL",
+                        "message": f"🛑 {symbol} issued a STRONG AVOID signal (SMI: {smi_val:.0f}/100) — high capital risk",
+                        "timestamp": snap_iso,
+                        "age_hours": age_hours,
+                        "is_active": not is_stale
+                    })
+                
+                for d in divs:
+                    d_level = (
+                        "CRITICAL" if "BEARISH_CONFIRMATION" in d.type
+                        else "HIGH" if ("CONFIRMATION" in d.type or "DIVERGENCE" in d.type)
+                        else "MEDIUM"
+                    )
+                    div_dt = d.timestamp
+                    if div_dt and div_dt.tzinfo is not None:
+                        div_dt = div_dt.replace(tzinfo=None)
+                    div_age = round(max(0.0, (now_dt - div_dt).total_seconds() / 3600.0), 1) if div_dt else age_hours
+                    div_iso = d.timestamp.isoformat() + "Z" if (hasattr(d, "timestamp") and d.timestamp) else snap_iso
 
+                    alerts.append({
+                        "id": f"{symbol}:DIVERGENCE:{d.type}:{d.id if hasattr(d, 'id') else '0'}",
+                        "ticker": symbol,
+                        "type": d.type,
+                        "category": "DIVERGENCE",
+                        "level": d_level,
+                        "message": f"⚠️ {symbol}: {d.description}",
+                        "timestamp": div_iso,
+                        "age_hours": div_age,
+                        "is_active": not is_stale
+                    })
+
+            # Add stale data warning if applicable
             if is_stale and age_hours is not None:
                 alerts.append({
-                    "id": f"{symbol}:STALE_DATA:{ssi_snap.id if hasattr(ssi_snap, 'id') else '0'}",
+                    "id": f"{symbol}:SYSTEM:STALE_DATA",
                     "ticker": symbol,
                     "type": "STALE_DATA",
                     "category": "SYSTEM",
                     "level": "WARNING",
                     "message": f"⏳ {symbol} data is {age_hours:.1f}h old (Pipeline awaiting scheduled execution)",
-                    "timestamp": snap_iso,
+                    "timestamp": ssi_snap.timestamp.isoformat() + "Z" if ssi_snap.timestamp else None,
                     "age_hours": age_hours,
                     "is_active": False
                 })
@@ -172,6 +186,32 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                 "timestamp": None,
                 "data_age_hours": None,
                 "is_stale": False
+            })
+
+    # If database alerts exist, format them directly as the authoritative source
+    if db_alerts:
+        for al in db_alerts:
+            al_ts = al.timestamp
+            if al_ts and al_ts.tzinfo is not None:
+                al_ts = al_ts.replace(tzinfo=None)
+            al_age = round(max(0.0, (now_dt - al_ts).total_seconds() / 3600.0), 1) if al_ts else None
+            
+            snap = ssi_snaps.get(al.ticker)
+            is_snap_stale = False
+            if snap and snap.timestamp:
+                st = snap.timestamp.replace(tzinfo=None) if snap.timestamp.tzinfo else snap.timestamp
+                is_snap_stale = (now_dt - st).total_seconds() / 3600.0 >= 6.0
+
+            alerts.append({
+                "id": al.alert_id,
+                "ticker": al.ticker,
+                "type": al.type,
+                "category": al.category,
+                "level": al.level,
+                "message": al.message,
+                "timestamp": al.timestamp.isoformat() + "Z" if al.timestamp else None,
+                "age_hours": al_age,
+                "is_active": not is_snap_stale
             })
 
     # Sort rankings by SMI descending, safely placing None values at the bottom

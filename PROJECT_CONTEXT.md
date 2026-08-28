@@ -93,7 +93,7 @@ El sistema está construido como un **Monolito Modular** en Python 3.11+ con int
 | **`SMI`** | **Space Market Intelligence Index** | **$0\text{--}100$** | **Índice cuantitativo integral maestro.** Combina los 6 factores multivariables con pesos adaptativos dinámicos. |
 | **`SSI`** | **Space Sentiment Index** | **$0\text{--}100$** | Mide **exclusivamente el sentimiento social puro de X/Twitter**, ponderado por engagement logarítmico y decaimiento temporal. |
 | **`PMS`** | **Prediction Market Score** | **$0\text{--}100$** | Mide las **expectativas implícitas en Prediction Markets (Polymarket)** para eventos directos y sectoriales. |
-| **`Risk Score`** | **Risk & Safety Score** | **$0\text{--}100$** | Mide la **seguridad del activo** basada en volatilidad relativa (ATR % sobre precio), compresión de Bollinger y drawdown. |
+| **`Risk Score`** | **Risk & Safety Score** | **$0\text{--}100$** | Mide la **seguridad del activo** (mayor = más seguro/menor volatilidad) combinando: ATR% sobre precio, volatilidad anualizada a 30 días y drawdown móvil a 30 días. |
 | **`Market Score`** | **Technical Market Score** | **$0\text{--}100$** | Mide la **confirmación técnica del precio** (escalado desde el score técnico de 40 pts). |
 
 ---
@@ -104,19 +104,27 @@ El sistema está construido como un **Monolito Modular** en Python 3.11+ con int
 - **Engagement Logarítmico:**
   $$\text{Engagement} = \ln\left(1 + \text{likes} + 2\cdot\text{reposts} + 1.5\cdot\text{replies} + \frac{\text{views}}{1000}\right)$$
   Multiplicador de peso parametrizado por `ENGAGEMENT_SCALE_DIVISOR = 10.0`:
-  $$w_i = \text{relevance} \cdot \text{recency} \cdot \left(1.0 + \frac{\text{engagement}}{10.0}\right)$$
+  $$w_i = \text{relevance} \cdot \text{recency} \cdot \text{confidence} \cdot \left(1.0 + \frac{\text{engagement}}{10.0}\right)$$
 - **Decaimiento Temporal Exponencial:**
   $$\text{Weight}_{\text{recency}} = e^{-\lambda \cdot \text{age\_hours}}, \quad \lambda = \frac{\ln(2)}{12.0\text{h}}$$
-- **Contracción Bayesiana de Credibilidad (*Empirical Bayes Shrinkage*):** Ante muestras reducidas ($1 \le N < 10$ posts), el score social efectivo se contrae suavemente hacia el prior neutro ($\mu_0 = 50.0$):
-  $$\text{effective\_social} = 50.0 + (\text{social\_score} - 50.0) \times \min\left(1.0, \frac{\text{post\_count}}{10.0}\right)$$
-- **Exclusión Adaptativa sin Falsa Neutralidad:** Si $N = 0$ posts, el pilar social se excluye estrictamente ($w_{\text{social}} = 0$) y su peso se redistribuye proporcionalmente entre las fuentes activas.
+- **Contracción Bayesiana de Credibilidad (*Empirical Bayes Shrinkage*):** Ante muestras reducidas ($1 \le N < 10$ posts), el score social efectivo se contrae suavemente hacia el prior neutro ($\mu_0 = 50.0$) con piso mínimo de credibilidad ($10\%$):
+  $$\text{effective\_social} = 50.0 + (\text{social\_score} - 50.0) \times \min\left(1.0, \max\left(0.10, \frac{\text{post\_count}}{10.0}\right)\right)$$
+- **Exclusión Adaptativa sin Falsa Neutralidad:** Si $N = 0$ posts o no hay posts relevantes, el pilar social se excluye estrictamente ($w_{\text{social}} = 0$) y su peso se redistribuye proporcionalmente entre las fuentes activas.
 
 #### 2. Polymarket Market Quality Scorer (0 a 100):
 Calcula la confiabilidad del contrato para evitar manipulación en mercados ilíquidos:
-$$\text{Quality} = 0.30 \cdot \text{Liquidity} + 0.30 \cdot \text{Volume} + 0.20 \cdot \text{Spread} + 0.20 \cdot \text{TimeToExpiry}$$
+$$\text{Quality} = 0.35 \cdot \text{Liquidity} + 0.30 \cdot \text{Volume} + 0.20 \cdot \text{Spread} + 0.15 \cdot \text{TimeToResolution}$$
 > **Regla de Calidad:** Si $\text{Quality} < 30.0$ o `prediction_count == 0`, el peso de Polymarket se anula estrictamente ($w_{\text{prediction}} = 0$).
 
-#### 3. Arquitectura de 6 Pilares y Normalización Adaptativa de SMI:
+#### 3. Módulo de Análisis Fundamental del Sector Espacial (0 a 100):
+Cuantifica la viabilidad financiera y solvencia de compañías espaciales de alto crecimiento:
+$$\text{Fundamental\_Score} = 0.40 \cdot \text{Runway} + 0.25 \cdot \text{Solvency} + 0.20 \cdot \text{Growth} + 0.15 \cdot \text{Margin}$$
+- **Cash Runway (40%):** Meses de caja operativa frente a quema de efectivo ($\text{Burn Rate}$). Flujo libre de caja positivo $\to 90$ pts; $>24$ meses $\to 85$ pts; $<6$ meses $\to 15$ pts (riesgo crítico de dilución).
+- **Solvencia (25%):** Posición de caja neta frente a endeudamiento total (`total_debt / total_cash`).
+- **Crecimiento YoY (20%):** Expansión anual de ingresos por contratos comerciales y de defensa.
+- **Márgenes Unitarios (15%):** Margen bruto de hardware aeroespacial y payloads satelitales.
+
+#### 4. Arquitectura de 6 Pilares y Normalización Adaptativa de SMI:
 Pesos base canónicos:
 - **Social (SSI):** $30\%$
 - **Prediction Markets (PMS):** $15\%$
@@ -130,14 +138,14 @@ $$w_i^{\text{active}} = \frac{w_i}{\sum_{j \in \text{active}} w_j}$$
 
 - **Source Agreement ($\in [-1.0, +1.0]$) — Pairwise Directional Concordance:**
   $$\text{Agreement} = \frac{1}{\binom{N}{2}} \sum_{i < j} \text{Concordance}(d_i, d_j), \quad \text{Concordance}(d_i, d_j) = \text{sign}(d_i \cdot d_j) \cdot \min\left(1.0, \frac{|d_i| + |d_j|}{1.5}\right)$$
-  *(donde $|d_k| < 0.10 \implies \text{Concordance} = 0$). Incluye el vector de dirección de riesgo corregido.*
+  *(donde $|d_k| < 0.10 \implies \text{Concordance} = 0$. Excluye la métrica de riesgo no direccional).*
 
 ---
 
 ### C. Ciclo Cerrado de Optimización (Backtesting $\to$ Pesos Dinámicos)
 
 El sistema soporta retroalimentación adaptativa en ciclo cerrado (`ENABLE_DYNAMIC_WEIGHT_FEEDBACK`):
-* **Compuerta Muestral:** $N_{\text{trades}} \ge 30$ en horizonte de $3\text{D}$.
+* **Compuerta Muestral Bilateral:** $\min(N_{\text{trades\_A}}, N_{\text{trades\_B}}) \ge 30$ en horizonte de $3\text{D}$.
 * **Modulación por $\Delta\text{Sharpe}$:**
   $$\kappa = 1.0 + \text{clip}\left(\frac{\Delta\text{Sharpe}_{\text{3D}}}{2.0}, -0.5, +0.5\right)$$
   $$w_{\text{prediction}}^* = \text{clip}(0.15 \times \kappa, 0.05, 0.25)$$
@@ -257,9 +265,10 @@ Módulo [`app/backtesting/engine.py`](file:///d:/Mis%20Cosas/test/Space%20Sentim
 
 ## 9. 🛡️ Suite de Pruebas Automatizadas
 
-El proyecto cuenta con **78 tests unitarios automatizados** que cubren matemática, scoring, divergencias, persistencia, backtesting, paridad determinista live/backtest, ventanas fijas de S/R desacopladas del payload, graduación de velas y compuertas de preservación de capital:
+## 9. 🛡️ Suite de Pruebas Automatizadas
+
+El proyecto cuenta con una suite completa de tests unitarios y de integración automatizados que cubren matemática cuantitativa, scoring multivariable de 6 pilares, fundamentales, divergencias, persistencia por lotes, gobernanza de datos en vivo vs mock, backtesting físico, exclusión mutua asíncrona con mutex, paridad determinista live/backtest sin sesgo de anticipación, invarianza de escala ATR, zonas horarias UTC, compuertas de profundidad de indicadores y NLP:
 ```powershell
 python -m pytest tests/ -v
 ```
-*(Resultado actual: **78 passed en 1.8s, 0 warnings/failures**).*
 - Incluye el módulo `tests/test_strategy_parity.py` que certifica matemáticamente la paridad idéntica entre la ejecución en vivo y el cálculo histórico sin sesgo de anticipación (*Lookahead Bias*), invarianza de escala ATR, niveles de soporte/resistencia calculados sobre ventanas fijas de 100 velas independientes del tamaño del historial de red y puntuación anatómica de velas con precedencia de Doji corregida.

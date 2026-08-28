@@ -99,6 +99,9 @@ class Settings(BaseSettings):
         "http://127.0.0.1:8000"
     ]
     
+    # Data Provenance and Mock Governance
+    ALLOW_MOCK_FALLBACK: bool = False  # If False, unauthenticated/failing live collectors return empty datasets instead of generating fake mock data
+    
     # X / Social Provider Settings
     X_PROVIDER: str = "mock"  # "mock" or "twikit"
     X_AUTH_INFO_1: str = ""
@@ -110,6 +113,7 @@ class Settings(BaseSettings):
     SOCIAL_LOOKBACK_HOURS: int = 24
     SOCIAL_MAX_POSTS_PER_TICKER: int = 100
     SOCIAL_MIN_RELEVANCE: float = 0.40
+    NEWS_MIN_RELEVANCE: float = 0.40
     ENGAGEMENT_SCALE_DIVISOR: float = 10.0  # Scales log1p engagement: ln(1 + ~22,000) ≈ 10.0 maps high engagement to ~2.0x weight
     
     # Prediction Market (Polymarket) Settings

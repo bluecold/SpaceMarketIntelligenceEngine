@@ -355,5 +355,82 @@ def test_zero_post_count_strictly_excludes_social():
     assert res["smi"] == pytest.approx(72.2, 0.5)
 
 
+def test_risk_score_excluded_from_source_agreement():
+    """
+    Verify that risk_score (a non-directional stability metric) does not contaminate
+    the directional source_agreement concordance calculation.
+    """
+    # 2 opposing directional pillars (Social bullish 85 -> +0.70, Momentum bearish 15 -> -0.70)
+    # They have polar disagreement (agreement = -0.98)
+    res_no_risk = calculate_smi(
+        social_score=85.0,
+        post_count=20,
+        momentum_score=15.0,
+        risk_score=None
+    )
+    res_with_safe_risk = calculate_smi(
+        social_score=85.0,
+        post_count=20,
+        momentum_score=15.0,
+        risk_score=85.0  # High stability/low volatility
+    )
+
+    # Source agreement must be identical whether risk_score is present or not
+    assert res_no_risk["source_agreement"] == res_with_safe_risk["source_agreement"]
+    assert res_with_safe_risk["source_agreement"] < 0.0, "Polar directional disagreement must produce negative agreement"
+
+
+def test_fundamental_score_calculation_and_smi_full_coverage():
+    """Verify calculate_fundamental_score and 100% data quality with all 6 pillars active."""
+    from app.scoring.fundamentals import calculate_fundamental_score
+
+    # 1. Healthy Space Company: 24+ months runway, low debt, strong growth
+    healthy_fund = {
+        "total_cash": 300_000_000,
+        "total_debt": 50_000_000,
+        "free_cashflow": -80_000_000,  # $80M burn / $300M cash = 3.75 years runway
+        "revenue_growth": 0.45,        # +45% YoY growth
+        "gross_margins": 0.35          # 35% gross margin
+    }
+    score_healthy = calculate_fundamental_score(healthy_fund)
+    assert score_healthy is not None
+    assert score_healthy >= 75.0
+
+    # 2. Distressed Company: < 6 months runway, high debt, negative margin
+    distressed_fund = {
+        "total_cash": 15_000_000,
+        "total_debt": 90_000_000,
+        "free_cashflow": -60_000_000,  # 3 months runway -> acute capital raise / dilution risk
+        "revenue_growth": -0.10,
+        "gross_margins": -0.15
+    }
+    score_distressed = calculate_fundamental_score(distressed_fund)
+    assert score_distressed is not None
+    assert score_distressed <= 35.0
+
+    # 3. Empty data returns None cleanly
+    assert calculate_fundamental_score({}) is None
+    assert calculate_fundamental_score(None) is None
+
+    # 4. Full 6-pillar SMI coverage reaches 100.0% data_completeness / data_quality
+    res_full = calculate_smi(
+        social_score=80.0,
+        prediction_score=75.0,
+        prediction_quality=80.0,
+        news_score=80.0,
+        momentum_score=70.0,
+        fundamental_score=score_healthy,
+        risk_score=65.0,
+        post_count=35,
+        news_count=5,
+        prediction_count=3
+    )
+    assert res_full["data_completeness"] == 100.0
+    assert res_full["data_quality"] == 100.0
+    assert res_full["confidence"] >= 90.0
+
+
+
+
 
 

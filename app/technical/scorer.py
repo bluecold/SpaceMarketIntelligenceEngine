@@ -22,9 +22,11 @@ def calculate_technical_score(indicators: Dict[str, Any]) -> Optional[float]:
         return None
 
     total_score = 0.0
+    available_max = 0.0
 
-    # 1. EMA200 (Max 10 points)
+    # 1. EMA200 (Max 10 points - strictly evaluated only when historical depth >= 200)
     if ema200 is not None:
+        available_max += 10.0
         if price >= ema200:
             total_score += 10.0
         else:
@@ -32,6 +34,7 @@ def calculate_technical_score(indicators: Dict[str, Any]) -> Optional[float]:
 
     # 2. RSI (Max 10 points)
     if rsi14 is not None:
+        available_max += 10.0
         if 50.0 <= rsi14 <= 70.0:
             total_score += 10.0
         elif 45.0 <= rsi14 < 50.0:
@@ -45,6 +48,7 @@ def calculate_technical_score(indicators: Dict[str, Any]) -> Optional[float]:
 
     # 3. Bollinger Bands (Max 10 points)
     if b_middle is not None and b_upper is not None and b_lower is not None:
+        available_max += 10.0
         if b_middle <= price <= b_upper:
             total_score += 10.0
         elif b_lower <= price < b_middle:
@@ -56,12 +60,16 @@ def calculate_technical_score(indicators: Dict[str, Any]) -> Optional[float]:
 
     # 4. MACD (Max 5 points)
     if macd_hist is not None:
+        available_max += 5.0
         if macd_hist > 0:
             total_score += 5.0
         else:
             # Price / Volatility normalized near-zero consolidation threshold
             atr = indicators.get("atr")
-            if atr is not None and atr > 0:
+            if atr is not None and atr > 0 and price > 0:
+                macd_threshold = min(0.08 * atr, 0.0020 * price)
+                is_near_zero = abs(macd_hist) <= macd_threshold
+            elif atr is not None and atr > 0:
                 is_near_zero = (abs(macd_hist) / atr) <= 0.08
             elif price > 0:
                 is_near_zero = (abs(macd_hist) / price) <= 0.002  # <= 0.20% of price
@@ -75,6 +83,7 @@ def calculate_technical_score(indicators: Dict[str, Any]) -> Optional[float]:
 
     # 5. Volume Ratio (Max 5 points - Option A Institutional Alignment)
     if vol_ratio is not None:
+        available_max += 5.0
         if vol_ratio >= 1.5:
             total_score += 5.0
         elif vol_ratio >= 1.2:
@@ -84,4 +93,9 @@ def calculate_technical_score(indicators: Dict[str, Any]) -> Optional[float]:
         else:
             total_score += 0.0  # Sub-average volume (< 1.0x) provides no confirmation
 
-    return min(40.0, round(total_score, 1))
+    if available_max <= 0.0:
+        return None
+
+    # Adaptively scale across available components to canonical 40.0 maximum
+    scaled_score = (total_score / available_max) * 40.0
+    return min(40.0, round(scaled_score, 1))

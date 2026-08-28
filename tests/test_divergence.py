@@ -173,3 +173,116 @@ def test_divergence_result_default_factory_dynamic_timestamp():
     assert res.timestamp <= t_after
 
 
+def test_divergence_bayesian_shrinkage_suppresses_small_sample_noise():
+    """
+    Verify that Bayesian shrinkage properly protects divergence alerts:
+    - 2 bullish posts (raw social_score = 90.0) are contracted to 58.0 and do NOT trigger BULLISH_DIVERGENCE.
+    - 15 bullish posts (raw social_score = 90.0) maintain full conviction and DO trigger BULLISH_DIVERGENCE.
+    """
+    # Case 1: Small sample (N=2) -> Shrinkage pulls 90.0 towards 50.0 (effective = 58.0, dir_social = +0.16)
+    small_sample_results = detect_divergences(
+        ticker="ASTS",
+        social_score=90.0,
+        prediction_score=None,
+        price_return_1d=-3.0,
+        post_count=2
+    )
+    div_types_small = [r.type for r in small_sample_results]
+    assert "BULLISH_DIVERGENCE" not in div_types_small, "Small sample of 2 posts should not trigger Bullish Divergence"
+
+    # Case 2: Statistically reliable sample (N=15) -> full conviction (effective = 90.0, dir_social = +0.80)
+    large_sample_results = detect_divergences(
+        ticker="ASTS",
+        social_score=90.0,
+        prediction_score=None,
+        price_return_1d=-3.0,
+        post_count=15
+    )
+    div_types_large = [r.type for r in large_sample_results]
+    assert "BULLISH_DIVERGENCE" in div_types_large, "Reliable sample of 15 posts should trigger Bullish Divergence"
+
+
+def test_divergence_stateful_episode_lifecycle():
+    """
+    Verify stateful divergence episode management:
+    1. First detection creates an active DivergenceModel row (resolved_at=None).
+    2. Subsequent recurring detection updates last_seen without creating duplicate rows.
+    3. When divergence condition ceases, episode is closed (resolved_at set to timestamp).
+    """
+    import time
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.database.models import Base, DivergenceModel
+    from app.database.repository import save_divergences, get_active_divergences, get_active_divergences_batch
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    TestSession = sessionmaker(bind=engine)
+    db = TestSession()
+
+    try:
+        div_data = [{
+            "type": "BEARISH_DIVERGENCE",
+            "source_a": "X_SOCIAL",
+            "source_b": "PRICE",
+            "source_c": None,
+            "direction": "BEARISH",
+            "strength": 0.85,
+            "confidence": 0.80,
+            "description": "Initial disconnect between social and price"
+        }]
+
+        # Run 1: Initial detection -> 1 active row created
+        save_divergences(db, "ASTS", div_data)
+        all_rows = db.query(DivergenceModel).all()
+        assert len(all_rows) == 1
+        ep1 = all_rows[0]
+        assert ep1.resolved_at is None
+        t_start = ep1.timestamp
+        t_last1 = ep1.last_seen
+
+        active_batch = get_active_divergences_batch(db, tickers=["ASTS"])
+        assert len(active_batch["ASTS"]) == 1
+        assert active_batch["ASTS"][0].id == ep1.id
+
+        # Run 2: Recurring detection (same divergence type still active) -> updates last_seen without duplicate insert
+        time.sleep(0.01)
+        div_data_updated = [{
+            "type": "BEARISH_DIVERGENCE",
+            "source_a": "X_SOCIAL",
+            "source_b": "PRICE",
+            "source_c": None,
+            "direction": "BEARISH",
+            "strength": 0.90,
+            "confidence": 0.85,
+            "description": "Updated disconnect between social and price"
+        }]
+        save_divergences(db, "ASTS", div_data_updated)
+
+        all_rows_run2 = db.query(DivergenceModel).all()
+        assert len(all_rows_run2) == 1, "Recurring divergence must NOT create duplicate rows"
+        ep_updated = all_rows_run2[0]
+        assert ep_updated.timestamp == t_start  # Start time preserved
+        assert ep_updated.last_seen >= t_last1  # Last seen updated
+        assert ep_updated.strength == 0.90
+        assert ep_updated.description == "Updated disconnect between social and price"
+        assert ep_updated.resolved_at is None
+
+        # Run 3: Condition ceased (empty active divergences list) -> closes the episode
+        save_divergences(db, "ASTS", [])
+        all_rows_run3 = db.query(DivergenceModel).all()
+        assert len(all_rows_run3) == 1
+        ep_closed = all_rows_run3[0]
+        assert ep_closed.resolved_at is not None, "Ceased divergence must have resolved_at set"
+
+        # Active queries must now return 0 active episodes
+        active_after_close = get_active_divergences(db, "ASTS")
+        assert len(active_after_close) == 0
+        active_batch_after_close = get_active_divergences_batch(db, tickers=["ASTS"])
+        assert len(active_batch_after_close["ASTS"]) == 0
+    finally:
+        db.close()
+
+
+
+

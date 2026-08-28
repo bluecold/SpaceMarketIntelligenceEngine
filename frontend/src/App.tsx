@@ -15,7 +15,12 @@ export const App: React.FC = () => {
 
   const fetchDashboard = () => {
     fetch('/api/dashboard')
-      .then((res) => res.json())
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        }
+        return res.json();
+      })
       .then((data) => {
         setDashboard(data);
         setLoading(false);
@@ -33,11 +38,36 @@ export const App: React.FC = () => {
   const handleTriggerAnalysis = async () => {
     setIsAnalyzing(true);
     try {
-      await fetch('/api/jobs/run', { method: 'POST' });
+      const resp = await fetch('/api/jobs/run', { method: 'POST' });
+      if (resp.status === 202) {
+        const data = await resp.json();
+        const jobId = data.job_id;
+        if (jobId) {
+          const pollInterval = setInterval(async () => {
+            try {
+              const statusRes = await fetch(`/api/jobs/${jobId}`);
+              if (statusRes.ok) {
+                const job = await statusRes.json();
+                if (job.status === 'SUCCESS' || job.status === 'ERROR') {
+                  clearInterval(pollInterval);
+                  setIsAnalyzing(false);
+                  fetchDashboard();
+                }
+              }
+            } catch (pollErr) {
+              console.error('Error polling job status:', pollErr);
+              clearInterval(pollInterval);
+              setIsAnalyzing(false);
+              fetchDashboard();
+            }
+          }, 1500);
+          return;
+        }
+      }
       fetchDashboard();
+      setIsAnalyzing(false);
     } catch (err) {
       console.error('Error triggering analysis:', err);
-    } finally {
       setIsAnalyzing(false);
     }
   };

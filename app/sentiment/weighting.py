@@ -2,6 +2,7 @@ import math
 import re
 from datetime import datetime, timezone
 from typing import List, Tuple, Optional, Dict, Any
+from app.config import settings
 
 CATALYST_CONFIG = {
     "SATELLITE_DEPLOYMENT": {
@@ -123,7 +124,8 @@ def detect_catalysts(text: str) -> List[Dict[str, str]]:
 
     for category, config in CATALYST_CONFIG.items():
         for kw in config["keywords"]:
-            if kw in clean_text:
+            kw_pattern = r'\b' + re.escape(kw) + r'\b'
+            if re.search(kw_pattern, clean_text):
                 if category not in seen_categories:
                     matches.append({
                         "category": category,
@@ -134,8 +136,17 @@ def detect_catalysts(text: str) -> List[Dict[str, str]]:
                     seen_categories.add(category)
                 break
 
-    # Sort matches by importance hierarchy (CRITICAL first, then HIGH, etc.)
-    matches.sort(key=lambda c: IMPORTANCE_RANK.get(c["importance"], 99))
+    # Sort matches by:
+    # 1. Importance hierarchy (CRITICAL first, then HIGH, etc.)
+    # 2. Polar risk on tie (BEARISH before BULLISH to ensure anomalies are not masked)
+    # 3. Specificity on tie (longer phrases first)
+    matches.sort(
+        key=lambda c: (
+            IMPORTANCE_RANK.get(c["importance"], 99),
+            0 if c["direction"] == "BEARISH" else 1,
+            -len(c["keyword"])
+        )
+    )
     return matches
 
 
@@ -154,9 +165,24 @@ def detect_catalyst(text: str) -> Tuple[Optional[str], Optional[str], Optional[s
 def calculate_news_score(news_items: List[Any]) -> Dict[str, Any]:
     """
     Computes aggregated News Score (0 to 100) from recent news articles.
-    Returns news_score = None when no news items exist (Adaptive weight normalization).
+    Filters articles by settings.NEWS_MIN_RELEVANCE (default 0.40).
+    Returns news_score = None when no relevant news items exist (Adaptive weight normalization).
     """
     if not news_items:
+        return {
+            "news_score": None,
+            "total_news": 0,
+            "bullish_news_pct": 0.0,
+            "bearish_news_pct": 0.0
+        }
+
+    min_rel = getattr(settings, "NEWS_MIN_RELEVANCE", 0.40)
+    relevant_items = [
+        item for item in news_items
+        if getattr(item, "relevance_score", 1.0) is None or getattr(item, "relevance_score", 1.0) >= min_rel
+    ]
+
+    if not relevant_items:
         return {
             "news_score": None,
             "total_news": 0,
@@ -169,7 +195,7 @@ def calculate_news_score(news_items: List[Any]) -> Dict[str, Any]:
     bull_cnt = 0
     bear_cnt = 0
 
-    for item in news_items:
+    for item in relevant_items:
         # Importance weighting multiplier
         imp_mult = 1.0
         if getattr(item, 'catalyst_importance', None) == "CRITICAL":
@@ -179,8 +205,9 @@ def calculate_news_score(news_items: List[Any]) -> Dict[str, Any]:
 
         # Recency decay for news (half-life 24 hours)
         rec_w = calculate_recency_weight(item.published_at, half_life_hours=24.0)
-        rel_score = getattr(item, 'relevance_score', 1.0)
-        w = rel_score * rec_w * imp_mult
+        rel_score = getattr(item, 'relevance_score', 1.0) if getattr(item, 'relevance_score', 1.0) is not None else 1.0
+        conf_score = getattr(item, 'sentiment_confidence', 1.0) if getattr(item, 'sentiment_confidence', 1.0) is not None else 1.0
+        w = rel_score * rec_w * conf_score * imp_mult
         
         total_weight += w
         weighted_sentiment_sum += getattr(item, 'sentiment_score', 0.0) * w
@@ -193,7 +220,7 @@ def calculate_news_score(news_items: List[Any]) -> Dict[str, Any]:
     if total_weight <= 0:
         return {
             "news_score": None,
-            "total_news": len(news_items),
+            "total_news": len(relevant_items),
             "bullish_news_pct": 0.0,
             "bearish_news_pct": 0.0
         }
@@ -202,7 +229,7 @@ def calculate_news_score(news_items: List[Any]) -> Dict[str, Any]:
     raw_news_score = 50.0 + (50.0 * norm_sent)
     news_score = max(0.0, min(100.0, round(raw_news_score, 1)))
 
-    n_total = len(news_items)
+    n_total = len(relevant_items)
     return {
         "news_score": news_score,
         "total_news": n_total,

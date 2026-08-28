@@ -205,7 +205,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                 La industria aeroespacial es única en el mercado financiero: depende fuertemente de <strong>eventos binarios</strong> (lanzamientos de cohetes, despliegue de constelaciones satelitales, aprobaciones de espectro por la FCC, contratos de defensa con el DoD/NASA). Los modelos tradicionales de análisis técnico o fundamental a menudo fallan al no capturar a tiempo las expectativas de eventos ni la narrativa social.
               </p>
 
-              <h4 style={{ color: '#fff', fontSize: '0.95rem', marginBottom: '8px' }}>🧠 La Solución de SMIE v2.0: Cuatro Fuentes Desacopladas</h4>
+              <h4 style={{ color: '#fff', fontSize: '0.95rem', marginBottom: '8px' }}>🧠 La Solución de SMIE v2.0: Seis Pilares Desacoplados</h4>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px', marginTop: '12px' }}>
                 <div style={{ background: 'rgba(255,255,255,0.03)', padding: '12px', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
                   <div style={{ color: 'var(--bullish-green)', fontWeight: 700, fontSize: '0.85rem' }}>1. Narrativa Social (X)</div>
@@ -232,6 +232,20 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                   <div style={{ color: '#38bdf8', fontWeight: 700, fontSize: '0.85rem' }}>4. Acción Técnica del Precio</div>
                   <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '4px' }}>
                     Confirmación cuantitativa: EMA200, RSI(14), Bandas de Bollinger, MACD y volumen.
+                  </div>
+                </div>
+
+                <div style={{ background: 'rgba(255,255,255,0.03)', padding: '12px', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
+                  <div style={{ color: '#10b981', fontWeight: 700, fontSize: '0.85rem' }}>5. Salud Fundamental</div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Cash runway, solvencia financiera, crecimiento interanual de ingresos y márgenes brutos.
+                  </div>
+                </div>
+
+                <div style={{ background: 'rgba(255,255,255,0.03)', padding: '12px', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
+                  <div style={{ color: '#ec4899', fontWeight: 700, fontSize: '0.85rem' }}>6. Riesgo & Volatilidad</div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Medición de volatilidad ATR normalizada, compresión y distancia a máximos (drawdown).
                   </div>
                 </div>
               </div>

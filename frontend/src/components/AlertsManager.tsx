@@ -78,6 +78,17 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
     }
   };
 
+  const saveReadIds = (set: Set<string>) => {
+    try {
+      // Auto-prune to keep most recent 100 entries to avoid localStorage bloat
+      const arr = Array.from(set);
+      const pruned = arr.length > 100 ? arr.slice(arr.length - 100) : arr;
+      localStorage.setItem(READ_STORAGE_KEY, JSON.stringify(pruned));
+    } catch (e) {
+      console.warn('Failed to save read alerts', e);
+    }
+  };
+
   const updateSettings = (newSettings: Partial<NotificationSettings>) => {
     const updated = { ...settings, ...newSettings };
     setSettings(updated);
@@ -215,11 +226,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
     const allKeys = new Set(readIds);
     alerts.forEach((al, idx) => allKeys.add(getAlertKey(al, idx)));
     setReadIds(allKeys);
-    try {
-      localStorage.setItem(READ_STORAGE_KEY, JSON.stringify(Array.from(allKeys)));
-    } catch (e) {
-      console.warn('Failed to save read alerts to localStorage', e);
-    }
+    saveReadIds(allKeys);
   };
 
   const handleAlertClick = (al: AlertItem, idx: number) => {
@@ -228,11 +235,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
       const updated = new Set(readIds);
       updated.add(key);
       setReadIds(updated);
-      try {
-        localStorage.setItem(READ_STORAGE_KEY, JSON.stringify(Array.from(updated)));
-      } catch (e) {
-        console.warn('Failed to save read alerts to localStorage', e);
-      }
+      saveReadIds(updated);
     }
 
     setIsOpen(false);

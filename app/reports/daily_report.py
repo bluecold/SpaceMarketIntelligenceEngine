@@ -39,11 +39,11 @@ def generate_daily_report(db: Session) -> Dict[str, Any]:
             all_divergences.append({"ticker": symbol, "type": d.type, "direction": d.direction, "desc": d.description})
 
         for p in posts:
-            if p.catalyst and p.catalyst not in [c["name"] for c in all_catalysts]:
+            if p.catalyst and not any(c["ticker"] == symbol and c["name"] == p.catalyst for c in all_catalysts):
                 all_catalysts.append({"ticker": symbol, "name": p.catalyst, "importance": p.catalyst_importance, "direction": p.catalyst_direction})
 
         for n in news:
-            if n.catalyst and n.catalyst not in [c["name"] for c in all_catalysts]:
+            if n.catalyst and not any(c["ticker"] == symbol and c["name"] == n.catalyst for c in all_catalysts):
                 all_catalysts.append({"ticker": symbol, "name": n.catalyst, "importance": n.catalyst_importance, "direction": n.catalyst_direction})
 
         if snap:

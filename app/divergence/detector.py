@@ -2,6 +2,7 @@ from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 from datetime import datetime, timezone
 from app.config import settings
+from app.scoring.social import apply_bayesian_shrinkage
 
 
 def utc_now() -> datetime:
@@ -31,7 +32,8 @@ def detect_divergences(
     technical_score: Optional[float] = None,
     price_return_1d: Optional[float] = None,
     volume_ratio: Optional[float] = None,
-    rsi: Optional[float] = None
+    rsi: Optional[float] = None,
+    post_count: Optional[int] = None
 ) -> List[DivergenceResult]:
     """
     Divergence Engine for SMIE v2.0 (Tripartite Analysis: X ↔ Polymarket ↔ Price).
@@ -47,8 +49,9 @@ def detect_divergences(
     now = datetime.now(timezone.utc)
 
     # Directional normalizations (-1.0 to +1.0)
-    # 50 is neutral
-    dir_social = (social_score - 50.0) / 50.0
+    # Apply Bayesian shrinkage to social score if post_count is provided and sample size is small (< 10)
+    effective_social = apply_bayesian_shrinkage(social_score, post_count) if post_count is not None else social_score
+    dir_social = (effective_social - 50.0) / 50.0
     dir_pred = (prediction_score - 50.0) / 50.0 if prediction_score is not None else None
     dir_price = 0.0
     if price_return_1d is not None:
@@ -66,13 +69,13 @@ def detect_divergences(
     # Bullish Confirmation: Social >= +0.30, Price >= +0.20, Volume >= 1.2x (and PMS >= +0.20 if available)
     if dir_social >= 0.30 and dir_price >= 0.20 and vol_ratio >= 1.2:
         if dir_pred is None or dir_pred >= 0.20:
-            pred_text = f" and Polymarket probability (+{int(prediction_score)}%)" if prediction_score else ""
+            pred_text = f" and Polymarket expectations ({prediction_score:.0f}%)" if prediction_score is not None else ""
             results.append(DivergenceResult(
                 ticker=ticker,
                 type="BULLISH_CONFIRMATION",
                 source_a="X_SOCIAL",
                 source_b="PRICE_ACTION",
-                source_c="POLYMARKET" if prediction_score else None,
+                source_c="POLYMARKET" if prediction_score is not None else None,
                 direction="BULLISH",
                 strength=0.90 if dir_pred is not None and dir_pred >= 0.30 else 0.75,
                 confidence=0.88,
@@ -83,13 +86,13 @@ def detect_divergences(
     # Bearish Confirmation: Social <= -0.30, Price <= -0.20, Volume >= 1.2x
     elif dir_social <= -0.30 and dir_price <= -0.20 and vol_ratio >= 1.2:
         if dir_pred is None or dir_pred <= -0.20:
-            pred_text = f" and Polymarket expectations ({int(prediction_score)}%)" if prediction_score else ""
+            pred_text = f" and Polymarket expectations ({prediction_score:.0f}%)" if prediction_score is not None else ""
             results.append(DivergenceResult(
                 ticker=ticker,
                 type="BEARISH_CONFIRMATION",
                 source_a="X_SOCIAL",
                 source_b="PRICE_ACTION",
-                source_c="POLYMARKET" if prediction_score else None,
+                source_c="POLYMARKET" if prediction_score is not None else None,
                 direction="BEARISH",
                 strength=0.90 if dir_pred is not None and dir_pred <= -0.30 else 0.75,
                 confidence=0.88,

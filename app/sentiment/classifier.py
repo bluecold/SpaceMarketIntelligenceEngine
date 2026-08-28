@@ -1,4 +1,5 @@
 import re
+import math
 import logging
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any
@@ -24,21 +25,27 @@ class BaseSentimentClassifier(ABC):
 
 
 class HeuristicSentimentClassifier(BaseSentimentClassifier):
-    """Fast, deterministic finance lexicon & keyword sentiment analyzer with negation detection."""
+    """Fast, deterministic finance lexicon & keyword sentiment analyzer with negation detection and tanh saturation."""
     
     BULLISH_KEYWORDS = [
-        "bull", "bullish", "moon", "rocket", "buy", "buying", "long", "call", "calls",
-        "milestone", "launch", "contract", "revenue", "growth", "breakout", "deployment",
-        "fcc", "nasa", "partner", "partnership", "success", "upgrade", "record",
-        "all-time high", "all time high", "ath", "record high", "52-week high",
-        "gamechanger", "expansion", "profit", "profitable", "satellite"
+        "bull", "bullish", "moon", "buy", "buying", "long", "call", "calls",
+        "surge", "surges", "surging", "surged", "beat", "beats", "beating",
+        "outperform", "outperforms", "outperforming", "outperformed",
+        "growth", "breakout", "success", "successful", "upgrade", "upgrades", "upgraded", "upgrading",
+        "win", "wins", "winning", "won", "milestone", "record high", "all-time high", "all time high",
+        "ath", "52-week high", "gamechanger", "expansion", "profit", "profitable",
+        "profitability", "rally", "rallies", "rallying", "rallied", "soar", "soars", "soaring", "soared"
     ]
     
     BEARISH_KEYWORDS = [
-        "bear", "bearish", "short", "shorts", "short interest", "sell", "selling", "put", "puts", "dilution",
-        "capital raise", "offering", "downgrade", "delay", "delayed", "failure", "fail",
-        "burn", "cash burn", "drop", "dropped", "loss", "losses", "risk", "bankruptcy",
-        "lawsuit", "investigation", "stretched", "overvalued"
+        "bear", "bearish", "short", "shorts", "short interest", "sell", "selling",
+        "put", "puts", "dilution", "capital raise", "offering", "downgrade", "downgrades", "downgraded", "downgrading",
+        "delay", "delayed", "delays", "delaying", "failure", "fail", "failed", "failing", "fails",
+        "miss", "missed", "misses", "missing", "underperform", "underperforms", "underperforming", "underperformed",
+        "burn", "cash burn", "drop", "dropped", "dropping", "drops", "loss", "losses",
+        "plunge", "plunges", "plunging", "plunged", "crash", "crashes", "crashing", "crashed",
+        "tumble", "tumbles", "tumbling", "tumbled",
+        "halt", "halted", "halting", "risk", "bankruptcy", "lawsuit", "investigation", "stretched", "overvalued"
     ]
 
     HIGH_PRICE_EXPRESSIONS = [
@@ -129,7 +136,10 @@ class HeuristicSentimentClassifier(BaseSentimentClassifier):
         if total_hits == 0:
             return SentimentResult(score=0.0, label="NEUTRAL", confidence=0.7)
 
-        score = (bull_hits - bear_hits) / float(total_hits)
+        # Smooth saturation using hyperbolic tangent: tanh((bull_hits - bear_hits) / 2.0)
+        # Prevents a single isolated hit from triggering maximum conviction (+1.0)
+        delta_hits = bull_hits - bear_hits
+        score = math.tanh(delta_hits / 2.0)
         score = max(-1.0, min(1.0, score))
 
         if score >= 0.20:
@@ -139,7 +149,7 @@ class HeuristicSentimentClassifier(BaseSentimentClassifier):
         else:
             label = "NEUTRAL"
 
-        confidence = min(0.95, 0.5 + 0.15 * total_hits)
+        confidence = min(0.95, round(0.40 + 0.15 * min(4, total_hits), 2))
         return SentimentResult(score=round(score, 3), label=label, confidence=round(confidence, 2))
 
 

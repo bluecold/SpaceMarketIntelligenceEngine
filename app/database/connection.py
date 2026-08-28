@@ -69,6 +69,7 @@ def init_db():
             ("news_items", "catalyst_direction", "VARCHAR(20)"),
             ("news_items", "catalyst_importance", "VARCHAR(20) DEFAULT 'MEDIUM'"),
             ("prediction_markets", "event_key", "VARCHAR(100)"),
+            ("prediction_markets", "polarity", "INTEGER DEFAULT 1"),
             ("prediction_markets", "url", "VARCHAR(500)"),
             ("market_snapshots", "technical_score", "FLOAT"),
             ("market_snapshots", "atr", "FLOAT"),
@@ -88,6 +89,12 @@ def init_db():
             ("ssi_snapshots", "post_count", "INTEGER"),
             ("ssi_snapshots", "news_count", "INTEGER"),
             ("ssi_snapshots", "prediction_count", "INTEGER"),
+            ("ssi_snapshots", "data_source", "VARCHAR(30) DEFAULT 'LIVE'"),
+            ("ssi_snapshots", "social_source", "VARCHAR(20) DEFAULT 'LIVE'"),
+            ("ssi_snapshots", "prediction_source", "VARCHAR(20) DEFAULT 'LIVE'"),
+            ("ssi_snapshots", "news_source", "VARCHAR(20) DEFAULT 'LIVE'"),
+            ("ssi_snapshots", "market_source", "VARCHAR(20) DEFAULT 'LIVE'"),
+            ("divergences", "last_seen", "DATETIME"),
         ]
 
         for table, col, col_type in columns_to_check:

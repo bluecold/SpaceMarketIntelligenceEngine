@@ -33,6 +33,8 @@ def calculate_probability_changes(
         ts = pt.timestamp
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
+        else:
+            ts = ts.astimezone(timezone.utc)
             
         if ts <= target_1h:
             prob_1h = pt.yes_probability
@@ -41,17 +43,9 @@ def calculate_probability_changes(
         if ts <= target_24h:
             prob_24h = pt.yes_probability
 
-    # Fallbacks if points not far enough
-    if prob_1h is None and sorted_history:
-        prob_1h = sorted_history[0].yes_probability
-    if prob_6h is None:
-        prob_6h = prob_1h
-    if prob_24h is None:
-        prob_24h = prob_6h
-
-    delta_1h = round((current_yes_prob - (prob_1h if prob_1h is not None else current_yes_prob)) * 100.0, 2)
-    delta_6h = round((current_yes_prob - (prob_6h if prob_6h is not None else current_yes_prob)) * 100.0, 2)
-    delta_24h = round((current_yes_prob - (prob_24h if prob_24h is not None else current_yes_prob)) * 100.0, 2)
+    delta_1h = round((current_yes_prob - prob_1h) * 100.0, 2) if prob_1h is not None else 0.0
+    delta_6h = round((current_yes_prob - prob_6h) * 100.0, 2) if prob_6h is not None else 0.0
+    delta_24h = round((current_yes_prob - prob_24h) * 100.0, 2) if prob_24h is not None else 0.0
 
     return delta_1h, delta_6h, delta_24h
 

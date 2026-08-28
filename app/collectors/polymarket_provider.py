@@ -117,12 +117,18 @@ class PolymarketGammaProvider(PredictionMarketProvider):
                             return filtered if filtered else markets_list
                         return markets_list
                         
-                logger.warning(f"Polymarket Gamma API returned status {resp.status_code}. Using fallback mock data.")
-                return await self._fallback_provider.get_markets(query=query, ticker=ticker)
+                if getattr(settings, "ALLOW_MOCK_FALLBACK", False):
+                    logger.warning(f"Polymarket Gamma API returned status {resp.status_code}. Using fallback mock data.")
+                    return await self._fallback_provider.get_markets(query=query, ticker=ticker)
+                logger.warning(f"Polymarket Gamma API returned status {resp.status_code}. ALLOW_MOCK_FALLBACK=False, returning empty dataset.")
+                return []
 
         except Exception as e:
-            logger.warning(f"Error connecting to Polymarket Gamma API ({e}). Using mock provider fallback.")
-            return await self._fallback_provider.get_markets(query=query, ticker=ticker)
+            if getattr(settings, "ALLOW_MOCK_FALLBACK", False):
+                logger.warning(f"Error connecting to Polymarket Gamma API ({e}). Using mock provider fallback.")
+                return await self._fallback_provider.get_markets(query=query, ticker=ticker)
+            logger.error(f"Error connecting to Polymarket Gamma API ({e}). ALLOW_MOCK_FALLBACK=False, returning empty dataset.")
+            return []
 
     async def get_market(self, market_id: str) -> Optional[PredictionMarketData]:
         try:
@@ -148,18 +154,21 @@ class PolymarketGammaProvider(PredictionMarketProvider):
                     points = []
                     for item in data:
                         t_val = item.get("t")
-                        p_val = float(item.get("p", 0.5))
+                        p_val = max(0.0, min(1.0, float(item.get("p", 0.5))))
                         v_val = float(item.get("v", 0.0))
                         dt = datetime.fromtimestamp(t_val, tz=timezone.utc) if t_val else datetime.now(timezone.utc)
                         points.append(MarketProbabilityPoint(
                             timestamp=dt,
-                            probability=p_val,
-                            volume=v_val
+                            yes_probability=round(p_val, 4),
+                            no_probability=round(1.0 - p_val, 4),
+                            volume=round(v_val, 2)
                         ))
                     if points:
                         return points
+        except (httpx.HTTPError, httpx.TimeoutException) as e:
+            logger.warning(f"Network error fetching CLOB price history for {market_id} ({e}). Using mock provider fallback.")
         except Exception as e:
-            logger.debug(f"Could not fetch CLOB price history for {market_id} ({e}). Using mock provider.")
+            logger.error(f"Error parsing Polymarket CLOB price history for {market_id} ({e}). Using mock provider fallback.", exc_info=True)
         return await self._fallback_provider.get_history(market_id)
 
     def _parse_gamma_market(self, event: dict, m: dict, ticker: Optional[str]) -> Optional[PredictionMarketData]:
@@ -167,17 +176,37 @@ class PolymarketGammaProvider(PredictionMarketProvider):
             outcomes = m.get("outcomes", [])
             outcome_prices = m.get("outcomePrices", [])
             
-            # Polymarket outcome prices are JSON strings or lists of floats e.g. ["0.72", "0.28"]
+            if isinstance(outcomes, str):
+                try:
+                    outcomes = json.loads(outcomes)
+                except Exception:
+                    outcomes = []
+
+            if isinstance(outcome_prices, str):
+                try:
+                    outcome_prices = json.loads(outcome_prices)
+                except Exception:
+                    outcome_prices = []
+
+            # Dynamically locate index for "Yes" outcome (supports ["Yes", "No"] or ["No", "Yes"])
+            yes_idx = 0
+            if isinstance(outcomes, list):
+                for idx, out_name in enumerate(outcomes):
+                    if str(out_name).strip().lower() == "yes":
+                        yes_idx = idx
+                        break
+
             yes_prob = 0.50
-            if outcome_prices:
-                if isinstance(outcome_prices, str):
-                    try:
-                        parsed = json.loads(outcome_prices)
-                        yes_prob = float(parsed[0])
-                    except Exception:
-                        pass
-                elif isinstance(outcome_prices, list) and len(outcome_prices) > 0:
+            if isinstance(outcome_prices, list) and len(outcome_prices) > yes_idx:
+                try:
+                    yes_prob = float(outcome_prices[yes_idx])
+                except Exception:
+                    yes_prob = 0.50
+            elif isinstance(outcome_prices, list) and len(outcome_prices) > 0:
+                try:
                     yes_prob = float(outcome_prices[0])
+                except Exception:
+                    yes_prob = 0.50
 
             volume = float(m.get("volumeNum") or m.get("volume") or event.get("volume") or 0.0)
             liquidity = float(m.get("liquidityNum") or m.get("liquidity") or event.get("liquidity") or 0.0)
@@ -211,6 +240,25 @@ class PolymarketGammaProvider(PredictionMarketProvider):
             slug_text = event.get("slug", "") or m.get("slug", "")
             combined_text = f"{title_text} {slug_text} {desc_text}"
 
+            # Semantic polarity heuristic for negatively framed questions (e.g. failure, delay, cancellation)
+            negative_keywords = [
+                r"\bdelay(ed)?\b",
+                r"\bfail(ure|s|ed)?\b",
+                r"\bcancel(led|lation)?\b",
+                r"\bcrash(ed)?\b",
+                r"\bloss\b",
+                r"\bbankrupt(cy)?\b",
+                r"\bground(ed)?\b",
+                r"\bpostpone(d)?\b",
+                r"\banomaly\b",
+                r"\blost\b"
+            ]
+            polarity = 1
+            for pat in negative_keywords:
+                if re.search(pat, combined_text, re.IGNORECASE):
+                    polarity = -1
+                    break
+
             resolved_ticker = ticker or match_ticker_from_text(combined_text)
             resolved_event_key = match_event_key_from_text(combined_text)
 
@@ -233,7 +281,8 @@ class PolymarketGammaProvider(PredictionMarketProvider):
                 probability_change_1h=0.0,
                 probability_change_6h=0.0,
                 probability_change_24h=round(prob_delta_24h, 2),
-                url=f"https://polymarket.com/event/{event.get('slug', '')}" if event.get("slug") else None
+                url=f"https://polymarket.com/event/{event.get('slug', '')}" if event.get("slug") else None,
+                polarity=polarity
             )
         except Exception as e:
             logger.debug(f"Failed parsing market: {e}")

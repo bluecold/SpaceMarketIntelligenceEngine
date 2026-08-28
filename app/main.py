@@ -70,21 +70,37 @@ app.include_router(history.router)
 app.include_router(jobs.router)
 app.include_router(reports.router)
 
+from pathlib import Path
+
 # Mount frontend static files if built
-dist_dir = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
-if os.path.exists(dist_dir):
-    app.mount("/assets", StaticFiles(directory=os.path.join(dist_dir, "assets")), name="assets")
+dist_dir = (Path(__file__).resolve().parent.parent / "frontend" / "dist").resolve()
+if dist_dir.exists() and dist_dir.is_dir():
+    assets_dir = dist_dir / "assets"
+    if assets_dir.exists() and assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
         if full_path.startswith("api/") or full_path == "api" or full_path in ("docs", "redoc", "openapi.json"):
             raise HTTPException(status_code=404, detail="API endpoint not found")
-        file_path = os.path.join(dist_dir, full_path)
-        if os.path.exists(file_path) and os.path.isfile(file_path):
-            return FileResponse(file_path)
-        index_file = os.path.join(dist_dir, "index.html")
-        if os.path.exists(index_file):
-            return FileResponse(index_file)
+        try:
+            file_path = (dist_dir / full_path).resolve()
+            if not file_path.is_relative_to(dist_dir):
+                raise HTTPException(status_code=404, detail="Resource not found")
+            if file_path.is_file():
+                return FileResponse(str(file_path))
+        except (ValueError, RuntimeError):
+            raise HTTPException(status_code=404, detail="Resource not found")
+
+        # If a specific file or dotfile was requested but does not exist, return 404
+        last_segment = full_path.split("/")[-1]
+        if "." in last_segment:
+            raise HTTPException(status_code=404, detail="Resource not found")
+
+        # Clean SPA navigation fallback
+        index_file = dist_dir / "index.html"
+        if index_file.is_file():
+            return FileResponse(str(index_file))
         raise HTTPException(status_code=404, detail="Resource not found")
 
 

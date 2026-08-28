@@ -6,7 +6,8 @@ from sqlalchemy import desc, func
 from app.database.models import (
     TickerModel, SocialPostModel, NewsItemModel,
     MarketSnapshotModel, SSISnapshotModel, JobRunModel,
-    PredictionMarketModel, PredictionMarketSnapshotModel, DivergenceModel
+    PredictionMarketModel, PredictionMarketSnapshotModel, DivergenceModel,
+    AlertModel
 )
 from app.config import INITIAL_TICKERS, DEFAULT_EVENT_COMPANY_MAPPINGS
 from app.collectors.base import PredictionMarketData
@@ -51,19 +52,40 @@ def ensure_tickers_seeded(db: Session):
 
 
 def save_social_posts(db: Session, posts_data: List[Dict[str, Any]]) -> int:
-    """Save social posts deduplicating by tweet_id. Returns number of newly added posts."""
+    """
+    Save social posts deduplicating by tweet_id.
+    Batches lookup to eliminate N+1 queries, updates engagement metrics on existing posts,
+    and returns number of newly added posts.
+    """
+    if not posts_data:
+        return 0
+
+    tweet_ids = [str(d["tweet_id"]) for d in posts_data if "tweet_id" in d]
+    existing_posts = {
+        p.tweet_id: p
+        for p in db.query(SocialPostModel).filter(SocialPostModel.tweet_id.in_(tweet_ids)).all()
+    }
+
     new_count = 0
     for data in posts_data:
         tweet_id = str(data["tweet_id"])
-        existing = db.query(SocialPostModel).filter(SocialPostModel.tweet_id == tweet_id).first()
-        if not existing:
+        existing = existing_posts.get(tweet_id)
+        if existing:
+            # Update engagement metrics for posts that went viral / gained engagement
+            existing.likes = data.get("likes", existing.likes)
+            existing.reposts = data.get("reposts", existing.reposts)
+            existing.replies = data.get("replies", existing.replies)
+            existing.views = data.get("views", existing.views)
+            if "engagement_score" in data:
+                existing.engagement_score = data["engagement_score"]
+        else:
             created_at = data.get("created_at", utc_now())
             if hasattr(created_at, "tzinfo") and created_at.tzinfo is not None:
                 created_at = created_at.astimezone(timezone.utc).replace(tzinfo=None)
 
             post = SocialPostModel(
                 tweet_id=tweet_id,
-                ticker=data["ticker"],
+                ticker=data["ticker"].upper(),
                 username=data.get("username", "unknown"),
                 text=data["text"],
                 created_at=created_at,
@@ -83,7 +105,9 @@ def save_social_posts(db: Session, posts_data: List[Dict[str, Any]]) -> int:
                 catalyst_importance=data.get("catalyst_importance", "MEDIUM")
             )
             db.add(post)
+            existing_posts[tweet_id] = post
             new_count += 1
+
     db.commit()
     return new_count
 
@@ -91,9 +115,10 @@ def save_social_posts(db: Session, posts_data: List[Dict[str, Any]]) -> int:
 def get_recent_social_posts(db: Session, ticker: str, hours: int = 24) -> List[SocialPostModel]:
     """Retrieve social posts for a ticker within the specified lookback window."""
     since = utc_now() - timedelta(hours=hours)
+    ticker_up = ticker.upper()
     return (
         db.query(SocialPostModel)
-        .filter(SocialPostModel.ticker == ticker)
+        .filter(SocialPostModel.ticker == ticker_up)
         .filter(SocialPostModel.created_at >= since)
         .order_by(desc(SocialPostModel.created_at))
         .all()
@@ -174,6 +199,7 @@ def save_prediction_markets(db: Session, markets: List[PredictionMarketData]) ->
                 spread=m.spread,
                 quality_score=m.quality_score,
                 event_key=m.event_key,
+                polarity=getattr(m, "polarity", 1),
                 url=m.url,
                 collected_at=now
             )
@@ -189,30 +215,28 @@ def save_prediction_markets(db: Session, markets: List[PredictionMarketData]) ->
             existing.spread = m.spread
             existing.quality_score = m.quality_score
             existing.event_key = m.event_key
+            existing.polarity = getattr(m, "polarity", 1)
             existing.collected_at = now
             market_id = existing.id
 
         # Compute 24h probability delta from SQLite snapshot history if not already set by provider
         if (m.probability_change_24h == 0.0 or m.probability_change_24h is None) and existing:
+            window_start = now - timedelta(hours=30)
+            window_end = now - timedelta(hours=18)
             snap_24h = (
                 db.query(PredictionMarketSnapshotModel)
                 .filter(PredictionMarketSnapshotModel.market_id == market_id)
-                .filter(PredictionMarketSnapshotModel.timestamp <= now - timedelta(hours=18))
+                .filter(PredictionMarketSnapshotModel.timestamp >= window_start)
+                .filter(PredictionMarketSnapshotModel.timestamp <= window_end)
                 .order_by(desc(PredictionMarketSnapshotModel.timestamp))
                 .first()
             )
-            if not snap_24h:
-                # Fallback to the latest prior snapshot
-                snap_24h = (
-                    db.query(PredictionMarketSnapshotModel)
-                    .filter(PredictionMarketSnapshotModel.market_id == market_id)
-                    .order_by(desc(PredictionMarketSnapshotModel.id))
-                    .first()
-                )
 
             if snap_24h:
                 delta_24h = round((m.yes_probability - snap_24h.yes_probability) * 100.0, 2)
                 m.probability_change_24h = delta_24h
+            else:
+                m.probability_change_24h = 0.0
 
         # Append snapshot
         snap = PredictionMarketSnapshotModel(
@@ -271,35 +295,140 @@ def get_recent_prediction_markets(
 
 
 def save_divergences(db: Session, ticker: str, divergences_data: List[Dict[str, Any]]) -> int:
-    """Save detected divergences for a ticker."""
-    count = 0
+    """
+    Save or update active divergence episodes for a ticker.
+    Maintains stateful divergence episodes:
+    - Ongoing episodes: updates last_seen, strength, confidence, and description without duplicating.
+    - New episodes: inserts a new active DivergenceModel row.
+    - Ceased episodes: sets resolved_at = now to mark them as resolved.
+    """
     now = utc_now()
+    ticker_sym = ticker.upper()
+    
+    # 1. Fetch currently active (unresolved) episodes for this ticker
+    active_episodes = (
+        db.query(DivergenceModel)
+        .filter(DivergenceModel.ticker == ticker_sym, DivergenceModel.resolved_at == None)
+        .all()
+    )
+    active_map = {ep.type: ep for ep in active_episodes}
+    detected_types = set()
+    count = 0
+
+    # 2. Update existing active episodes or create new ones
     for d in divergences_data:
-        div = DivergenceModel(
-            ticker=ticker,
-            timestamp=now,
-            type=d["type"],
-            source_a=d["source_a"],
-            source_b=d["source_b"],
-            source_c=d.get("source_c"),
-            direction=d["direction"],
-            strength=d.get("strength", 1.0),
-            confidence=d.get("confidence", 0.5),
-            description=d["description"]
-        )
-        db.add(div)
+        div_type = d["type"]
+        detected_types.add(div_type)
+        if div_type in active_map:
+            ep = active_map[div_type]
+            ep.last_seen = now
+            ep.strength = d.get("strength", 1.0)
+            ep.confidence = d.get("confidence", 0.5)
+            ep.description = d["description"]
+        else:
+            new_ep = DivergenceModel(
+                ticker=ticker_sym,
+                timestamp=now,
+                last_seen=now,
+                type=div_type,
+                source_a=d["source_a"],
+                source_b=d["source_b"],
+                source_c=d.get("source_c"),
+                direction=d["direction"],
+                strength=d.get("strength", 1.0),
+                confidence=d.get("confidence", 0.5),
+                description=d["description"],
+                resolved_at=None
+            )
+            db.add(new_ep)
         count += 1
+
+    # 3. Resolve episodes that ceased in this execution
+    for div_type, ep in active_map.items():
+        if div_type not in detected_types:
+            ep.resolved_at = now
+
     db.commit()
     return count
 
 
 def get_active_divergences(db: Session, ticker: Optional[str] = None, hours: int = 48) -> List[DivergenceModel]:
-    """Retrieve recent active divergences."""
-    since = utc_now() - timedelta(hours=hours)
-    query = db.query(DivergenceModel).filter(DivergenceModel.timestamp >= since)
+    """Retrieve currently active divergence episodes."""
+    query = db.query(DivergenceModel).filter(DivergenceModel.resolved_at == None)
     if ticker:
         query = query.filter(DivergenceModel.ticker == ticker.upper())
-    return query.order_by(desc(DivergenceModel.timestamp)).all()
+    return query.order_by(desc(DivergenceModel.last_seen)).all()
+
+
+def save_alerts(db: Session, ticker: str, alerts_data: List[Dict[str, Any]]) -> int:
+    """
+    Stateful persistence for trading signals, catalysts, and divergences.
+    Updates active episodes without creating duplicates, and resolves ceased alerts.
+    """
+    now = utc_now()
+    all_alerts = db.query(AlertModel).filter(
+        AlertModel.ticker == ticker.upper()
+    ).all()
+    alert_map = {a.alert_id: a for a in all_alerts}
+    detected_ids = set()
+
+    for item in alerts_data:
+        al_type = item.get("type", "UNKNOWN")
+        al_level = item.get("level", "INFO")
+        al_category = item.get("category")
+        if not al_category:
+            if "BUY" in al_type or "AVOID" in al_type:
+                al_category = "SIGNAL"
+            elif "CATALYST" in al_type:
+                al_category = "CATALYST"
+            elif "DIVERGENCE" in al_type or "CONFIRMATION" in al_type or "REVERSAL" in al_type:
+                al_category = "DIVERGENCE"
+            else:
+                al_category = "SIGNAL"
+
+        alert_id = item.get("id") or f"{ticker.upper()}:{al_category}:{al_type}"
+        detected_ids.add(alert_id)
+
+        if alert_id in alert_map:
+            existing = alert_map[alert_id]
+            if existing.resolved_at is not None:
+                # Reopen resolved alert
+                existing.resolved_at = None
+                existing.timestamp = now
+            existing.last_seen = now
+            existing.level = al_level
+            existing.message = item.get("message", existing.message)
+            existing.category = al_category
+        else:
+            new_alert = AlertModel(
+                alert_id=alert_id,
+                ticker=ticker.upper(),
+                type=al_type,
+                category=al_category,
+                level=al_level,
+                message=item.get("message", ""),
+                timestamp=now,
+                last_seen=now,
+                resolved_at=None
+            )
+            db.add(new_alert)
+            alert_map[alert_id] = new_alert
+
+    # Resolve active alerts that ceased in this run
+    for al_id, existing in alert_map.items():
+        if al_id not in detected_ids and existing.resolved_at is None:
+            existing.resolved_at = now
+
+    db.commit()
+    return len(detected_ids)
+
+
+def get_active_alerts_batch(db: Session, tickers: Optional[List[str]] = None) -> List[AlertModel]:
+    """Retrieve all active alerts across all or specified tickers."""
+    query = db.query(AlertModel).filter(AlertModel.resolved_at == None)
+    if tickers:
+        query = query.filter(AlertModel.ticker.in_([t.upper() for t in tickers]))
+    return query.order_by(desc(AlertModel.last_seen)).all()
 
 
 def save_market_snapshot(db: Session, data: Dict[str, Any]) -> MarketSnapshotModel:
@@ -474,13 +603,12 @@ def get_latest_market_snapshots_batch(db: Session, tickers: Optional[List[str]] 
 
 
 def get_active_divergences_batch(db: Session, hours: int = 48, tickers: Optional[List[str]] = None) -> Dict[str, List[DivergenceModel]]:
-    """Retrieve active divergences grouped by ticker in a single consolidated batch query."""
-    since = utc_now() - timedelta(hours=hours)
-    query = db.query(DivergenceModel).filter(DivergenceModel.timestamp >= since)
+    """Retrieve active divergence episodes grouped by ticker in a single consolidated batch query."""
+    query = db.query(DivergenceModel).filter(DivergenceModel.resolved_at == None)
     if tickers:
         query = query.filter(DivergenceModel.ticker.in_([t.upper() for t in tickers]))
     
-    divs = query.order_by(desc(DivergenceModel.timestamp)).all()
+    divs = query.order_by(desc(DivergenceModel.last_seen)).all()
     res: Dict[str, List[DivergenceModel]] = defaultdict(list)
     for d in divs:
         res[d.ticker].append(d)
@@ -488,13 +616,15 @@ def get_active_divergences_batch(db: Session, hours: int = 48, tickers: Optional
 
 
 def get_history_series(db: Session, ticker: str, limit: int = 100) -> List[Dict[str, Any]]:
+    # Retrieve the latest `limit` snapshots in descending order and reverse for chronological display
     snaps = (
         db.query(SSISnapshotModel)
         .filter(SSISnapshotModel.ticker == ticker)
-        .order_by(SSISnapshotModel.timestamp.asc())
+        .order_by(desc(SSISnapshotModel.timestamp))
         .limit(limit)
         .all()
     )
+    snaps_chronological = list(reversed(snaps))
     return [
         {
             "timestamp": s.timestamp.isoformat() + "Z" if s.timestamp else "",
@@ -509,7 +639,7 @@ def get_history_series(db: Session, ticker: str, limit: int = 100) -> List[Dict[
             "volume": s.volume,
             "signal": s.signal
         }
-        for s in snaps
+        for s in snaps_chronological
     ]
 
 

@@ -64,3 +64,23 @@ class YFinanceMarketProvider(MarketProviderInterface):
         """Alias for get_market_data to maintain backwards compatibility."""
         return await self.get_market_data(ticker)
 
+    async def get_fundamentals(self, ticker: str) -> dict:
+        """
+        Retrieves key balance sheet, cash runway, and growth metrics from yfinance.
+        """
+        try:
+            ticker_obj = yf.Ticker(ticker)
+            info = ticker_obj.info or {}
+            return {
+                "total_cash": info.get("totalCash"),
+                "total_debt": info.get("totalDebt"),
+                "free_cashflow": info.get("freeCashflow") or info.get("operatingCashflow"),
+                "revenue_growth": info.get("revenueGrowth"),
+                "gross_margins": info.get("grossMargins"),
+                "operating_margins": info.get("operatingMargins"),
+                "market_cap": info.get("marketCap")
+            }
+        except Exception as e:
+            logger.warning(f"Error fetching fundamentals for {ticker}: {e}")
+            return {}
+

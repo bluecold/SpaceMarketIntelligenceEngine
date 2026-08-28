@@ -1,12 +1,18 @@
 import asyncio
 import click
+from app.config import settings, INITIAL_TICKERS
 from app.jobs.runner import run_full_pipeline, get_x_provider, get_polymarket_provider, get_news_provider
 from app.collectors.market_provider import YFinanceMarketProvider
 from app.database.connection import SessionLocal, init_db
 from app.database.repository import (
     get_latest_ssi_snapshot, get_recent_social_posts,
     get_latest_market_snapshot, get_recent_prediction_markets,
-    get_active_divergences
+    get_active_divergences, save_social_posts, save_news_items
+)
+from app.sentiment.classifier import get_sentiment_classifier
+from app.sentiment.weighting import (
+    calculate_relevance_score, calculate_recency_weight,
+    calculate_engagement_score, detect_catalysts
 )
 from app.reports.daily_report import generate_daily_report
 from app.backtesting.engine import run_historical_backtest
@@ -39,8 +45,53 @@ def run_all():
 def collect_social():
     """Collect social posts from X/Twitter."""
     click.echo("[SMIE] Collecting social posts from X...")
-    asyncio.run(run_full_pipeline())
-    click.echo(click.style("[DONE] Social posts collected and deduplicated.", fg="green"))
+    async def _run():
+        init_db()
+        db = SessionLocal()
+        try:
+            x_provider = get_x_provider()
+            sentiment_classifier = get_sentiment_classifier()
+            total_added = 0
+            for cfg in INITIAL_TICKERS:
+                ticker = cfg.symbol
+                query = f"${ticker} OR \"{cfg.name}\""
+                posts_data = await x_provider.search(query=query, ticker=ticker, max_results=settings.SOCIAL_MAX_POSTS_PER_TICKER)
+                clean_posts = []
+                for p in posts_data:
+                    sent_res = sentiment_classifier.analyze(p.text)
+                    rel_score = calculate_relevance_score(p.text, ticker, cfg.name)
+                    rec_weight = calculate_recency_weight(p.created_at)
+                    eng_score = calculate_engagement_score(p.likes, p.reposts, p.replies, p.views)
+                    cat_type, cat_dir, cat_imp = detect_catalysts(p.text)
+                    clean_posts.append({
+                        "tweet_id": p.tweet_id,
+                        "ticker": ticker,
+                        "username": p.username,
+                        "text": p.text,
+                        "created_at": p.created_at,
+                        "url": p.url,
+                        "likes": p.likes,
+                        "reposts": p.reposts,
+                        "replies": p.replies,
+                        "views": p.views,
+                        "sentiment_score": sent_res["score"],
+                        "sentiment_label": sent_res["label"],
+                        "sentiment_confidence": sent_res["confidence"],
+                        "relevance_score": rel_score,
+                        "engagement_score": eng_score,
+                        "recency_weight": rec_weight,
+                        "catalyst": cat_type,
+                        "catalyst_direction": cat_dir,
+                        "catalyst_importance": cat_imp
+                    })
+                if clean_posts:
+                    added = save_social_posts(db, clean_posts)
+                    total_added += added
+                    click.echo(f"  [{ticker}] Ingested {len(clean_posts)} posts ({added} new).")
+            click.echo(click.style(f"[DONE] Social posts collected ({total_added} new saved).", fg="green"))
+        finally:
+            db.close()
+    asyncio.run(_run())
 
 
 @cli.command("collect-polymarket")
@@ -60,8 +111,45 @@ def collect_polymarket():
 def collect_news():
     """Collect news articles from Google News RSS."""
     click.echo("[SMIE] Collecting space sector news...")
-    asyncio.run(run_full_pipeline())
-    click.echo(click.style("[DONE] News collection completed.", fg="green"))
+    async def _run():
+        init_db()
+        db = SessionLocal()
+        try:
+            news_provider = get_news_provider()
+            sentiment_classifier = get_sentiment_classifier()
+            total_added = 0
+            for cfg in INITIAL_TICKERS:
+                ticker = cfg.symbol
+                query = f"{ticker} {cfg.name} space satellite rocket"
+                raw_news = await news_provider.get_news(query=query, ticker=ticker, max_results=20)
+                clean_news = []
+                for n in raw_news:
+                    sent_res = sentiment_classifier.analyze(f"{n.title} {n.summary}")
+                    rel_score = calculate_relevance_score(f"{n.title} {n.summary}", ticker, cfg.name)
+                    cat_type, cat_dir, cat_imp = detect_catalysts(f"{n.title} {n.summary}")
+                    clean_news.append({
+                        "ticker": ticker,
+                        "title": n.title,
+                        "summary": n.summary,
+                        "source": n.source,
+                        "url": n.url,
+                        "published_at": n.published_at,
+                        "sentiment_score": sent_res["score"],
+                        "sentiment_label": sent_res["label"],
+                        "sentiment_confidence": sent_res["confidence"],
+                        "relevance_score": rel_score,
+                        "catalyst": cat_type,
+                        "catalyst_direction": cat_dir,
+                        "catalyst_importance": cat_imp
+                    })
+                if clean_news:
+                    added = save_news_items(db, clean_news)
+                    total_added += added
+                    click.echo(f"  [{ticker}] Ingested {len(clean_news)} articles ({added} new).")
+            click.echo(click.style(f"[DONE] News collection completed ({total_added} new saved).", fg="green"))
+        finally:
+            db.close()
+    asyncio.run(_run())
 
 
 @cli.command("collect-market")

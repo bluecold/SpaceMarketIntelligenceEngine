@@ -103,6 +103,7 @@ class PredictionMarketModel(Base):
     spread = Column(Float, default=0.0)             # Bid-Ask spread
     quality_score = Column(Float, default=50.0)     # 0 to 100
     event_key = Column(String(100), nullable=True, index=True) # e.g. "spacex_starship_orbital_success"
+    polarity = Column(Integer, default=1) # +1 = Bullish when YES occurs, -1 = Bearish when YES occurs
     
     url = Column(String(500), nullable=True)
     collected_at = Column(DateTime, default=utc_now, index=True)
@@ -150,6 +151,7 @@ class DivergenceModel(Base):
     id = Column(Integer, primary_key=True, index=True)
     ticker = Column(String(10), ForeignKey("tickers.symbol"), index=True, nullable=False)
     timestamp = Column(DateTime, default=utc_now, index=True)
+    last_seen = Column(DateTime, default=utc_now)
     
     type = Column(String(50), nullable=False)  # BULLISH_DIVERGENCE, BEARISH_DIVERGENCE, BULLISH_CONFIRMATION, BEARISH_CONFIRMATION, EARLY_REVERSAL
     source_a = Column(String(30), nullable=False)  # e.g., "X_SOCIAL"
@@ -223,6 +225,13 @@ class SSISnapshotModel(Base):
     news_count = Column(Integer, nullable=True)       # News articles count
     prediction_count = Column(Integer, nullable=True) # Prediction markets count
     
+    # Data Provenance and Integrity Governance
+    data_source = Column(String(30), default="LIVE", index=True)         # "LIVE", "DEGRADED", "MOCK"
+    social_source = Column(String(20), default="LIVE")                   # "LIVE", "MOCK", "EXCLUDED"
+    prediction_source = Column(String(20), default="LIVE")               # "LIVE", "MOCK", "EXCLUDED"
+    news_source = Column(String(20), default="LIVE")                     # "LIVE", "EXCLUDED"
+    market_source = Column(String(20), default="LIVE")                   # "LIVE", "DEGRADED"
+
     price = Column(Float, nullable=True)
     volume = Column(Float, nullable=True)
     explanation = Column(Text, nullable=True)
@@ -240,3 +249,19 @@ class JobRunModel(Base):
     status = Column(String(20), nullable=False)  # SUCCESS, ERROR, RUNNING
     records_processed = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
+
+
+class AlertModel(Base):
+    __tablename__ = "alerts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    alert_id = Column(String(100), index=True, nullable=False)
+    ticker = Column(String(10), ForeignKey("tickers.symbol"), index=True, nullable=False)
+    type = Column(String(50), nullable=False, index=True)
+    category = Column(String(30), default="SIGNAL")  # SIGNAL, CATALYST, DIVERGENCE, SYSTEM
+    level = Column(String(20), default="INFO")       # CRITICAL, HIGH, MEDIUM, WARNING, INFO
+    message = Column(Text, nullable=False)
+    timestamp = Column(DateTime, default=utc_now, index=True)
+    last_seen = Column(DateTime, default=utc_now)
+    resolved_at = Column(DateTime, nullable=True)
+

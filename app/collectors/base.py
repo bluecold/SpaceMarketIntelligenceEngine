@@ -57,6 +57,7 @@ class PredictionMarketData(BaseModel):
     
     url: Optional[str] = None
     event_key: Optional[str] = None  # Mapping key if linked to cross-company event
+    polarity: int = 1  # +1 = Bullish when YES occurs, -1 = Bearish when YES occurs (e.g. failure/delay)
 
 
 class XProvider(ABC):

@@ -1,6 +1,8 @@
 from typing import Dict, Any, Optional, List, Set
 from app.config import settings
 from app.divergence.detector import detect_divergences, DivergenceResult
+from app.scoring.social import apply_bayesian_shrinkage
+from app.sentiment.weighting import IMPORTANCE_RANK
 
 
 def generate_signal_and_explanation(
@@ -38,7 +40,14 @@ def generate_signal_and_explanation(
 
     # Primary composite index (SMI with fallback to SSI)
     primary_index = smi if smi is not None else (ssi if ssi is not None else 50.0)
-    effective_social = social_score if social_score is not None else primary_index
+    
+    # Extract post count to apply Bayesian shrinkage on small social sample sizes
+    post_count = None
+    if social_stats:
+        post_count = social_stats.get("total_posts") or social_stats.get("relevant_posts")
+        
+    raw_social = social_score if social_score is not None else primary_index
+    effective_social = apply_bayesian_shrinkage(raw_social, post_count)
     effective_mom = smi_mom_1d if smi_mom_1d != 0.0 else ssi_mom_1d
     
     rsi = indicators.get("rsi14")
@@ -102,7 +111,8 @@ def generate_signal_and_explanation(
         technical_score=technical_score_raw,
         price_return_1d=price_change_1d,
         volume_ratio=vol_ratio,
-        rsi=rsi
+        rsi=rsi,
+        post_count=post_count
     )
 
     primary_divergence_text = "NONE"
@@ -187,16 +197,39 @@ def generate_signal_and_explanation(
         elif prediction_score <= 40.0:
             reasons.append(f"- Prediction Markets (Polymarket) imply low event probabilities (PMS: {prediction_score:.0f}/100)")
 
-    # Catalysts
-    for cat in catalysts_found[:3]:
-        cat_name = str(cat.get("category", "")).replace("_", " ").title()
-        direction = cat.get("direction")
-        imp = cat.get("importance", "MEDIUM")
-        prefix = f"[{imp}] " if imp in ["HIGH", "CRITICAL"] else ""
-        if direction == "BULLISH":
-            reasons.append(f"+ Positive catalyst: {prefix}{cat_name}")
-        else:
-            reasons.append(f"- Risk catalyst: {prefix}{cat_name}")
+    # Catalysts (Deduplicate by category keeping max importance, rank by hierarchy, and take top 3)
+    if catalysts_found:
+        unique_catalysts = {}
+        for cat in catalysts_found:
+            cat_type = cat.get("category")
+            if not cat_type:
+                continue
+            imp = cat.get("importance", "MEDIUM")
+            current_rank = IMPORTANCE_RANK.get(imp, 99)
+            if cat_type not in unique_catalysts:
+                unique_catalysts[cat_type] = cat
+            else:
+                existing_imp = unique_catalysts[cat_type].get("importance", "MEDIUM")
+                if current_rank < IMPORTANCE_RANK.get(existing_imp, 99):
+                    unique_catalysts[cat_type] = cat
+
+        sorted_catalysts = sorted(
+            unique_catalysts.values(),
+            key=lambda c: (
+                IMPORTANCE_RANK.get(c.get("importance", "MEDIUM"), 99),
+                0 if c.get("direction") == "BEARISH" else 1
+            )
+        )
+
+        for cat in sorted_catalysts[:3]:
+            cat_name = str(cat.get("category", "")).replace("_", " ").title()
+            direction = cat.get("direction")
+            imp = cat.get("importance", "MEDIUM")
+            prefix = f"[{imp}] " if imp in ["HIGH", "CRITICAL"] else ""
+            if direction == "BULLISH":
+                reasons.append(f"+ Positive catalyst: {prefix}{cat_name}")
+            else:
+                reasons.append(f"- Risk catalyst: {prefix}{cat_name}")
 
     # Technical Market reasons
     if market_status == "AVAILABLE":

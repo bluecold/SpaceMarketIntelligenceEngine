@@ -34,6 +34,11 @@ export interface RankingItem {
   post_count?: number | null;
   news_count?: number | null;
   prediction_count?: number | null;
+  data_source?: 'LIVE' | 'DEGRADED' | 'MOCK' | string;
+  social_source?: 'LIVE' | 'MOCK' | 'EXCLUDED' | string;
+  prediction_source?: 'LIVE' | 'MOCK' | 'EXCLUDED' | string;
+  news_source?: 'LIVE' | 'EXCLUDED' | string;
+  market_source?: 'LIVE' | 'DEGRADED' | string;
   price: number | null;
   market_status: string;
   timestamp: string | null;

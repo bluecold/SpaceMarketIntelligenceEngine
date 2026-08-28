@@ -71,7 +71,8 @@ def test_rsi_wilder_smoothing_realistic_series():
     res = calculate_technical_indicators(df)
     assert res["status"] == "AVAILABLE"
     assert 20.0 <= res["rsi14"] <= 80.0
-    assert res["ema200"] > 0.0
+    assert res["ema200"] is None  # 51 candles < 200 periods
+    assert res["ema200_reliable"] is False
     assert res["bollinger_upper"] > res["bollinger_middle"] > res["bollinger_lower"]
     assert res["atr"] > 0.0
 
@@ -94,6 +95,7 @@ def test_macd_price_and_atr_normalization_scale_invariance():
     assert score_spce_neg == 0.0, f"Expected 0.0 for 2% negative MACD move, got {score_spce_neg}"
 
     # 1b. Penny/Micro-cap ($2.00) with genuine tight consolidation (-0.002)
+    # Available points: MACD (5.0). Scored: 2.0 -> (2.0 / 5.0) * 40.0 = 16.0
     ind_spce_flat = {
         "status": "AVAILABLE",
         "price": 2.00,
@@ -101,9 +103,10 @@ def test_macd_price_and_atr_normalization_scale_invariance():
         "macd_histogram": -0.002
     }
     score_spce_flat = calculate_technical_score(ind_spce_flat)
-    assert score_spce_flat == 2.0, f"Expected 2.0 for tight consolidation, got {score_spce_flat}"
+    assert score_spce_flat == 16.0, f"Expected 16.0 for scaled near-zero MACD, got {score_spce_flat}"
 
     # 2. Large-cap ($400.00) with -0.20 MACD (0.05% drop from price, within ATR)
+    # Available points: MACD (5.0). Scored: 2.0 -> (2.0 / 5.0) * 40.0 = 16.0
     ind_lmt_flat = {
         "status": "AVAILABLE",
         "price": 400.00,
@@ -111,6 +114,49 @@ def test_macd_price_and_atr_normalization_scale_invariance():
         "macd_histogram": -0.20  # -0.20 / 5.0 = 0.04 ATR (well within 0.08 ATR threshold)
     }
     score_lmt_flat = calculate_technical_score(ind_lmt_flat)
-    assert score_lmt_flat == 2.0, f"Expected 2.0 for high priced stock near-zero MACD, got {score_lmt_flat}"
+    assert score_lmt_flat == 16.0, f"Expected 16.0 for high priced stock near-zero MACD, got {score_lmt_flat}"
+
+
+def test_ema200_depth_gate_and_adaptive_normalization():
+    """Validates that len(df) < 200 yields ema200=None, ema200_reliable=False, and scales adaptively."""
+    # 1. Series with 80 candles (< 200)
+    df_short = pd.DataFrame({
+        'Close': [20.0 + i * 0.1 for i in range(80)],
+        'High': [20.2 + i * 0.1 for i in range(80)],
+        'Low': [19.8 + i * 0.1 for i in range(80)],
+        'Volume': [50000] * 80
+    })
+    res_short = calculate_technical_indicators(df_short)
+    assert res_short["ema200"] is None
+    assert res_short["ema200_reliable"] is False
+
+    # Scorer on short history: 30 max points available (RSI=10, BB=10, MACD=5, Vol=5)
+    # If all 30 points are won, scaled score is 40.0
+    ind_short_bullish = {
+        "status": "AVAILABLE",
+        "price": 28.0,
+        "ema200": None,             # Omitted
+        "rsi14": 60.0,              # +10
+        "bollinger_middle": 26.0,
+        "bollinger_upper": 30.0,
+        "bollinger_lower": 22.0,    # +10
+        "macd_histogram": 0.5,      # +5
+        "volume_ratio": 1.6         # +5
+    }
+    score_short = calculate_technical_score(ind_short_bullish)
+    assert score_short == 40.0, f"Expected 40.0 scaled score, got {score_short}"
+
+    # 2. Series with 220 candles (>= 200)
+    df_long = pd.DataFrame({
+        'Close': [20.0 + i * 0.05 for i in range(220)],
+        'High': [20.2 + i * 0.05 for i in range(220)],
+        'Low': [19.8 + i * 0.05 for i in range(220)],
+        'Volume': [50000] * 220
+    })
+    res_long = calculate_technical_indicators(df_long)
+    assert res_long["ema200"] is not None
+    assert res_long["ema200_reliable"] is True
+    assert res_long["ema200"] > 20.0
+
 
 

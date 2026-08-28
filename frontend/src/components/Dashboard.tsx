@@ -127,6 +127,38 @@ export const Dashboard: React.FC<DashboardProps> = ({ rankings, onSelectTicker }
                     <td style={{ padding: '12px 16px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                         <span style={{ fontWeight: 700, color: '#fff', fontSize: '0.95rem' }}>${stock.ticker}</span>
+                        {stock.data_source === 'MOCK' && (
+                          <span
+                            title="Synthetic / Mock simulation data active"
+                            style={{
+                              fontSize: '0.62rem',
+                              fontWeight: 700,
+                              color: '#f87171',
+                              background: 'rgba(239, 68, 68, 0.12)',
+                              border: '1px solid rgba(239, 68, 68, 0.35)',
+                              padding: '1px 5px',
+                              borderRadius: '4px'
+                            }}
+                          >
+                            🔴 MOCK
+                          </span>
+                        )}
+                        {stock.data_source === 'DEGRADED' && (
+                          <span
+                            title="Degraded feed: some pillars excluded or unavailable"
+                            style={{
+                              fontSize: '0.62rem',
+                              fontWeight: 700,
+                              color: '#fbbf24',
+                              background: 'rgba(251, 191, 36, 0.12)',
+                              border: '1px solid rgba(251, 191, 36, 0.35)',
+                              padding: '1px 5px',
+                              borderRadius: '4px'
+                            }}
+                          >
+                            🟡 DEGRADED
+                          </span>
+                        )}
                         {stock.is_stale && (
                           <span
                             title={`Data is ${stock.data_age_hours?.toFixed(0)}h old`}

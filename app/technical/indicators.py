@@ -48,9 +48,13 @@ def calculate_technical_indicators(df: pd.DataFrame, at_index: Optional[int] = N
     latest_price = float(close.iloc[-1])
     latest_volume = float(volume.iloc[-1])
 
-    # 1. EMA200 (if insufficient periods, fall back to EMA of available periods)
-    ema_period = min(200, len(df_eval))
-    ema200 = float(close.ewm(span=ema_period, adjust=False).mean().iloc[-1])
+    # 1. EMA200 (strictly requires at least 200 daily periods for statistical validity)
+    if len(df_eval) >= 200:
+        ema200 = float(close.ewm(span=200, adjust=False).mean().iloc[-1])
+        ema200_reliable = True
+    else:
+        ema200 = None
+        ema200_reliable = False
 
     # 2. RSI 14 (Wilder's Smoothing Moving Average / RMA)
     delta = close.diff()
@@ -150,7 +154,8 @@ def calculate_technical_indicators(df: pd.DataFrame, at_index: Optional[int] = N
     return {
         "price": round(latest_price, 2),
         "volume": latest_volume,
-        "ema200": round(ema200, 2) if not pd.isna(ema200) else None,
+        "ema200": round(ema200, 2) if (ema200 is not None and not pd.isna(ema200)) else None,
+        "ema200_reliable": ema200_reliable,
         "rsi14": round(rsi14, 2) if not pd.isna(rsi14) else 50.0,
         "bollinger_upper": round(bollinger_upper, 2) if not pd.isna(bollinger_upper) else None,
         "bollinger_middle": round(bollinger_middle, 2) if not pd.isna(bollinger_middle) else None,

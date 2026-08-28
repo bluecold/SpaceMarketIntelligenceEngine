@@ -9,7 +9,7 @@ from app.database.repository import (
     ensure_tickers_seeded, save_social_posts, get_recent_social_posts,
     save_news_items, get_recent_news_items,
     save_prediction_markets, get_recent_prediction_markets,
-    save_divergences, save_market_snapshot, get_latest_market_snapshot,
+    save_divergences, save_alerts, save_market_snapshot, get_latest_market_snapshot,
     save_ssi_snapshot, get_latest_ssi_snapshot, get_historical_ssi_snapshot,
     create_job_run, finish_job_run
 )
@@ -30,6 +30,7 @@ from app.scoring.social import calculate_social_score
 from app.scoring.prediction import calculate_prediction_market_score
 from app.scoring.momentum import calculate_momentum_score
 from app.scoring.risk import calculate_risk_score
+from app.scoring.fundamentals import calculate_fundamental_score
 from app.scoring.smi import calculate_smi
 from app.scoring.signal import generate_signal_and_explanation
 from app.divergence.detector import detect_divergences
@@ -56,7 +57,7 @@ def get_polymarket_provider():
     return MockPolymarketProvider()
 
 
-async def run_full_pipeline() -> Dict[str, Any]:
+async def run_full_pipeline(existing_job_id: Optional[int] = None) -> Dict[str, Any]:
     """
     Executes the complete SMIE v2.0 Modular Pipeline:
     1. Collect Social Posts & analyze sentiment/catalysts (XProvider)
@@ -70,7 +71,11 @@ async def run_full_pipeline() -> Dict[str, Any]:
     """
     init_db()
     db = SessionLocal()
-    job_run = create_job_run(db, "smie_full_pipeline")
+    if existing_job_id is not None:
+        job_id = existing_job_id
+    else:
+        job_run = create_job_run(db, "smie_full_pipeline")
+        job_id = job_run.id
     
     records_processed = 0
     results = {}
@@ -166,13 +171,13 @@ async def run_full_pipeline() -> Dict[str, Any]:
                 # Filter directly from in-memory poly_markets (single network fetch for the entire sector)
                 direct_markets = [m for m in poly_markets if m.ticker and m.ticker.upper() == ticker.upper()]
                 sector_events = [m for m in poly_markets if m.event_key is not None and (not m.ticker or m.ticker.upper() != ticker.upper())]
-                prediction_count = len(direct_markets) + len(sector_events)
                 
                 pms_score, pms_confidence, pms_quality, pms_breakdown = calculate_prediction_market_score(
                     ticker=ticker,
                     direct_markets=direct_markets,
                     sector_events=sector_events
                 )
+                prediction_count = pms_breakdown.get("market_count", len(pms_breakdown.get("markets", [])))
             except Exception as e:
                 logger.error(f"Prediction market scoring error for {ticker} (isolated): {e}")
 
@@ -254,6 +259,15 @@ async def run_full_pipeline() -> Dict[str, Any]:
             momentum_score = calculate_momentum_score(indicators, raw_df=raw_market_df)
             risk_score = calculate_risk_score(indicators, raw_df=raw_market_df)
 
+            # Extract fundamental data (Cash runway, solvency, growth, margins)
+            fundamental_score = None
+            try:
+                if hasattr(market_provider, "get_fundamentals"):
+                    fund_raw = await market_provider.get_fundamentals(ticker)
+                    fundamental_score = calculate_fundamental_score(fund_raw)
+            except Exception as e:
+                logger.warning(f"Could not compute fundamentals for {ticker}: {e}")
+
             # Extract 1d price return from raw OHLCV DataFrame
             price_change_1d = None
             if raw_market_df is not None and len(raw_market_df) >= 2 and 'Close' in raw_market_df.columns:
@@ -279,7 +293,7 @@ async def run_full_pipeline() -> Dict[str, Any]:
                 news_score=news_score,
                 momentum_score=momentum_score,
                 technical_score_raw=tech_score_raw,
-                fundamental_score=None,  # Modular for fundamental data integration
+                fundamental_score=fundamental_score,
                 risk_score=risk_score,
                 previous_smi_1d=prev_smi_1d,
                 previous_smi_3d=prev_smi_3d,
@@ -308,18 +322,32 @@ async def run_full_pipeline() -> Dict[str, Any]:
                 data_quality=smi_dict.get("data_quality")
             )
 
-            # Save detected divergences to database
-            if signal_res.get("active_divergences"):
-                save_divergences(db, ticker, signal_res["active_divergences"])
+            # Save detected divergences to database (creates new episodes, updates active ones, resolves ceased ones)
+            save_divergences(db, ticker, signal_res.get("active_divergences", []))
 
-            # --- STEP 6: SAVE IMMUTABLE SMI SNAPSHOT ---
+            # Save stateful alerts to database (signals, momentum buy, critical catalysts, divergences)
+            save_alerts(db, ticker, signal_res.get("alerts", []))
+
+            # --- STEP 6: DETERMINE DATA PROVENANCE & SAVE IMMUTABLE SMI SNAPSHOT ---
+            soc_src = "MOCK" if settings.X_PROVIDER.lower() == "mock" else ("LIVE" if len(recent_posts) > 0 else "EXCLUDED")
+            pred_src = "EXCLUDED" if not settings.POLYMARKET_ENABLED else ("MOCK" if settings.POLYMARKET_PROVIDER.lower() == "mock" else ("LIVE" if prediction_count > 0 else "EXCLUDED"))
+            news_src = "LIVE" if len(recent_news) > 0 else "EXCLUDED"
+            mkt_src = "LIVE" if (indicators.get("status") == "AVAILABLE" and indicators.get("price") is not None) else "DEGRADED"
+
+            if soc_src == "MOCK" or pred_src == "MOCK":
+                overall_data_src = "MOCK"
+            elif soc_src == "EXCLUDED" or pred_src == "EXCLUDED" or news_src == "EXCLUDED" or mkt_src == "DEGRADED":
+                overall_data_src = "DEGRADED"
+            else:
+                overall_data_src = "LIVE"
+
             snapshot_data = {
                 "ticker": ticker,
                 "social_score": social_score,
                 "prediction_score": pms_score,
                 "news_score": news_score,
                 "momentum_score": momentum_score,
-                "fundamental_score": None,
+                "fundamental_score": fundamental_score,
                 "risk_score": risk_score,
                 "technical_score": tech_score_raw,
                 "ssi": social_score,  # Pure Social
@@ -336,6 +364,11 @@ async def run_full_pipeline() -> Dict[str, Any]:
                 "post_count": len(recent_posts),
                 "news_count": len(recent_news),
                 "prediction_count": prediction_count,
+                "data_source": overall_data_src,
+                "social_source": soc_src,
+                "prediction_source": pred_src,
+                "news_source": news_src,
+                "market_source": mkt_src,
                 "price": indicators.get("price"),
                 "volume": indicators.get("volume"),
                 "explanation": signal_res["explanation"]
@@ -360,7 +393,7 @@ async def run_full_pipeline() -> Dict[str, Any]:
                 "prediction_count": prediction_count
             }
 
-        finish_job_run(db, job_run.id, status="SUCCESS", records=records_processed)
+        finish_job_run(db, job_id, status="SUCCESS", records=records_processed)
         logger.info("SMIE pipeline completed successfully.")
         return {
             "status": "SUCCESS",
@@ -371,7 +404,7 @@ async def run_full_pipeline() -> Dict[str, Any]:
 
     except Exception as e:
         logger.exception(f"Fatal error in SMIE pipeline: {e}")
-        finish_job_run(db, job_run.id, status="ERROR", error=str(e))
+        finish_job_run(db, job_id, status="ERROR", error=str(e))
         return {"status": "ERROR", "error": str(e)}
     finally:
         db.close()

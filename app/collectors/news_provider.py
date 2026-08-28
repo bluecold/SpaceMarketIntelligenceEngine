@@ -64,6 +64,8 @@ class GoogleRSSNewsProvider(BaseNewsProvider):
                     if pub_elem is not None and pub_elem.text:
                         try:
                             dt = parsedate_to_datetime(pub_elem.text)
+                            if dt.tzinfo is not None:
+                                dt = dt.astimezone(timezone.utc)
                             published_at = dt.replace(tzinfo=None)
                         except Exception:
                             pass

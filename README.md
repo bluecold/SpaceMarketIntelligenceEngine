@@ -17,8 +17,11 @@ SMIE sintetiza de forma desacoplada la **narrativa social (X/Twitter)**, las **p
 - **`Risk / Safety Score` (0–100):** Métrica cuantitativa de seguridad y compresión de riesgo calculada a partir de ATR normalizado, posición frente a bandas de Bollinger y drawdown.
 - **`Canonical Signals`:** Desacoplamiento estricto entre `base_signal` canónico (`STRONG BUY`, `BUY`, `WATCH`, `HOLD`, `AVOID`, `STRONG AVOID`) y `signal_modifier` (`OVEREXTENDED`, `NO MKT DATA`).
 - **`Market Score` (0–100):** Confirmación técnica del precio basada en EMA200, RSI(14) con suavizado Wilder RMA, Bollinger Bands, MACD normalizado por ATR/Precio y ratio de volumen.
+- **`Fundamental Health Score` (0–100):** Salud financiera sectorial basada en Cash Runway (40%), Solvencia y Deuda Neta/EBITDA (25%), Crecimiento de Ingresos YoY (20%) y Márgenes Brutos (15%), elevando la calidad de datos al 100%.
+- **`Async Background Pipeline with Mutex Locking`:** Ejecución de trabajos no bloqueante vía FastAPI `BackgroundTasks`, respuesta inmediata HTTP 202 Accepted, mutex anti-colisión y sondeo asíncrono con telemetría completa.
+- **`Strict Indicator Depth Gates & Adaptive Normalization`:** EMA200 rigurosa con compuerta de historial ($N \ge 200$) y re-escalado adaptativo del Technical Scorer sin penalizar activos jóvenes.
 - **`Divergence Engine & Risk Hierarchy`:** Detecta desacoples estructurales (ej. *Bullish Divergence: Social/Polymarket Bullish vs. Price Bearish*, *Early Reversal* con $\Delta_{24\text{h}}$ dinámico) y alertas de severidad simétrica (`CRITICAL` para `STRONG BUY`, `STRONG AVOID` y `BEARISH_CONFIRMATION`).
-- **`Closed-Loop Dynamic Weight Calibration`:** Retroalimentación empírica en ciclo cerrado desde el motor de backtesting hacia las ponderaciones del SMI basada en $\Delta\text{Sharpe}$ y compuertas de significancia estadística ($N \ge 30$).
+- **`Closed-Loop Dynamic Weight Calibration`:** Retroalimentación empírica en ciclo cerrado desde el motor de backtesting hacia las ponderaciones del SMI basada en $\Delta\text{Sharpe}$ y compuertas de significancia bilateral ($N \ge 30$).
 - **`Desktop Notifications with Silent Cold-Start`:** Notificaciones de escritorio en tiempo real (Windows Toast) con arranque en frío silencioso, registro persistente anti-duplicados y panel de preferencias de severidad.
 
 ---
@@ -63,11 +66,19 @@ Abre tu navegador en: **`http://localhost:8000`**
   ```bash
   python -m app.cli.commands collect-polymarket
   ```
+- **Recolectar publicaciones de redes sociales (X) de forma aislada:**
+  ```bash
+  python -m app.cli.commands collect-social
+  ```
+- **Recolectar noticias del sector espacial:**
+  ```bash
+  python -m app.cli.commands collect-news
+  ```
 - **Evaluar divergencias activas:**
   ```bash
   python -m app.cli.commands calculate-divergences
   ```
-- **Ejecutar suite de tests automatizados (78 tests unitarios):**
+- **Ejecutar suite completa de tests automatizados:**
   ```bash
   python -m pytest tests/ -v
   ```

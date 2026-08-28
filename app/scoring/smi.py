@@ -1,5 +1,6 @@
 from typing import Dict, Any, Optional, List
 from app.config import settings
+from app.scoring.social import apply_bayesian_shrinkage
 
 
 def calculate_source_agreement(active_directions: List[float]) -> float:
@@ -127,8 +128,7 @@ def calculate_smi(
         else:
             # Bayesian shrinkage towards neutral prior 50.0: effective = 50.0 + (social - 50.0) * (N / 10)
             is_social_available = True
-            credibility = min(1.0, max(0.1, post_count / 10.0))
-            effective_social = 50.0 + (social_score - 50.0) * credibility
+            effective_social = apply_bayesian_shrinkage(social_score, post_count)
 
         if is_social_available:
             active_scores["social"] = effective_social
@@ -171,7 +171,7 @@ def calculate_smi(
     if risk_score is not None:
         active_scores["risk"] = risk_score
         effective_weights["risk"] = BASE_WEIGHTS["risk"]
-        active_directions.append((risk_score - 50.0) / 50.0)
+        # Note: risk_score is a non-directional stability/safety metric and does not participate in active_directions
 
     # 2. Adaptive Weight Normalization
     total_effective_weight = sum(effective_weights.values())
@@ -231,9 +231,9 @@ def calculate_smi(
 
     return {
         "smi": smi,
-        "ssi": round(social_score, 1) if social_score is not None else None,
-        "social_score": round(social_score, 1) if social_score is not None else None,
-        "prediction_score": round(prediction_score, 1) if prediction_score is not None and prediction_quality >= settings.POLYMARKET_MIN_QUALITY else None,
+        "ssi": round(social_score, 1) if social_score is not None and (post_count is None or post_count > 0) else None,
+        "social_score": round(social_score, 1) if social_score is not None and (post_count is None or post_count > 0) else None,
+        "prediction_score": round(prediction_score, 1) if prediction_score is not None and prediction_quality >= settings.POLYMARKET_MIN_QUALITY and (prediction_count is None or prediction_count > 0) else None,
         "prediction_quality": round(prediction_quality, 1),
         "news_score": round(news_score, 1) if news_score is not None and (news_count is None or news_count > 0) else None,
         "momentum_score": round(momentum_score, 1) if momentum_score is not None else None,

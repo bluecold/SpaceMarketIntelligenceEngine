@@ -64,7 +64,7 @@ def test_ssi_from_raw_score_clamping():
 
 def test_ssi_empty_posts_fallback():
     res = calculate_ssi(posts=[])
-    assert res["ssi"] == 50.0
+    assert res["ssi"] is None
     assert res["total_posts"] == 0
     assert res["bullish_pct"] == 0.0
     assert res["neutral_pct"] == 0.0
@@ -224,8 +224,108 @@ def test_ssi_snapshot_persists_post_news_prediction_counts():
         )
         # Prediction score was 90.0, but prediction_count=0 strictly excludes it, so SMI remains 80.0 (social only)
         assert smi_zero_pred["smi"] == 80.0
+        assert smi_zero_pred["prediction_score"] is None
     finally:
         db.close()
+
+
+def test_social_score_relevance_filter_and_deduplication():
+    """
+    Verify that:
+    1. Posts below SOCIAL_MIN_RELEVANCE (0.40) are dropped without fallback, returning None when all are noisy.
+    2. Viral retweets / identical texts are deduplicated to 1 observation count while aggregating engagement.
+    """
+    from app.scoring.social import calculate_social_score
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+
+    # 1. Noisy posts below relevance threshold (relevance = 0.10)
+    noisy_posts = [
+        SocialPostModel(
+            tweet_id=f"noise_{i}",
+            ticker="ASTS",
+            username=f"user_{i}",
+            text="Random tweet about something else entirely",
+            created_at=now,
+            sentiment_score=0.9,
+            sentiment_label="BULLISH",
+            relevance_score=0.10,
+            recency_weight=1.0,
+            engagement_score=1.0
+        )
+        for i in range(5)
+    ]
+    res_noisy = calculate_social_score(noisy_posts)
+    assert res_noisy["social_score"] is None
+    assert res_noisy["total_posts"] == 0
+
+    # 2. 10 duplicate retweets of the same message (relevance = 0.85)
+    duplicate_posts = [
+        SocialPostModel(
+            tweet_id=f"rt_{i}",
+            ticker="ASTS",
+            username=f"user_{i}",
+            text="RT @investor_hub: ASTS commercial deployment reaches final operational testing! https://t.co/abc123",
+            created_at=now,
+            sentiment_score=0.8,
+            sentiment_label="BULLISH",
+            relevance_score=0.85,
+            recency_weight=1.0,
+            engagement_score=2.0
+        )
+        for i in range(10)
+    ]
+    res_dup = calculate_social_score(duplicate_posts)
+    assert res_dup["social_score"] is not None
+    # Must count as exactly 1 observation, not 10
+    assert res_dup["total_posts"] == 1
+    assert res_dup["relevant_posts"] == 1
+    assert res_dup["social_score"] > 80.0
+
+
+def test_social_score_respects_sentiment_confidence_weighting():
+    """Verify that a high-confidence sentiment post (+0.8, conf 0.95) outweighs a low-confidence post (-0.8, conf 0.40)."""
+    from app.scoring.social import calculate_social_score
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    posts = [
+        # High confidence bullish post
+        SocialPostModel(
+            tweet_id="p1",
+            ticker="RKLB",
+            username="analyst_pro",
+            text="Rocket Lab signs multi-launch contract, strong revenue expansion.",
+            created_at=now,
+            sentiment_score=0.8,
+            sentiment_label="BULLISH",
+            sentiment_confidence=0.95,
+            relevance_score=1.0,
+            recency_weight=1.0,
+            engagement_score=1.0
+        ),
+        # Low confidence bearish post
+        SocialPostModel(
+            tweet_id="p2",
+            ticker="RKLB",
+            username="random_user",
+            text="Stock drops slightly today.",
+            created_at=now,
+            sentiment_score=-0.8,
+            sentiment_label="BEARISH",
+            sentiment_confidence=0.40,
+            relevance_score=1.0,
+            recency_weight=1.0,
+            engagement_score=1.0
+        )
+    ]
+    res = calculate_social_score(posts)
+    assert res["social_score"] is not None
+    # Because conf 0.95 is > 2.3x higher than 0.40, the final score must lean clearly BULLISH (> 60)
+    assert res["social_score"] > 60.0
+
+
 
 
 

@@ -60,14 +60,24 @@ class TwikitProvider(XProvider):
     async def search(self, query: str, ticker: str, max_results: int = 100) -> List[SocialPostData]:
         is_auth = await self._ensure_authenticated()
         if not is_auth or not self.client:
-            return await self._fallback_provider.search(query, ticker, max_results)
+            if getattr(settings, "ALLOW_MOCK_FALLBACK", False):
+                return await self._fallback_provider.search(query, ticker, max_results)
+            logger.warning(f"Twikit unauthenticated and ALLOW_MOCK_FALLBACK=False. Returning empty dataset for {ticker}.")
+            return []
 
         posts = []
         try:
             tweets = await self.client.search_tweet(query, 'Latest', count=max_results)
             if tweets:
                 for tweet in tweets:
-                    created_dt = datetime.strptime(tweet.created_at, '%a %b %d %H:%M:%S %z %Y').replace(tzinfo=timezone.utc) if hasattr(tweet, 'created_at') else datetime.now(timezone.utc)
+                    if hasattr(tweet, 'created_at') and tweet.created_at:
+                        try:
+                            parsed_dt = datetime.strptime(tweet.created_at, '%a %b %d %H:%M:%S %z %Y')
+                            created_dt = parsed_dt.astimezone(timezone.utc)
+                        except Exception:
+                            created_dt = datetime.now(timezone.utc)
+                    else:
+                        created_dt = datetime.now(timezone.utc)
                     posts.append(SocialPostData(
                         tweet_id=str(tweet.id),
                         ticker=ticker,
@@ -81,10 +91,13 @@ class TwikitProvider(XProvider):
                         views=getattr(tweet, 'view_count', 0)
                     ))
             logger.info(f"Twikit collected {len(posts)} posts for {ticker} query '{query}'.")
-            if not posts:
+            if not posts and getattr(settings, "ALLOW_MOCK_FALLBACK", False):
                 return await self._fallback_provider.search(query, ticker, max_results)
         except Exception as e:
-            logger.warning(f"Twikit search error for ticker {ticker} ({e}). Using mock fallback.")
-            return await self._fallback_provider.search(query, ticker, max_results)
+            if getattr(settings, "ALLOW_MOCK_FALLBACK", False):
+                logger.warning(f"Twikit search error for ticker {ticker} ({e}). Using mock fallback.")
+                return await self._fallback_provider.search(query, ticker, max_results)
+            logger.error(f"Twikit search error for ticker {ticker} ({e}). ALLOW_MOCK_FALLBACK=False, returning empty dataset.")
+            return []
             
         return posts
