@@ -331,6 +331,31 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                     • <strong>Gestión de Sobrecompra:</strong> Si RSI &gt; 75, restringe preventivamente <code>STRONG BUY</code> a <code>WATCH (OVEREXTENDED)</code> y añade advertencia cualitativa a <code>BUY (OVEREXTENDED)</code>.
                   </p>
                 </div>
+
+                {/* Data Provenance Badges & Quantitative Rigor */}
+                <div style={{ background: 'rgba(59, 130, 246, 0.08)', border: '1px solid rgba(59, 130, 246, 0.3)', borderRadius: '12px', padding: '16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ color: '#60a5fa', fontWeight: 800, fontSize: '1.05rem' }}>
+                      Procedencia de Datos (Data Provenance) & Rigor Cuantitativo
+                    </span>
+                    <span style={{ fontSize: '0.75rem', background: '#3b82f6', color: '#fff', padding: '2px 8px', borderRadius: '4px', fontWeight: 700 }}>
+                      AUDITORÍA & INTEGRIDAD
+                    </span>
+                  </div>
+                  <p style={{ margin: '8px 0 0 0', color: 'var(--text-main)', fontSize: '0.85rem' }}>
+                    Cada activo y alerta etiqueta con transparencia el origen exacto de la información:
+                    <br />
+                    • <strong>🟢 LIVE (Sin badge):</strong> 100% de los datos provienen de APIs en vivo en tiempo real (X/Twikit, Polymarket Gamma API, Google News RSS, Yahoo Finance).
+                    <br />
+                    • <strong>🟡 DEGRADED:</strong> Algunas fuentes secundarias están en modo histórico o excluidas por baja cobertura.
+                    <br />
+                    • <strong>🔴 MOCK:</strong> Datos sintéticos generados localmente cuando no hay conectividad externa o credenciales.
+                    <br />
+                    • <strong>Sin Acuerdo Artificial:</strong> No se asigna acuerdo ni bonificación de confianza (+15%) cuando existe solo 1 fuente activa aislada; se requiere corroboración cruzada.
+                    <br />
+                    • <strong>Salud Fundamental Adaptativa:</strong> Se normalizan los pesos exclusivamente sobre las métricas observadas (runway, solvencia, crecimiento, margen) sin imputar valores neutrales ficticios.
+                  </p>
+                </div>
               </div>
             </div>
           )}

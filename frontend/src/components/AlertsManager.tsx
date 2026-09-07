@@ -162,21 +162,24 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
 
   // --- COLD START PROTECTION & REAL-TIME DISPATCH ---
   useEffect(() => {
-    if (!alerts || alerts.length === 0) return;
-
     // 1. SILENT COLD-START SEEDING:
     // On the initial page mount or reload (F5), seed all existing server alerts
-    // into the notified set WITHOUT firing any Windows notification.
+    // into the notified set WITHOUT firing desktop notifications.
+    // Unconditionally clear initial mount flag so subsequent fetches with new alerts will notify properly.
     if (isInitialMountRef.current) {
       isInitialMountRef.current = false;
-      const updatedSet = new Set(notifiedIdsRef.current);
-      alerts.forEach((al, idx) => {
-        updatedSet.add(getAlertKey(al, idx));
-      });
-      notifiedIdsRef.current = updatedSet;
-      saveNotifiedIds(updatedSet);
+      if (alerts && alerts.length > 0) {
+        const updatedSet = new Set(notifiedIdsRef.current);
+        alerts.forEach((al, idx) => {
+          updatedSet.add(getAlertKey(al, idx));
+        });
+        notifiedIdsRef.current = updatedSet;
+        saveNotifiedIds(updatedSet);
+      }
       return;
     }
+
+    if (!alerts || alerts.length === 0) return;
 
     // 2. DISPATCH ONLY TRULY NEW ARRIVING ALERTS (subsequent polling / job triggers)
     if (permission !== 'granted' || !settings.desktopEnabled) return;
@@ -188,20 +191,29 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
       const key = getAlertKey(alert, idx);
       if (updatedSet.has(key)) return;
 
-      // Mark as processed in registry immediately to ensure idempotency
-      updatedSet.add(key);
-
-      // Freshness check: must be active and <= 30 minutes old
+      // Freshness check: must be active and <= 2.0 hours old (broadened window to prevent dropping alerts between polls)
       const isActive = isAlertActive(alert);
-      const isFresh = alert.age_hours === undefined || alert.age_hours === null || alert.age_hours <= 0.5;
-      if (!isActive || !isFresh) return;
+      const isFresh = alert.age_hours === undefined || alert.age_hours === null || alert.age_hours <= 2.0;
+      if (!isActive || !isFresh) {
+        // Expired or inactive: mark as handled so we don't re-evaluate indefinitely
+        updatedSet.add(key);
+        return;
+      }
 
       // Severity check based on user preferences
       const isCritical = alert.level === 'CRITICAL';
       const isHigh = alert.level === 'HIGH';
-      if (settings.minSeverity === 'CRITICAL' && !isCritical) return;
-      if (settings.minSeverity === 'HIGH' && !isCritical && !isHigh) return;
+      if (settings.minSeverity === 'CRITICAL' && !isCritical) {
+        updatedSet.add(key);
+        return;
+      }
+      if (settings.minSeverity === 'HIGH' && !isCritical && !isHigh) {
+        updatedSet.add(key);
+        return;
+      }
 
+      // Qualifying new alert to notify
+      updatedSet.add(key);
       newToNotify.push(alert);
     });
 

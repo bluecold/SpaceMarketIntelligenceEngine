@@ -16,6 +16,24 @@ class DivergenceResult(BaseModel):
     source_b: str
     source_c: Optional[str] = None
     direction: str  # "BULLISH", "BEARISH", "NEUTRAL"
+from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, Field
+from datetime import datetime, timezone
+from app.config import settings
+from app.scoring.social import apply_bayesian_shrinkage
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class DivergenceResult(BaseModel):
+    ticker: str
+    type: str  # BULLISH_DIVERGENCE, BEARISH_DIVERGENCE, BULLISH_CONFIRMATION, BEARISH_CONFIRMATION, EARLY_REVERSAL
+    source_a: str
+    source_b: str
+    source_c: Optional[str] = None
+    direction: str  # "BULLISH", "BEARISH", "NEUTRAL"
     strength: float  # 0.0 to 1.0
     confidence: float  # 0.0 to 1.0
     description: str
@@ -24,7 +42,7 @@ class DivergenceResult(BaseModel):
 
 def detect_divergences(
     ticker: str,
-    social_score: float,
+    social_score: Optional[float] = None,
     prediction_score: Optional[float] = None,
     prediction_delta_24h: Optional[float] = None,
     news_score: Optional[float] = None,
@@ -50,8 +68,12 @@ def detect_divergences(
 
     # Directional normalizations (-1.0 to +1.0)
     # Apply Bayesian shrinkage to social score if post_count is provided and sample size is small (< 10)
-    effective_social = apply_bayesian_shrinkage(social_score, post_count) if post_count is not None else social_score
-    dir_social = (effective_social - 50.0) / 50.0
+    effective_social = None
+    dir_social = None
+    if social_score is not None:
+        effective_social = apply_bayesian_shrinkage(social_score, post_count) if post_count is not None else social_score
+        dir_social = (effective_social - 50.0) / 50.0
+
     dir_pred = (prediction_score - 50.0) / 50.0 if prediction_score is not None else None
     dir_price = 0.0
     if price_return_1d is not None:
@@ -67,7 +89,7 @@ def detect_divergences(
     # 1. STRONG CONFIRMATION SCENARIOS
     # -------------------------------------------------------------
     # Bullish Confirmation: Social >= +0.30, Price >= +0.20, Volume >= 1.2x (and PMS >= +0.20 if available)
-    if dir_social >= 0.30 and dir_price >= 0.20 and vol_ratio >= 1.2:
+    if dir_social is not None and dir_social >= 0.30 and dir_price >= 0.20 and vol_ratio >= 1.2:
         if dir_pred is None or dir_pred >= 0.20:
             pred_text = f" and Polymarket expectations ({prediction_score:.0f}%)" if prediction_score is not None else ""
             results.append(DivergenceResult(
@@ -79,12 +101,12 @@ def detect_divergences(
                 direction="BULLISH",
                 strength=0.90 if dir_pred is not None and dir_pred >= 0.30 else 0.75,
                 confidence=0.88,
-                description=f"Strong multi-source confirmation: Social sentiment ({social_score:.0f}){pred_text} aligned with upward price momentum on heavy volume ({vol_ratio:.1f}x).",
+                description=f"Strong multi-source confirmation: Social sentiment ({effective_social:.0f}){pred_text} aligned with upward price momentum on heavy volume ({vol_ratio:.1f}x).",
                 timestamp=now
             ))
 
     # Bearish Confirmation: Social <= -0.30, Price <= -0.20, Volume >= 1.2x
-    elif dir_social <= -0.30 and dir_price <= -0.20 and vol_ratio >= 1.2:
+    elif dir_social is not None and dir_social <= -0.30 and dir_price <= -0.20 and vol_ratio >= 1.2:
         if dir_pred is None or dir_pred <= -0.20:
             pred_text = f" and Polymarket expectations ({prediction_score:.0f}%)" if prediction_score is not None else ""
             results.append(DivergenceResult(
@@ -96,7 +118,7 @@ def detect_divergences(
                 direction="BEARISH",
                 strength=0.90 if dir_pred is not None and dir_pred <= -0.30 else 0.75,
                 confidence=0.88,
-                description=f"Strong bearish confirmation: Social sentiment ({social_score:.0f}){pred_text} confirmed by falling price action on above-average volume ({vol_ratio:.1f}x).",
+                description=f"Strong bearish confirmation: Social sentiment ({effective_social:.0f}){pred_text} confirmed by falling price action on above-average volume ({vol_ratio:.1f}x).",
                 timestamp=now
             ))
 
@@ -105,18 +127,20 @@ def detect_divergences(
     # -------------------------------------------------------------
     # Bullish Divergence: Narrative/Expectations are Bullish, but Price is falling
     bullish_sources = []
-    if dir_social >= 0.25:
-        bullish_sources.append(f"X Social ({social_score:.0f})")
+    if dir_social is not None and dir_social >= 0.25:
+        bullish_sources.append(f"X Social ({effective_social:.0f})")
     if dir_pred is not None and dir_pred >= 0.25:
         bullish_sources.append(f"Polymarket PMS ({prediction_score:.0f})")
         
     if bullish_sources and dir_price <= -0.15:
-        strength = min(1.0, (max(dir_social, dir_pred or 0.0) - dir_price) / 1.5)
+        valid_dirs = [d for d in [dir_social, dir_pred] if d is not None]
+        max_dir = max(valid_dirs) if valid_dirs else 0.0
+        strength = min(1.0, (max_dir - dir_price) / 1.5)
         src_desc = " and ".join(bullish_sources)
         results.append(DivergenceResult(
             ticker=ticker,
             type="BULLISH_DIVERGENCE",
-            source_a="SOCIAL_PREDICTION",
+            source_a="PREDICTION_MARKET" if dir_social is None else ("SOCIAL_PREDICTION" if dir_pred is not None else "X_SOCIAL"),
             source_b="PRICE_ACTION",
             source_c="MOMENTUM",
             direction="BULLISH",
@@ -128,18 +152,20 @@ def detect_divergences(
 
     # Bearish Divergence: Narrative/Expectations are Bearish, but Price is rising/overextended
     bearish_sources = []
-    if dir_social <= -0.25:
-        bearish_sources.append(f"X Social ({social_score:.0f})")
+    if dir_social is not None and dir_social <= -0.25:
+        bearish_sources.append(f"X Social ({effective_social:.0f})")
     if dir_pred is not None and dir_pred <= -0.25:
         bearish_sources.append(f"Polymarket PMS ({prediction_score:.0f})")
 
     if bearish_sources and (dir_price >= 0.15 or (rsi and rsi >= 72)):
-        strength = min(1.0, (dir_price - min(dir_social, dir_pred or 0.0)) / 1.5)
+        valid_dirs = [d for d in [dir_social, dir_pred] if d is not None]
+        min_dir = min(valid_dirs) if valid_dirs else 0.0
+        strength = min(1.0, (dir_price - min_dir) / 1.5)
         src_desc = " and ".join(bearish_sources)
         results.append(DivergenceResult(
             ticker=ticker,
             type="BEARISH_DIVERGENCE",
-            source_a="SOCIAL_PREDICTION",
+            source_a="PREDICTION_MARKET" if dir_social is None else ("SOCIAL_PREDICTION" if dir_pred is not None else "X_SOCIAL"),
             source_b="PRICE_ACTION",
             source_c="RSI_OVEREXTENSION" if rsi and rsi >= 72 else None,
             direction="BEARISH",
@@ -156,23 +182,25 @@ def detect_divergences(
 
     # Dynamic Case A: Bullish Early Reversal via 24h Polymarket Probability Surge (ΔPMS_24h >= +15%)
     if prediction_delta_24h is not None and prediction_delta_24h >= min_delta:
-        if (social_score <= 55.0 or dir_social <= 0.10) and (price_return_1d is None or price_return_1d <= 2.0):
+        soc_subdued = (dir_social is None) or (effective_social is not None and effective_social <= 55.0) or (dir_social is not None and dir_social <= 0.10)
+        if soc_subdued and (price_return_1d is None or price_return_1d <= 2.0):
             strength = min(1.0, 0.70 + (prediction_delta_24h / 100.0))
+            soc_desc = f"retail social sentiment ({effective_social:.0f})" if effective_social is not None else "retail sentiment"
             results.append(DivergenceResult(
                 ticker=ticker,
                 type="EARLY_REVERSAL",
                 source_a="POLYMARKET_MOMENTUM",
-                source_b="X_SOCIAL",
-                source_c="PRICE_ACTION",
+                source_b="X_SOCIAL" if effective_social is not None else "PRICE_ACTION",
+                source_c="PRICE_ACTION" if effective_social is not None else None,
                 direction="BULLISH",
                 strength=round(strength, 2),
                 confidence=0.85,
-                description=f"Early Reversal Watch: Polymarket probability surged (+{prediction_delta_24h:+.1f}% in 24h) while retail social sentiment ({social_score:.0f}) and price action remain subdued. Potential smart money frontrunning.",
+                description=f"Early Reversal Watch: Polymarket probability surged (+{prediction_delta_24h:+.1f}% in 24h) while {soc_desc} and price action remain subdued. Potential smart money frontrunning.",
                 timestamp=now
             ))
     # Dynamic Case B: Bearish Early Reversal via 24h Polymarket Probability Collapse (ΔPMS_24h <= -15%)
     elif prediction_delta_24h is not None and prediction_delta_24h <= -min_delta:
-        if social_score >= 60.0 or dir_social >= 0.20:
+        if dir_social is not None and effective_social is not None and (effective_social >= 60.0 or dir_social >= 0.20):
             strength = min(1.0, 0.70 + (abs(prediction_delta_24h) / 100.0))
             results.append(DivergenceResult(
                 ticker=ticker,
@@ -183,11 +211,11 @@ def detect_divergences(
                 direction="BEARISH",
                 strength=round(strength, 2),
                 confidence=0.85,
-                description=f"Early Reversal Alert: Polymarket probability collapsed ({prediction_delta_24h:+.1f}% in 24h) contradicting elevated retail optimism on X ({social_score:.0f}). High risk of institutional dump or failed catalyst.",
+                description=f"Early Reversal Alert: Polymarket probability collapsed ({prediction_delta_24h:+.1f}% in 24h) contradicting elevated retail optimism on X ({effective_social:.0f}). High risk of institutional dump or failed catalyst.",
                 timestamp=now
             ))
     # Structural Fallback: Level Disconnect (Panic in Social vs High Bullish PMS or vice versa)
-    elif dir_pred is not None:
+    elif dir_pred is not None and dir_social is not None and effective_social is not None:
         if dir_social <= -0.30 and dir_pred >= 0.30:
             results.append(DivergenceResult(
                 ticker=ticker,
@@ -198,7 +226,7 @@ def detect_divergences(
                 direction="BULLISH",
                 strength=0.80,
                 confidence=0.72,
-                description=f"Early Reversal Watch: Retail social narrative is fearful ({social_score:.0f}) while Prediction Markets price high success probability ({prediction_score:.0f}). Potential bottom formation.",
+                description=f"Early Reversal Watch: Retail social narrative is fearful ({effective_social:.0f}) while Prediction Markets price high success probability ({prediction_score:.0f}). Potential bottom formation.",
                 timestamp=now
             ))
         elif dir_social >= 0.35 and dir_pred <= -0.30:
@@ -211,9 +239,8 @@ def detect_divergences(
                 direction="BEARISH",
                 strength=0.80,
                 confidence=0.72,
-                description=f"Early Reversal Watch: High retail euphoria on X ({social_score:.0f}) contradicts low prediction market probability ({prediction_score:.0f}). Possible bull trap.",
+                description=f"Early Reversal Watch: High retail euphoria on X ({effective_social:.0f}) contradicts low prediction market probability ({prediction_score:.0f}). Possible bull trap.",
                 timestamp=now
             ))
 
     return results
-

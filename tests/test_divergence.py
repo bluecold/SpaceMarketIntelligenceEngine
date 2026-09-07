@@ -284,5 +284,116 @@ def test_divergence_stateful_episode_lifecycle():
         db.close()
 
 
+def test_divergence_single_shrinkage_parity_generator_vs_direct():
+    """
+    Validates that Bayesian shrinkage is applied exactly once and both direct
+    detect_divergences and generate_signal_and_explanation routes produce identical
+    divergence outcomes.
+    
+    Scenario:
+    - 3 bullish posts (raw score = 100.0, post_count = 3)
+    - 1-day price change = -2.0%
+    - 1st contraction (100 -> 65.0, dir_social = +0.30 >= 0.25, dir_price = -0.40 <= -0.15)
+      -> BULLISH_DIVERGENCE.
+    - If contracted twice (100 -> 65 -> 54.5, dir_social = +0.09 < 0.25),
+      BULLISH_DIVERGENCE would be erroneously lost.
+    """
+    from app.scoring.signal import generate_signal_and_explanation
+    from app.scoring.social import apply_bayesian_shrinkage
+
+    raw_score = 100.0
+    post_count = 3
+    price_delta = -2.0
+
+    # 1. Direct detector route
+    direct_res = detect_divergences(
+        ticker="ASTS",
+        social_score=raw_score,
+        price_return_1d=price_delta,
+        post_count=post_count
+    )
+    direct_types = [d.type for d in direct_res]
+    assert "BULLISH_DIVERGENCE" in direct_types, "Direct detector route must find BULLISH_DIVERGENCE"
+
+    # 2. Signal generator route with equivalent inputs
+    gen_res = generate_signal_and_explanation(
+        ticker="ASTS",
+        social_score=raw_score,
+        social_stats={"total_posts": post_count, "effective_sample_size": post_count},
+        price_change_1d=price_delta
+    )
+    gen_types = [d["type"] for d in gen_res["active_divergences"]]
+    assert "BULLISH_DIVERGENCE" in gen_types, "Signal generator route must also find BULLISH_DIVERGENCE (no double shrinkage)"
+    assert "BULLISH_DIVERGENCE" in gen_res["divergence"]
+
+    # 3. Explicit raw and effective score representation in signal generator output
+    assert gen_res["social_score_raw"] == 100.0
+    expected_effective = apply_bayesian_shrinkage(100.0, 3)  # 65.0
+    assert gen_res["social_score_effective"] == expected_effective
+    assert gen_res["social_score_effective"] == 65.0
+
+    # 4. Divergence attributes parity across both routes
+    direct_div = next(d for d in direct_res if d.type == "BULLISH_DIVERGENCE")
+    gen_div = next(d for d in gen_res["active_divergences"] if d["type"] == "BULLISH_DIVERGENCE")
+    assert direct_div.direction == gen_div["direction"] == "BULLISH"
+    assert direct_div.strength == gen_div["strength"]
+    assert direct_div.confidence == gen_div["confidence"]
+    assert direct_div.description == gen_div["description"]
+
+
+def test_divergence_none_social_score_never_attributes_to_x_social():
+    """
+    Verify that when social_score is None:
+    1. A high SMI caused by news/fundamentals/Polymarket does not fabricate an "X Social" divergence.
+    2. If Polymarket is bullish and price drops, the divergence is attributed exclusively to Polymarket.
+    3. If neither Social nor Polymarket are present, no narrative divergence is produced.
+    4. social_score_raw and social_score_effective in signal generator output are None.
+    """
+    from app.scoring.signal import generate_signal_and_explanation
+
+    # Scenario 1: High SMI (85.0) from fundamentals/news, but social_score=None, price dropping (-2.5%)
+    res_no_social = generate_signal_and_explanation(
+        ticker="ASTS",
+        smi=85.0,
+        social_score=None,
+        prediction_score=None,
+        news_score=85.0,
+        fundamental_score=85.0,
+        price_change_1d=-2.5
+    )
+    assert res_no_social["social_score_raw"] is None
+    assert res_no_social["social_score_effective"] is None
+    assert len(res_no_social["active_divergences"]) == 0
+    assert "X Social" not in res_no_social["divergence"]
+
+    # Scenario 2: Polymarket is Bullish (80.0), social_score=None, price dropping (-2.5%)
+    res_pm_only = generate_signal_and_explanation(
+        ticker="ASTS",
+        smi=80.0,
+        social_score=None,
+        prediction_score=80.0,
+        price_change_1d=-2.5
+    )
+    assert len(res_pm_only["active_divergences"]) == 1
+    div = res_pm_only["active_divergences"][0]
+    assert div["type"] == "BULLISH_DIVERGENCE"
+    assert "Polymarket PMS" in div["description"]
+    assert "X Social" not in div["description"]
+    assert div["source_a"] == "PREDICTION_MARKET"
+
+    # Scenario 3: Direct detect_divergences with social_score=None
+    direct_divs = detect_divergences(
+        ticker="ASTS",
+        social_score=None,
+        prediction_score=85.0,
+        price_return_1d=-3.0
+    )
+    assert len(direct_divs) == 1
+    assert "X Social" not in direct_divs[0].description
+    assert direct_divs[0].source_a == "PREDICTION_MARKET"
+
+
+
+
 
 

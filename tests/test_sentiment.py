@@ -213,6 +213,10 @@ def test_detect_catalysts_word_boundaries_and_bearish_priority():
     top_cat, top_dir, top_imp = detect_catalyst(text_abort)
     assert top_cat == "LAUNCH_DELAY"
     assert top_dir == "BEARISH"
+    cats_abort = detect_catalysts(text_abort)
+    cat_names_abort = [c["category"] for c in cats_abort]
+    assert "LAUNCH_DELAY" in cat_names_abort
+    assert "LAUNCH" not in cat_names_abort, "LAUNCH_DELAY must suppress generic BULLISH LAUNCH"
 
     # 4. Catastrophic Launch Failure / Explosion must prioritize CRITICAL BEARISH LAUNCH_FAILURE over BULLISH LAUNCH
     text_fail = "Terrible news: launch failure destroyed the payload after booster explosion during stage 1 ascent."
@@ -220,6 +224,10 @@ def test_detect_catalysts_word_boundaries_and_bearish_priority():
     assert top_fail_cat == "LAUNCH_FAILURE"
     assert top_fail_dir == "BEARISH"
     assert top_fail_imp == "CRITICAL"
+    cats_fail = detect_catalysts(text_fail)
+    cat_names_fail = [c["category"] for c in cats_fail]
+    assert "LAUNCH_FAILURE" in cat_names_fail
+    assert "LAUNCH" not in cat_names_fail, "LAUNCH_FAILURE must suppress generic BULLISH LAUNCH"
 
 
 def test_signal_reasons_deduplicates_and_ranks_catalysts():
@@ -228,6 +236,7 @@ def test_signal_reasons_deduplicates_and_ranks_catalysts():
     1. Deduplicates multiple instances of the same catalyst category.
     2. Ranks CRITICAL catalysts from later items ahead of repetitive HIGH/MEDIUM items.
     3. Never prints duplicate lines for the same category.
+    4. Prunes contradictory generic LAUNCH when LAUNCH_FAILURE or LAUNCH_DELAY is present.
     """
     from app.scoring.signal import generate_signal_and_explanation
 
@@ -257,6 +266,22 @@ def test_signal_reasons_deduplicates_and_ranks_catalysts():
     # 3. Must contain Capital Raise
     cap_reasons = [r for r in catalyst_reasons if "Capital Raise" in r]
     assert len(cap_reasons) == 1
+
+    # 4. Conflicting launch failure and launch catalyst must prune positive launch
+    conflicting_catalysts = [
+        {"category": "LAUNCH_FAILURE", "direction": "BEARISH", "importance": "CRITICAL"},
+        {"category": "LAUNCH", "direction": "BULLISH", "importance": "HIGH"},
+        {"category": "LAUNCH_DELAY", "direction": "BEARISH", "importance": "HIGH"}
+    ]
+    res_conflict = generate_signal_and_explanation(
+        ticker="RKLB",
+        smi=30.0,
+        catalysts_found=conflicting_catalysts
+    )
+    conflict_reasons = res_conflict["reasons"]
+    assert any("[CRITICAL] Launch Failure" in r for r in conflict_reasons)
+    assert not any("+ Positive catalyst" in r and "Launch" in r for r in conflict_reasons)
+    assert not any("Launch Delay" in r for r in conflict_reasons)
 
 
 def test_news_score_below_relevance_threshold_returns_none():
@@ -299,6 +324,107 @@ def test_rss_news_pubdate_timezone_conversion():
     # 05:00:00 +0900 on Aug 28 is 20:00:00 UTC on Aug 27
     assert utc_jst.hour == 20
     assert utc_jst.day == 27
+
+
+def test_catalyst_cancellation_and_entity_decoupling():
+    """
+    Validates the fix for audit issue 9:
+    'NASA cancels Rocket Lab contract' must return GOVERNMENT_CONTRACT with direction BEARISH and CRITICAL importance.
+    Entities (NASA, DoD) are decoupled from static bullish directions and respect cancellation/termination actions.
+    """
+    from app.sentiment.weighting import detect_catalysts, detect_catalyst
+
+    # 1. Contract cancellation must be BEARISH and CRITICAL
+    text_cancel = "Breaking: NASA cancels Rocket Lab contract following program review."
+    cat_type, cat_dir, cat_imp = detect_catalyst(text_cancel)
+    assert cat_type == "GOVERNMENT_CONTRACT"
+    assert cat_dir == "BEARISH", f"Expected BEARISH for cancellation, got {cat_dir}"
+    assert cat_imp == "CRITICAL"
+
+    # 2. DoD contract termination
+    text_dod_term = "DoD terminates contract with AST SpaceMobile due to schedule adjustments."
+    dod_cats = detect_catalysts(text_dod_term)
+    assert len(dod_cats) >= 1
+    assert dod_cats[0]["category"] == "GOVERNMENT_CONTRACT"
+    assert dod_cats[0]["direction"] == "BEARISH"
+
+    # 3. Contract award must be BULLISH and CRITICAL
+    text_award = "Rocket Lab wins and NASA awards landmark defense government contract."
+    cat_type_a, cat_dir_a, cat_imp_a = detect_catalyst(text_award)
+    assert cat_type_a == "GOVERNMENT_CONTRACT"
+    assert cat_dir_a == "BULLISH"
+    assert cat_imp_a == "CRITICAL"
+
+    # 4. Standalone agency mention without contract or award/cancellation must NOT trigger contract catalyst
+    text_neutral_agency = "NASA astronaut gives presentation on space biology experiments aboard ISS."
+    agency_cats = detect_catalysts(text_neutral_agency)
+    assert len(agency_cats) == 0, f"Expected 0 catalysts for non-contract agency mention, got {agency_cats}"
+
+    # 5. Partnership termination must be BEARISH
+    text_partner_term = "Verizon terminates partnership agreement with AST SpaceMobile."
+    p_type, p_dir, p_imp = detect_catalyst(text_partner_term)
+    assert p_type == "PARTNERSHIP"
+    assert p_dir == "BEARISH"
+
+    # 6. FAA license denial/grounding must be BEARISH
+    text_faa_deny = "FAA denies launch license and grounds rocket pending investigation."
+    faa_type, fae_dir, faa_imp = detect_catalyst(text_faa_deny)
+    assert faa_type == "FAA_APPROVAL"
+    assert fae_dir == "BEARISH"
+
+
+def test_catalyst_hypothetical_and_historical_filtering():
+    """
+    Validates that:
+    1. Pure hypothetical questions (e.g. 'What if NASA cancels Rocket Lab contract?')
+       are flagged as hypothetical and do NOT trigger actionable critical trading alerts.
+    2. Historical retrospectives from years ago (e.g. events in 2021)
+       are flagged as historical and excluded from breaking news alerts.
+    """
+    from app.sentiment.weighting import detect_catalysts, detect_catalyst
+
+    # 1. Hypothetical question
+    text_hypo = "What if NASA cancels Rocket Lab contract if the next milestone slips?"
+    hypo_cats = detect_catalysts(text_hypo, include_hypothetical=True)
+    assert len(hypo_cats) >= 1
+    assert hypo_cats[0].get("is_hypothetical") is True
+    assert hypo_cats[0]["importance"] == "LOW"
+
+    # Top actionable catalyst must be None for hypothetical speculation
+    act_type, act_dir, act_imp = detect_catalyst(text_hypo)
+    assert act_type is None, f"Hypothetical speculation must not trigger actionable catalyst alert, got {act_type}"
+
+    # 2. Historical past event
+    text_hist = "Rocket Lab previously lost a contract in 2021 before restructuring operations."
+    hist_cats = detect_catalysts(text_hist, include_historical=True)
+    assert len(hist_cats) >= 1
+    assert hist_cats[0].get("is_historical") is True
+    assert hist_cats[0]["importance"] == "LOW"
+
+    # Top actionable catalyst must be None for historical retrospect
+    h_type, h_dir, h_imp = detect_catalyst(text_hist)
+    assert h_type is None, f"Historical retrospective must not trigger actionable catalyst alert, got {h_type}"
+
+
+def test_catalyst_competitor_rivalry():
+    """
+    Validates that competitor selection over a company (e.g. 'NASA selects SpaceX over Rocket Lab')
+    is identified as a BEARISH catalyst for the passed-over entity.
+    """
+    from app.sentiment.weighting import detect_catalysts, detect_catalyst
+
+    text_rival = "NASA selects SpaceX over Rocket Lab for the Artemis lunar transport contract."
+    cats = detect_catalysts(text_rival, ticker="RKLB")
+    assert len(cats) >= 1
+    assert cats[0]["category"] == "GOVERNMENT_CONTRACT"
+    assert cats[0]["direction"] == "BEARISH"
+    assert cats[0]["importance"] == "CRITICAL"
+
+    c_type, c_dir, c_imp = detect_catalyst(text_rival, ticker="RKLB")
+    assert c_type == "GOVERNMENT_CONTRACT"
+    assert c_dir == "BEARISH"
+    assert c_imp == "CRITICAL"
+
 
 
 

@@ -7,20 +7,17 @@ from sqlalchemy.orm import Session
 from app.database.connection import get_db, SessionLocal
 from app.database.models import JobRunModel
 from app.database.repository import create_job_run, finish_job_run
-from app.jobs.runner import run_full_pipeline
+from app.jobs.runner import run_full_pipeline, PIPELINE_LOCK
 
 logger = logging.getLogger("SMIE.JobsAPI")
 router = APIRouter(tags=["Jobs"])
 
-# Concurrency Mutex Lock: prevents overlapping executions from racing against SQLite
-_PIPELINE_LOCK = asyncio.Lock()
-
 
 async def _execute_pipeline_task(job_id: int):
-    """Worker task executed by BackgroundTasks; releases the exclusive lock on exit."""
+    """Worker task executed by BackgroundTasks."""
     try:
         logger.info(f"Starting background pipeline execution for job_id={job_id}...")
-        await run_full_pipeline(existing_job_id=job_id)
+        await run_full_pipeline(existing_job_id=job_id, lock_already_acquired=True)
     except Exception as e:
         logger.exception(f"Fatal error in background pipeline task {job_id}: {e}")
         db = SessionLocal()
@@ -29,8 +26,8 @@ async def _execute_pipeline_task(job_id: int):
         finally:
             db.close()
     finally:
-        if _PIPELINE_LOCK.locked():
-            _PIPELINE_LOCK.release()
+        if PIPELINE_LOCK.locked():
+            PIPELINE_LOCK.release()
 
 
 @router.post("/api/jobs/run", status_code=202)
@@ -43,25 +40,24 @@ async def trigger_full_pipeline_job(
     Returns HTTP 202 Accepted with job_id immediately to prevent proxy timeouts.
     Rejects overlapping concurrent requests with HTTP 409 Conflict.
     """
-    if _PIPELINE_LOCK.locked():
+    if PIPELINE_LOCK.locked():
         raise HTTPException(
             status_code=409,
             detail="A pipeline execution is already in progress. Please wait for it to complete."
         )
 
-    # Acquire lock atomically in handler before responding
-    await _PIPELINE_LOCK.acquire()
+    await PIPELINE_LOCK.acquire()
 
     try:
         # 1. Create Job record in database
         job_run = create_job_run(db, "smie_full_pipeline")
         job_id = job_run.id
 
-        # 2. Schedule background task that releases the lock in finally
+        # 2. Schedule background task
         background_tasks.add_task(_execute_pipeline_task, job_id)
     except Exception:
-        if _PIPELINE_LOCK.locked():
-            _PIPELINE_LOCK.release()
+        if PIPELINE_LOCK.locked():
+            PIPELINE_LOCK.release()
         raise
 
     return JSONResponse(

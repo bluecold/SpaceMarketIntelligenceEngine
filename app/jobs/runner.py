@@ -11,7 +11,7 @@ from app.database.repository import (
     save_prediction_markets, get_recent_prediction_markets,
     save_divergences, save_alerts, save_market_snapshot, get_latest_market_snapshot,
     save_ssi_snapshot, get_latest_ssi_snapshot, get_historical_ssi_snapshot,
-    create_job_run, finish_job_run
+    create_job_run, finish_job_run, utc_now
 )
 from app.collectors.mock_x_provider import MockXProvider
 from app.collectors.twikit_provider import TwikitProvider
@@ -30,7 +30,7 @@ from app.scoring.social import calculate_social_score
 from app.scoring.prediction import calculate_prediction_market_score
 from app.scoring.momentum import calculate_momentum_score
 from app.scoring.risk import calculate_risk_score
-from app.scoring.fundamentals import calculate_fundamental_score
+from app.scoring.fundamentals import calculate_fundamental_score, get_fundamental_runway_info
 from app.scoring.smi import calculate_smi
 from app.scoring.signal import generate_signal_and_explanation
 from app.divergence.detector import detect_divergences
@@ -48,6 +48,8 @@ def get_x_provider():
 
 
 def get_news_provider():
+    if getattr(settings, "NEWS_PROVIDER", "rss").lower() == "mock":
+        return MockNewsProvider()
     return GoogleRSSNewsProvider()
 
 
@@ -57,18 +59,185 @@ def get_polymarket_provider():
     return MockPolymarketProvider()
 
 
-async def run_full_pipeline(existing_job_id: Optional[int] = None) -> Dict[str, Any]:
-    """
-    Executes the complete SMIE v2.0 Modular Pipeline:
-    1. Collect Social Posts & analyze sentiment/catalysts (XProvider)
-    2. Collect Prediction Markets & calculate PMS (PolymarketProvider)
-    3. Collect News & analyze catalysts (NewsProvider)
-    4. Collect Market Data & compute technical indicators (MarketProvider)
-    5. Calculate Multivariable SMI, Confidence, Signals & Tripartite Divergences
-    6. Save immutable snapshots and divergences to SQLite
-    
-    Includes strict Job Failure Isolation: failure in one provider does NOT halt the others.
-    """
+async def ingest_prediction_markets(db: SessionLocal, poly_provider=None) -> List[Any]:
+    """Ingest and persist Polymarket prediction markets."""
+    if not getattr(settings, "POLYMARKET_ENABLED", True):
+        return []
+    if poly_provider is None:
+        poly_provider = get_polymarket_provider()
+    logger.info("Ingesting Polymarket prediction markets...")
+    poly_markets = await poly_provider.get_markets()
+    if poly_markets:
+        save_prediction_markets(db, poly_markets)
+    return poly_markets or []
+
+
+async def ingest_social_posts_for_ticker(
+    db: SessionLocal,
+    ticker_config,
+    x_provider=None,
+    sentiment_classifier=None
+) -> tuple[int, List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Ingest and persist social posts for a specific ticker with NLP feature extraction."""
+    if x_provider is None:
+        x_provider = get_x_provider()
+    if sentiment_classifier is None:
+        sentiment_classifier = get_sentiment_classifier()
+
+    ticker = ticker_config.symbol
+    query = f"${ticker} OR \"{ticker_config.name}\""
+    posts_data = await x_provider.search(
+        query=query, ticker=ticker, max_results=settings.SOCIAL_MAX_POSTS_PER_TICKER
+    )
+
+    texts = [p.text for p in posts_data]
+    sentiments = sentiment_classifier.analyze_batch(texts) if texts else []
+    processed_posts = []
+    catalysts_found = []
+
+    for i, p in enumerate(posts_data):
+        sent_res = sentiments[i] if i < len(sentiments) else sentiment_classifier.analyze(p.text)
+        rel_score = calculate_relevance_score(p.text, ticker, ticker_config.aliases)
+        rec_weight = calculate_recency_weight(p.created_at)
+        eng_score = calculate_engagement_score(p.likes, p.reposts, p.replies, p.views)
+
+        post_cats = detect_catalysts(p.text)
+        if rel_score >= 0.30:
+            for c in post_cats:
+                catalysts_found.append({"category": c["category"], "direction": c["direction"], "importance": c["importance"]})
+
+        top_cat = post_cats[0] if post_cats else None
+        cat_type = top_cat["category"] if top_cat else None
+        cat_dir = top_cat["direction"] if top_cat else None
+        cat_imp = top_cat["importance"] if top_cat else "MEDIUM"
+
+        processed_posts.append({
+            "tweet_id": p.tweet_id,
+            "ticker": ticker,
+            "username": p.username,
+            "text": p.text,
+            "url": p.url,
+            "created_at": p.created_at,
+            "likes": p.likes,
+            "reposts": p.reposts,
+            "replies": p.replies,
+            "views": p.views,
+            "sentiment_score": sent_res.score,
+            "sentiment_label": sent_res.label,
+            "sentiment_confidence": sent_res.confidence,
+            "relevance_score": rel_score,
+            "engagement_score": eng_score,
+            "recency_weight": rec_weight,
+            "catalyst": cat_type,
+            "catalyst_direction": cat_dir,
+            "catalyst_importance": cat_imp,
+            "source": getattr(p, "source", "LIVE")
+        })
+
+    saved_count = 0
+    if processed_posts:
+        saved_count = save_social_posts(db, processed_posts)
+    return saved_count, processed_posts, catalysts_found
+
+
+async def ingest_news_for_ticker(
+    db: SessionLocal,
+    ticker_config,
+    news_provider=None,
+    sentiment_classifier=None
+) -> tuple[int, List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Ingest and persist news items for a specific ticker with NLP feature extraction."""
+    if news_provider is None:
+        news_provider = get_news_provider()
+    if sentiment_classifier is None:
+        sentiment_classifier = get_sentiment_classifier()
+
+    ticker = ticker_config.symbol
+    news_items = await news_provider.fetch_news(query=f"{ticker} {ticker_config.name}", ticker=ticker, max_results=20)
+    processed_news = []
+    catalysts_found = []
+
+    for n in news_items:
+        text_content = f"{n.title}. {n.summary}"
+        sent_res = sentiment_classifier.analyze(text_content)
+        rel_score = calculate_relevance_score(text_content, ticker, ticker_config.aliases)
+        news_cats = detect_catalysts(text_content)
+        if rel_score >= 0.30:
+            for c in news_cats:
+                catalysts_found.append({"category": c["category"], "direction": c["direction"], "importance": c["importance"]})
+
+        top_cat = news_cats[0] if news_cats else None
+        cat_type = top_cat["category"] if top_cat else None
+        cat_dir = top_cat["direction"] if top_cat else None
+        cat_imp = top_cat["importance"] if top_cat else "MEDIUM"
+
+        processed_news.append({
+            "ticker": ticker,
+            "title": n.title,
+            "summary": n.summary,
+            "source": n.source,
+            "url": n.url,
+            "published_at": n.published_at,
+            "sentiment_score": sent_res.score,
+            "sentiment_label": sent_res.label,
+            "sentiment_confidence": sent_res.confidence,
+            "relevance_score": rel_score,
+            "catalyst": cat_type,
+            "catalyst_direction": cat_dir,
+            "catalyst_importance": cat_imp
+        })
+
+    saved_count = 0
+    if processed_news:
+        saved_count = save_news_items(db, processed_news)
+    return saved_count, processed_news, catalysts_found
+
+
+async def ingest_market_for_ticker(
+    db: SessionLocal,
+    ticker_config,
+    market_provider=None
+) -> tuple[Dict[str, Any], Optional[Any]]:
+    """Fetch market data, calculate technical indicators & score, and persist snapshot."""
+    if market_provider is None:
+        market_provider = YFinanceMarketProvider()
+    ticker = ticker_config.symbol
+    indicators = {
+        "status": "AVAILABLE" if not ticker_config.is_private_or_test else "DATA_UNAVAILABLE",
+        "price": None, "volume": None, "ema200": None, "rsi14": None, "technical_score": None
+    }
+    raw_market_df = None
+    mkt_data = await market_provider.fetch_market_data(ticker)
+    raw_market_df = mkt_data.raw_df
+    if mkt_data.status == "AVAILABLE" and raw_market_df is not None:
+        indicators = calculate_technical_indicators(raw_market_df)
+        indicators["price"] = mkt_data.price
+        indicators["volume"] = mkt_data.volume
+        indicators["status"] = "AVAILABLE"
+        tech_score_raw = calculate_technical_score(indicators)
+        indicators["technical_score"] = tech_score_raw
+    else:
+        indicators["status"] = mkt_data.status
+        indicators["price"] = mkt_data.price
+        indicators["volume"] = mkt_data.volume
+
+    mkt_snap_data = {
+        "ticker": ticker,
+        "observed_at": mkt_data.observed_at,
+        "candle_date": mkt_data.candle_date,
+        "market_session": mkt_data.market_session,
+        **indicators,
+    }
+    save_market_snapshot(db, mkt_snap_data)
+    return indicators, raw_market_df
+
+
+# Centralized Mutex Lock preventing concurrent pipeline execution races
+PIPELINE_LOCK = asyncio.Lock()
+
+
+async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> Dict[str, Any]:
+    """Core pipeline execution logic."""
     init_db()
     db = SessionLocal()
     if existing_job_id is not None:
@@ -89,16 +258,16 @@ async def run_full_pipeline(existing_job_id: Optional[int] = None) -> Dict[str, 
         poly_provider = get_polymarket_provider()
         sentiment_classifier = get_sentiment_classifier()
 
-        # Step 0: Ingest Polymarket Prediction Markets globally for the sector
+        # Step 0: Ingest Polymarket Prediction Markets globally for the sector (if enabled)
         poly_markets = []
-        try:
-            logger.info("Ingesting Polymarket prediction markets...")
-            poly_markets = await poly_provider.get_markets()
-            if poly_markets:
-                save_prediction_markets(db, poly_markets)
+        if getattr(settings, "POLYMARKET_ENABLED", True):
+            try:
+                poly_markets = await ingest_prediction_markets(db, poly_provider=poly_provider)
                 records_processed += len(poly_markets)
-        except Exception as e:
-            logger.error(f"Polymarket collection error (isolated): {e}")
+            except Exception as e:
+                logger.error(f"Polymarket collection error (isolated): {e}")
+        else:
+            logger.info("Polymarket collection is disabled (POLYMARKET_ENABLED=False).")
 
         # Process each configured ticker
         for ticker_config in INITIAL_TICKERS:
@@ -109,55 +278,11 @@ async def run_full_pipeline(existing_job_id: Optional[int] = None) -> Dict[str, 
             posts_data = []
             catalysts_found = []
             try:
-                query = f"${ticker} OR \"{ticker_config.name}\""
-                posts_data = await x_provider.search(
-                    query=query, ticker=ticker, max_results=settings.SOCIAL_MAX_POSTS_PER_TICKER
+                saved_count, posts_data, soc_cats = await ingest_social_posts_for_ticker(
+                    db, ticker_config, x_provider=x_provider, sentiment_classifier=sentiment_classifier
                 )
-                
-                texts = [p.text for p in posts_data]
-                sentiments = sentiment_classifier.analyze_batch(texts) if texts else []
-                processed_posts = []
-
-                for i, p in enumerate(posts_data):
-                    sent_res = sentiments[i] if i < len(sentiments) else sentiment_classifier.analyze(p.text)
-                    rel_score = calculate_relevance_score(p.text, ticker, ticker_config.aliases)
-                    rec_weight = calculate_recency_weight(p.created_at)
-                    eng_score = calculate_engagement_score(p.likes, p.reposts, p.replies, p.views)
-                    
-                    post_cats = detect_catalysts(p.text)
-                    for c in post_cats:
-                        catalysts_found.append({"category": c["category"], "direction": c["direction"], "importance": c["importance"]})
-
-                    top_cat = post_cats[0] if post_cats else None
-                    cat_type = top_cat["category"] if top_cat else None
-                    cat_dir = top_cat["direction"] if top_cat else None
-                    cat_imp = top_cat["importance"] if top_cat else "MEDIUM"
-
-                    processed_posts.append({
-                        "tweet_id": p.tweet_id,
-                        "ticker": ticker,
-                        "username": p.username,
-                        "text": p.text,
-                        "url": p.url,
-                        "created_at": p.created_at,
-                        "likes": p.likes,
-                        "reposts": p.reposts,
-                        "replies": p.replies,
-                        "views": p.views,
-                        "sentiment_score": sent_res.score,
-                        "sentiment_label": sent_res.label,
-                        "sentiment_confidence": sent_res.confidence,
-                        "relevance_score": rel_score,
-                        "engagement_score": eng_score,
-                        "recency_weight": rec_weight,
-                        "catalyst": cat_type,
-                        "catalyst_direction": cat_dir,
-                        "catalyst_importance": cat_imp
-                    })
-
-                if processed_posts:
-                    save_social_posts(db, processed_posts)
-                    records_processed += len(processed_posts)
+                catalysts_found.extend(soc_cats)
+                records_processed += len(posts_data)
             except Exception as e:
                 logger.error(f"Social collection error for {ticker} (isolated): {e}")
 
@@ -167,56 +292,32 @@ async def run_full_pipeline(existing_job_id: Optional[int] = None) -> Dict[str, 
             pms_quality = 50.0
             pms_breakdown = {}
             prediction_count = 0
-            try:
-                # Filter directly from in-memory poly_markets (single network fetch for the entire sector)
-                direct_markets = [m for m in poly_markets if m.ticker and m.ticker.upper() == ticker.upper()]
-                sector_events = [m for m in poly_markets if m.event_key is not None and (not m.ticker or m.ticker.upper() != ticker.upper())]
-                
-                pms_score, pms_confidence, pms_quality, pms_breakdown = calculate_prediction_market_score(
-                    ticker=ticker,
-                    direct_markets=direct_markets,
-                    sector_events=sector_events
-                )
-                prediction_count = pms_breakdown.get("market_count", len(pms_breakdown.get("markets", [])))
-            except Exception as e:
-                logger.error(f"Prediction market scoring error for {ticker} (isolated): {e}")
+            direct_markets = []
+            sector_events = []
+            if getattr(settings, "POLYMARKET_ENABLED", True):
+                try:
+                    # Filter directly from in-memory poly_markets (single network fetch for the entire sector)
+                    direct_markets = [m for m in poly_markets if m.ticker and m.ticker.upper() == ticker.upper()]
+                    sector_events = [m for m in poly_markets if m.event_key is not None and (not m.ticker or m.ticker.upper() != ticker.upper())]
+                    
+                    pms_score, pms_confidence, pms_quality, pms_breakdown = calculate_prediction_market_score(
+                        ticker=ticker,
+                        direct_markets=direct_markets,
+                        sector_events=sector_events
+                    )
+                    prediction_count = pms_breakdown.get("market_count", len(pms_breakdown.get("markets", [])))
+                except Exception as e:
+                    logger.error(f"Prediction market scoring error for {ticker} (isolated): {e}")
+            else:
+                pms_breakdown = {"status": "DISABLED", "reason": "POLYMARKET_ENABLED=False"}
 
             # --- STEP 3: NEWS COLLECTION & CATALYSTS ---
             try:
-                news_items = await news_provider.fetch_news(query=f"{ticker} {ticker_config.name}", ticker=ticker, max_results=20)
-                processed_news = []
-                for n in news_items:
-                    text_content = f"{n.title}. {n.summary}"
-                    sent_res = sentiment_classifier.analyze(text_content)
-                    rel_score = calculate_relevance_score(text_content, ticker, ticker_config.aliases)
-                    news_cats = detect_catalysts(text_content)
-                    for c in news_cats:
-                        catalysts_found.append({"category": c["category"], "direction": c["direction"], "importance": c["importance"]})
-
-                    top_cat = news_cats[0] if news_cats else None
-                    cat_type = top_cat["category"] if top_cat else None
-                    cat_dir = top_cat["direction"] if top_cat else None
-                    cat_imp = top_cat["importance"] if top_cat else "MEDIUM"
-
-                    processed_news.append({
-                        "ticker": ticker,
-                        "title": n.title,
-                        "summary": n.summary,
-                        "source": n.source,
-                        "url": n.url,
-                        "published_at": n.published_at,
-                        "sentiment_score": sent_res.score,
-                        "sentiment_label": sent_res.label,
-                        "sentiment_confidence": sent_res.confidence,
-                        "relevance_score": rel_score,
-                        "catalyst": cat_type,
-                        "catalyst_direction": cat_dir,
-                        "catalyst_importance": cat_imp
-                    })
-
-                if processed_news:
-                    save_news_items(db, processed_news)
-                    records_processed += len(processed_news)
+                saved_count, processed_news, news_cats = await ingest_news_for_ticker(
+                    db, ticker_config, news_provider=news_provider, sentiment_classifier=sentiment_classifier
+                )
+                catalysts_found.extend(news_cats)
+                records_processed += len(processed_news)
             except Exception as e:
                 logger.error(f"News collection error for {ticker} (isolated): {e}")
 
@@ -225,39 +326,29 @@ async def run_full_pipeline(existing_job_id: Optional[int] = None) -> Dict[str, 
                 "status": "AVAILABLE" if not ticker_config.is_private_or_test else "DATA_UNAVAILABLE",
                 "price": None, "volume": None, "ema200": None, "rsi14": None, "technical_score": None
             }
-            tech_score_raw = None
             raw_market_df = None
             try:
-                mkt_data = await market_provider.fetch_market_data(ticker)
-                raw_market_df = mkt_data.raw_df
-                if mkt_data.status == "AVAILABLE" and raw_market_df is not None:
-                    indicators = calculate_technical_indicators(raw_market_df)
-                    indicators["price"] = mkt_data.price
-                    indicators["volume"] = mkt_data.volume
-                    indicators["status"] = "AVAILABLE"
-                    tech_score_raw = calculate_technical_score(indicators)
-                    indicators["technical_score"] = tech_score_raw
-                else:
-                    indicators["status"] = mkt_data.status
-
-                mkt_snap_data = {"ticker": ticker, **indicators}
-                save_market_snapshot(db, mkt_snap_data)
+                indicators, raw_market_df = await ingest_market_for_ticker(
+                    db, ticker_config, market_provider=market_provider
+                )
                 records_processed += 1
             except Exception as e:
                 logger.error(f"Market data error for {ticker} (isolated): {e}")
                 indicators["status"] = "ERROR"
 
             # --- STEP 5: COMPUTE SCORES, SMI, CONFIDENCE & SIGNALS ---
+            now_eval = utc_now()
             recent_posts = get_recent_social_posts(db, ticker, hours=settings.SOCIAL_LOOKBACK_HOURS)
-            social_res = calculate_social_score(recent_posts)
+            social_res = calculate_social_score(recent_posts, analysis_timestamp=now_eval)
             social_score = social_res["social_score"]
 
             recent_news = get_recent_news_items(db, ticker, days=3)
-            news_res = calculate_news_score(recent_news)
+            news_res = calculate_news_score(recent_news, analysis_timestamp=now_eval)
             news_score = news_res.get("news_score") if isinstance(news_res, dict) else news_res
 
             momentum_score = calculate_momentum_score(indicators, raw_df=raw_market_df)
             risk_score = calculate_risk_score(indicators, raw_df=raw_market_df)
+            tech_score_raw = indicators.get("technical_score")
 
             # Extract fundamental data (Cash runway, solvency, growth, margins)
             fundamental_score = None
@@ -299,7 +390,7 @@ async def run_full_pipeline(existing_job_id: Optional[int] = None) -> Dict[str, 
                 previous_smi_1d=prev_smi_1d,
                 previous_smi_3d=prev_smi_3d,
                 previous_smi_5d=prev_smi_5d,
-                post_count=len(recent_posts),
+                post_count=social_res.get("effective_sample_size", len(recent_posts)),
                 news_count=len(recent_news),
                 prediction_count=prediction_count
             )
@@ -340,10 +431,11 @@ async def run_full_pipeline(existing_job_id: Optional[int] = None) -> Dict[str, 
                     soc_src = "LIVE"
 
             # 2. Prediction Market Provenance from actual markets in window
-            if not settings.POLYMARKET_ENABLED or prediction_count == 0:
+            if not getattr(settings, "POLYMARKET_ENABLED", True) or prediction_count == 0:
                 pred_src = "EXCLUDED"
             else:
-                is_mock_m = lambda m: getattr(m, "source", "") == "MOCK" or str(m.external_id).startswith("mock_") or "mock" in str(m.external_id)
+                relevant_markets = direct_markets + sector_events
+                is_mock_m = lambda m: getattr(m, "source", "") == "MOCK" or str(getattr(m, "external_id", "")).startswith("mock_")
                 mock_m_count = sum(1 for m in relevant_markets if is_mock_m(m))
                 if mock_m_count == len(relevant_markets) or settings.POLYMARKET_PROVIDER.lower() == "mock":
                     pred_src = "MOCK"
@@ -356,20 +448,29 @@ async def run_full_pipeline(existing_job_id: Optional[int] = None) -> Dict[str, 
             if len(recent_news) == 0:
                 news_src = "EXCLUDED"
             else:
-                is_mock_n = lambda n: getattr(n, "source", "") == "Mock News" or str(n.url).startswith("mock_")
+                is_mock_n = lambda n: getattr(n, "source", "") in ["Mock News", "MOCK"] or str(getattr(n, "url", "")).startswith("mock_")
                 mock_n_count = sum(1 for n in recent_news if is_mock_n(n))
-                if mock_n_count == len(recent_news):
+                if mock_n_count == len(recent_news) or settings.NEWS_PROVIDER.lower() == "mock":
                     news_src = "MOCK"
                 elif mock_n_count > 0:
                     news_src = "DEGRADED"
                 else:
                     news_src = "LIVE"
 
-            mkt_src = "LIVE" if (indicators.get("status") == "AVAILABLE" and indicators.get("price") is not None) else "DEGRADED"
+            # 4. Market Data Provenance
+            if indicators["status"] == "DATA_UNAVAILABLE":
+                mkt_src = "EXCLUDED"
+            elif indicators["status"] in ["DEGRADED", "STALE"]:
+                mkt_src = "DEGRADED"
+            elif indicators["status"] == "AVAILABLE":
+                mkt_src = "LIVE"
+            else:
+                mkt_src = "DEGRADED"
 
+            # 5. Overall Pipeline Snapshot Provenance
             if soc_src == "MOCK" or pred_src == "MOCK" or news_src == "MOCK":
                 overall_data_src = "MOCK"
-            elif soc_src in ["EXCLUDED", "DEGRADED"] or pred_src in ["EXCLUDED", "DEGRADED"] or news_src in ["EXCLUDED", "DEGRADED"] or mkt_src == "DEGRADED":
+            elif soc_src in ["EXCLUDED", "DEGRADED"] or pred_src in ["EXCLUDED", "DEGRADED"] or news_src in ["EXCLUDED", "DEGRADED"] or mkt_src in ["EXCLUDED", "DEGRADED"]:
                 overall_data_src = "DEGRADED"
             else:
                 overall_data_src = "LIVE"
@@ -382,6 +483,9 @@ async def run_full_pipeline(existing_job_id: Optional[int] = None) -> Dict[str, 
             for al in alerts_to_save:
                 al["data_source"] = overall_data_src
             save_alerts(db, ticker, alerts_to_save)
+
+            runway_info = get_fundamental_runway_info(fund_raw)
+            eff_runway = runway_info.get("runway_months")
 
             snapshot_data = {
                 "ticker": ticker,
@@ -403,7 +507,12 @@ async def run_full_pipeline(existing_job_id: Optional[int] = None) -> Dict[str, 
                 "confidence": smi_dict["confidence"],
                 "data_completeness": smi_dict["data_quality"],
                 "data_quality": smi_dict["data_quality"],
-                "post_count": len(recent_posts),
+                "prediction_quality": pms_quality,
+                "post_count": social_res.get("effective_sample_size", len(recent_posts)),
+                "raw_post_count": social_res.get("raw_post_count", len(recent_posts)),
+                "relevant_post_count": social_res.get("relevant_post_count", len(recent_posts)),
+                "unique_post_count": social_res.get("unique_post_count", len(recent_posts)),
+                "author_count": social_res.get("author_count", 0),
                 "news_count": len(recent_news),
                 "prediction_count": prediction_count,
                 "data_source": overall_data_src,
@@ -413,6 +522,12 @@ async def run_full_pipeline(existing_job_id: Optional[int] = None) -> Dict[str, 
                 "market_source": mkt_src,
                 "price": indicators.get("price"),
                 "volume": indicators.get("volume"),
+                "rsi14": indicators.get("rsi14"),
+                "market_status": indicators.get("status", "AVAILABLE"),
+                "runway_months": eff_runway,
+                "fundamentals": fund_raw,
+                "effective_weights": smi_dict.get("effective_weights"),
+                "rules_version": getattr(settings, "RULES_VERSION", "2.0.0"),
                 "explanation": signal_res["explanation"]
             }
 
@@ -453,3 +568,18 @@ async def run_full_pipeline(existing_job_id: Optional[int] = None) -> Dict[str, 
         return {"status": "ERROR", "error": str(e)}
     finally:
         db.close()
+
+
+async def run_full_pipeline(
+    existing_job_id: Optional[int] = None,
+    lock_already_acquired: bool = False
+) -> Dict[str, Any]:
+    """
+    Executes the complete SMIE v2.0 Modular Pipeline.
+    Protected by PIPELINE_LOCK across all entrypoints (API, Scheduler, CLI).
+    If lock_already_acquired is True (e.g. from API endpoint), proceeds directly to execution.
+    """
+    if lock_already_acquired:
+        return await _run_full_pipeline_internal(existing_job_id=existing_job_id)
+    async with PIPELINE_LOCK:
+        return await _run_full_pipeline_internal(existing_job_id=existing_job_id)

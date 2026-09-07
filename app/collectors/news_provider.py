@@ -95,16 +95,16 @@ class MockNewsProvider(BaseNewsProvider):
                 ticker=ticker,
                 title=f"{ticker} announces major satellite constellation deployment milestone",
                 summary=f"Commercial aerospace firm {ticker} reaches critical orbital milestone.",
-                source="SpaceNews",
-                url=f"https://spacenews.com/mock-{ticker.lower()}-1",
+                source="Mock News",
+                url=f"mock_https://spacenews.com/mock-{ticker.lower()}-1",
                 published_at=now
             ),
             NewsItemData(
                 ticker=ticker,
                 title=f"Defense agency awards government payload defense contract to {ticker}",
                 summary=f"New recurring revenue partnership sealed by {ticker}.",
-                source="AviationWeek",
-                url=f"https://aviationweek.com/mock-{ticker.lower()}-2",
+                source="Mock News",
+                url=f"mock_https://aviationweek.com/mock-{ticker.lower()}-2",
                 published_at=now
             )
         ]

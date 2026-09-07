@@ -138,7 +138,11 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
         "volume_ma20": mkt_snap.volume_ma20 if mkt_snap else None,
         "volume_ratio": mkt_snap.volume_ratio if mkt_snap else None,
         "atr": mkt_snap.atr if mkt_snap else None,
-        "technical_score": mkt_snap.technical_score if mkt_snap else None
+        "technical_score": mkt_snap.technical_score if mkt_snap else None,
+        "observed_at": mkt_snap.observed_at.isoformat() + "Z" if (mkt_snap and mkt_snap.observed_at) else None,
+        "candle_date": mkt_snap.candle_date if mkt_snap else None,
+        "market_session": mkt_snap.market_session if mkt_snap else None,
+        "collected_at": mkt_snap.timestamp.isoformat() + "Z" if (mkt_snap and mkt_snap.timestamp) else None,
     }
 
     reasons = [line for line in (ssi_snap.explanation.split("\n") if ssi_snap and ssi_snap.explanation else [])]
@@ -174,6 +178,11 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
             "data_completeness": ssi_snap.data_completeness if ssi_snap else 0.0,
             "smi_momentum_1d": ssi_snap.ssi_momentum_1d if ssi_snap else None,
             "price": ssi_snap.price if ssi_snap else None,
+            "data_source": getattr(ssi_snap, "data_source", "LIVE") if ssi_snap else "LIVE",
+            "social_source": getattr(ssi_snap, "social_source", "LIVE") if ssi_snap else "LIVE",
+            "prediction_source": getattr(ssi_snap, "prediction_source", "LIVE") if ssi_snap else "LIVE",
+            "news_source": getattr(ssi_snap, "news_source", "LIVE") if ssi_snap else "LIVE",
+            "market_source": getattr(ssi_snap, "market_source", "LIVE") if ssi_snap else "LIVE",
             "timestamp": ssi_snap.timestamp.isoformat() + "Z" if ssi_snap and ssi_snap.timestamp else None,
             "data_age_hours": age_hours,
             "is_stale": is_stale

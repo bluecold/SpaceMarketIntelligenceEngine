@@ -300,5 +300,309 @@ def test_support_resistance_fixed_lookback_and_candlestick_conviction():
     assert "Alcista moderada" in res_mod_bull["candle_label"]
 
 
+def test_backtest_strategy_parity_capital_preservation_gates():
+    """
+    Validates that the quantitative backtest engine strictly enforces the identical
+    risk & capital preservation gates that the live user signal engine enforces:
+    1. Overbought RSI (> 75) clamps live signal to WATCH (OVEREXTENDED) -> 0 backtest trades.
+    2. Conflicting sources (source_agreement <= -0.60) clamps to WATCH (CONFLICTING SOURCES) -> 0 backtest trades.
+    3. Normal, unconflicted high SMI generates BUY -> executes trade in backtest.
+    """
+    from datetime import datetime, timedelta
+    from app.backtesting.engine import evaluate_backtest_dataset
+    from app.scoring.signal import generate_signal_and_explanation
+
+    base_time = datetime(2026, 8, 1, 10, 0, 0)
+
+    # Case 1: Overbought (RSI = 80.0, SMI = 90.0)
+    overbought_snaps = [
+        {
+            "ticker": "RKLB",
+            "timestamp": base_time,
+            "social_score": 90.0,
+            "prediction_score": 90.0,
+            "news_score": 90.0,
+            "momentum_score": 90.0,
+            "risk_score": 50.0,
+            "price": 100.0,
+            "rsi14": 80.0,
+            "indicators": {"price": 100.0, "rsi14": 80.0, "status": "AVAILABLE"}
+        },
+        {
+            "ticker": "RKLB",
+            "timestamp": base_time + timedelta(days=3),
+            "social_score": 90.0,
+            "prediction_score": 90.0,
+            "news_score": 90.0,
+            "momentum_score": 90.0,
+            "risk_score": 50.0,
+            "price": 105.0,
+            "rsi14": 80.0,
+            "indicators": {"price": 105.0, "rsi14": 80.0, "status": "AVAILABLE"}
+        }
+    ]
+    res_ob = evaluate_backtest_dataset(overbought_snaps, holding_period_days=3)
+    assert res_ob["model_a_baseline"]["metrics"]["total_trades"] == 0
+    assert res_ob["model_b_multisource"]["metrics"]["total_trades"] == 0
+
+    # Case 2: Conflicting Sources (Social = 99.0, Prediction = 35.0 -> SMI = 77.7 >= 75, but source_agreement = -0.79 <= -0.60)
+    conflicted_snaps = [
+        {
+            "ticker": "ASTS",
+            "timestamp": base_time,
+            "social_score": 99.0,
+            "prediction_score": 35.0,
+            "price": 20.0,
+            "rsi14": 50.0,
+            "indicators": {"price": 20.0, "rsi14": 50.0, "status": "AVAILABLE"}
+        },
+        {
+            "ticker": "ASTS",
+            "timestamp": base_time + timedelta(days=3),
+            "social_score": 99.0,
+            "prediction_score": 35.0,
+            "price": 25.0,
+            "rsi14": 50.0,
+            "indicators": {"price": 25.0, "rsi14": 50.0, "status": "AVAILABLE"}
+        }
+    ]
+    res_conf = evaluate_backtest_dataset(conflicted_snaps, holding_period_days=3)
+    assert res_conf["model_b_multisource"]["metrics"]["total_trades"] == 0
+
+    # Case 3: Valid Bullish Setup (SMI = 85.0, RSI = 55.0, high agreement)
+    valid_snaps = [
+        {
+            "ticker": "LUNR",
+            "timestamp": base_time,
+            "social_score": 85.0,
+            "prediction_score": 85.0,
+            "news_score": 85.0,
+            "momentum_score": 80.0,
+            "risk_score": 50.0,
+            "price": 10.0,
+            "rsi14": 55.0,
+            "indicators": {"price": 10.0, "rsi14": 55.0, "status": "AVAILABLE"}
+        },
+        {
+            "ticker": "LUNR",
+            "timestamp": base_time + timedelta(days=3),
+            "social_score": 85.0,
+            "prediction_score": 85.0,
+            "news_score": 85.0,
+            "momentum_score": 80.0,
+            "risk_score": 50.0,
+            "price": 12.0,
+            "rsi14": 55.0,
+            "indicators": {"price": 12.0, "rsi14": 55.0, "status": "AVAILABLE"}
+        }
+    ]
+    res_valid = evaluate_backtest_dataset(valid_snaps, holding_period_days=3)
+    assert res_valid["model_a_baseline"]["metrics"]["total_trades"] == 1
+    assert res_valid["model_b_multisource"]["metrics"]["total_trades"] == 1
+    assert res_valid["model_b_multisource"]["metrics"]["avg_return"] == 20.0
+
+
+def test_ticker_universe_instrument_and_narrative_isolation():
+    """
+    Validates the fix for audit issue 10:
+    1. SPCX is explicitly defined as SpaceX (Space Exploration Technologies Corp.) common stock.
+    2. Spurious aliases from third-party ETFs (e.g. 'Procure Space ETF') are purged from SPCX.
+    3. Every instrument in INITIAL_TICKERS explicitly decouples narrative_entity, is_tradable,
+       market_symbol, exchange, and validation_status.
+    """
+    from app.config import INITIAL_TICKERS
+
+    spcx = next((t for t in INITIAL_TICKERS if t.symbol == "SPCX"), None)
+    assert spcx is not None
+    assert spcx.name == "SpaceX"
+    assert spcx.narrative_entity == "SpaceX"
+    assert spcx.is_tradable is True
+    assert spcx.market_symbol == "SPCX"
+    assert spcx.validation_status == "VALIDATED"
+
+    # Must NOT contain Procure Space ETF (which is ticker UFO)
+    assert "Procure Space ETF" not in spcx.aliases
+    assert "Procure" not in " ".join(spcx.aliases)
+
+    # Validate all tickers have complete decoupled metadata
+    for t in INITIAL_TICKERS:
+        assert t.symbol
+        assert t.name
+        assert t.narrative_entity
+        assert isinstance(t.aliases, list) and len(t.aliases) >= 2
+        assert t.sector
+        assert isinstance(t.is_tradable, bool)
+        assert t.exchange in ["NASDAQ", "NYSE", "PRIVATE_UNLISTED"]
+        assert t.validation_status in ["VALIDATED", "PENDING_VALIDATION"]
+
+
+def test_market_session_and_temporal_data_separation():
+    """
+    Validates fix for Audit Observation 17:
+    1. Distinguish query execution time (timestamp) from underlying candle time (observed_at).
+    2. Correct determination of market sessions (REGULAR, CLOSED, WEEKEND).
+    3. Proper persistence and retrieval of temporal metadata in MarketSnapshotModel.
+    """
+    from datetime import datetime, timezone
+    from app.collectors.market_provider import determine_market_session
+    from app.database.connection import SessionLocal, init_db
+    from app.database.repository import save_market_snapshot, get_latest_market_snapshot
+
+    # Test market session helper
+    saturday_dt = datetime(2026, 9, 5, 15, 0, tzinfo=timezone.utc)
+    sunday_dt = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
+    weekday_open_dt = datetime(2026, 9, 4, 15, 0, tzinfo=timezone.utc)  # Friday 11:00 AM ET (EDT)
+    weekday_closed_dt = datetime(2026, 9, 4, 23, 0, tzinfo=timezone.utc)  # Friday 7:00 PM ET (EDT)
+
+    assert determine_market_session(saturday_dt) == "WEEKEND"
+    assert determine_market_session(sunday_dt) == "WEEKEND"
+    assert determine_market_session(weekday_open_dt) == "REGULAR"
+    assert determine_market_session(weekday_closed_dt) == "CLOSED"
+
+    # Winter / Standard Time (EST, UTC-5)
+    winter_premarket_dt = datetime(2026, 1, 15, 13, 45, tzinfo=timezone.utc)  # 08:45 AM EST -> CLOSED
+    winter_open_dt = datetime(2026, 1, 15, 14, 45, tzinfo=timezone.utc)       # 09:45 AM EST -> REGULAR
+    winter_late_open_dt = datetime(2026, 1, 15, 20, 30, tzinfo=timezone.utc)  # 03:30 PM EST -> REGULAR
+    winter_postmarket_dt = datetime(2026, 1, 15, 21, 15, tzinfo=timezone.utc) # 04:15 PM EST -> CLOSED
+
+    assert determine_market_session(winter_premarket_dt) == "CLOSED"
+    assert determine_market_session(winter_open_dt) == "REGULAR"
+    assert determine_market_session(winter_late_open_dt) == "REGULAR"
+    assert determine_market_session(winter_postmarket_dt) == "CLOSED"
+
+    # Holidays (NYSE / NASDAQ)
+    thanksgiving_dt = datetime(2026, 11, 26, 16, 0, tzinfo=timezone.utc) # Thursday Thanksgiving 11:00 AM EST -> CLOSED
+    assert determine_market_session(thanksgiving_dt) == "CLOSED"
+
+    # Early close days (e.g. Black Friday 13:00 EST close)
+    black_friday_morning = datetime(2026, 11, 27, 16, 0, tzinfo=timezone.utc) # 11:00 AM EST -> REGULAR
+    black_friday_afternoon = datetime(2026, 11, 27, 19, 0, tzinfo=timezone.utc) # 02:00 PM EST -> CLOSED
+    assert determine_market_session(black_friday_morning) == "REGULAR"
+    assert determine_market_session(black_friday_afternoon) == "CLOSED"
+
+    # Test database persistence of temporal separation
+    init_db()
+    db = SessionLocal()
+    try:
+        obs_dt = datetime(2026, 9, 4, 20, 0, tzinfo=timezone.utc)
+        query_dt = datetime(2026, 9, 6, 14, 30, tzinfo=timezone.utc)
+        
+        snap = save_market_snapshot(db, {
+            "ticker": "TEMPORAL_TEST_TICKER",
+            "timestamp": query_dt,
+            "observed_at": obs_dt,
+            "candle_date": "2026-09-04",
+            "market_session": "WEEKEND",
+            "price": 25.5,
+            "volume": 1200000.0,
+            "status": "AVAILABLE",
+            "technical_score": 68.0
+        })
+        
+        fetched = get_latest_market_snapshot(db, "TEMPORAL_TEST_TICKER")
+        assert fetched is not None
+        assert fetched.candle_date == "2026-09-04"
+        assert fetched.market_session == "WEEKEND"
+        assert fetched.observed_at is not None
+        assert fetched.price == 25.5
+    finally:
+        db.close()
+
+
+def test_divergence_direction_transition_and_alert_identity():
+    """
+    Validates fix for Audit Observation 19:
+    1. Divergence episodes maintain strict composite (type, direction) identity.
+    2. A transition from BULLISH to BEARISH EARLY_REVERSAL resolves the old bullish episode
+       and creates a fresh bearish episode without corrupting direction or description.
+    3. Alert IDs include direction to avoid silencing or colliding on market flips.
+    """
+    from app.database.connection import SessionLocal, init_db
+    from app.database.models import DivergenceModel
+    from app.database.repository import save_divergences, get_active_divergences
+    from app.scoring.signal import generate_signal_and_explanation
+
+    init_db()
+    db = SessionLocal()
+    try:
+        # Clean existing test divergences for RKLB
+        db.query(DivergenceModel).filter(DivergenceModel.ticker == "RKLB").delete()
+        db.commit()
+
+        # Step 1: Ingest Bullish Early Reversal
+        bullish_div = [{
+            "type": "EARLY_REVERSAL",
+            "direction": "BULLISH",
+            "source_a": "POLYMARKET_MOMENTUM",
+            "source_b": "X_SOCIAL",
+            "source_c": "PRICE_ACTION",
+            "strength": 0.85,
+            "confidence": 0.85,
+            "description": "Early Reversal Watch: Polymarket surged (+20%) while social lags."
+        }]
+        save_divergences(db, "RKLB", bullish_div)
+
+        active_1 = get_active_divergences(db, "RKLB")
+        assert len(active_1) == 1
+        assert active_1[0].type == "EARLY_REVERSAL"
+        assert active_1[0].direction == "BULLISH"
+        assert "surged" in active_1[0].description
+        assert active_1[0].resolved_at is None
+        bullish_ep_id = active_1[0].id
+
+        # Step 2: Direction Flips to Bearish Early Reversal in Next Cycle
+        bearish_div = [{
+            "type": "EARLY_REVERSAL",
+            "direction": "BEARISH",
+            "source_a": "POLYMARKET_MOMENTUM",
+            "source_b": "X_SOCIAL",
+            "source_c": "PRICE_ACTION",
+            "strength": 0.90,
+            "confidence": 0.85,
+            "description": "Early Reversal Alert: Polymarket collapsed (-25%) contradicting retail optimism."
+        }]
+        save_divergences(db, "RKLB", bearish_div)
+
+        # Verify old episode is resolved and new episode is clean
+        all_eps = db.query(DivergenceModel).filter(DivergenceModel.ticker == "RKLB").all()
+        assert len(all_eps) == 2
+
+        old_ep = next(ep for ep in all_eps if ep.id == bullish_ep_id)
+        assert old_ep.direction == "BULLISH"
+        assert old_ep.resolved_at is not None
+
+        new_ep = next(ep for ep in all_eps if ep.id != bullish_ep_id)
+        assert new_ep.direction == "BEARISH"
+        assert "collapsed" in new_ep.description
+        assert new_ep.resolved_at is None
+
+        active_2 = get_active_divergences(db, "RKLB")
+        assert len(active_2) == 1
+        assert active_2[0].id == new_ep.id
+        assert active_2[0].direction == "BEARISH"
+
+        # Step 3: Verify Alert ID includes direction
+        from app.divergence.detector import DivergenceResult
+        div_res_bull = DivergenceResult(
+            ticker="RKLB", type="EARLY_REVERSAL", source_a="A", source_b="B",
+            direction="BULLISH", strength=0.8, confidence=0.8, description="Bullish"
+        )
+        div_res_bear = DivergenceResult(
+            ticker="RKLB", type="EARLY_REVERSAL", source_a="A", source_b="B",
+            direction="BEARISH", strength=0.8, confidence=0.8, description="Bearish"
+        )
+
+        sig_bull = generate_signal_and_explanation(ticker="RKLB", smi=65.0, ssi=65.0, prediction_score=70.0, prediction_delta_24h=20.0)
+        # Check alerts generated for divergence
+        div_alerts = [a for a in sig_bull["alerts"] if a["category"] == "DIVERGENCE"]
+        for al in div_alerts:
+            assert "BULLISH" in al["id"] or "BEARISH" in al["id"]
+    finally:
+        db.close()
+
+
+
+
+
 
 

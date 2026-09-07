@@ -37,16 +37,16 @@ export const App: React.FC = () => {
   useEffect(() => {
     fetchDashboard();
 
-    // 1. Periodic 1-hour background refresh matching backend scheduler cadence (60m)
-    const hourlyInterval = setInterval(() => {
+    // 1. Periodic background refresh (2 minutes) to ensure near-realtime alert dispatch
+    const pollInterval = setInterval(() => {
       fetchDashboard();
-    }, 3600000);
+    }, 120000);
 
-    // 2. Focus refresh: update if user returns to tab after >= 15 min idle
+    // 2. Focus refresh: update if user returns to tab after >= 1 min idle
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         const elapsed = Date.now() - lastFetchedRef.current;
-        if (elapsed >= 900000) { // 15 minutes
+        if (elapsed >= 60000) { // 1 minute
           fetchDashboard();
         }
       }
@@ -55,7 +55,7 @@ export const App: React.FC = () => {
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      clearInterval(hourlyInterval);
+      clearInterval(pollInterval);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       if (jobPollRef.current) {
         clearInterval(jobPollRef.current);

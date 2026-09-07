@@ -21,7 +21,7 @@ class MockPolymarketProvider(PredictionMarketProvider):
         raw_definitions = [
             # Direct Ticker Markets
             {
-                "external_id": "poly-asts-commercial-service-2026",
+                "external_id": "mock_poly_asts_commercial_service_2026",
                 "ticker": "ASTS",
                 "title": "Will AST SpaceMobile launch commercial service before Q4 2026?",
                 "description": "Resolves YES if AST SpaceMobile officially initiates commercial broadband service with AT&T or Verizon.",
@@ -37,7 +37,7 @@ class MockPolymarketProvider(PredictionMarketProvider):
                 "url": "https://polymarket.com/market/asts-commercial-broadband-2026"
             },
             {
-                "external_id": "poly-rklb-neutron-flight-2026",
+                "external_id": "mock_poly_rklb_neutron_flight_2026",
                 "ticker": "RKLB",
                 "title": "Will Rocket Lab launch Neutron rocket in 2026?",
                 "description": "Resolves YES if Rocket Lab conducts an orbital test flight of Neutron from Wallops Island.",
@@ -53,7 +53,7 @@ class MockPolymarketProvider(PredictionMarketProvider):
                 "url": "https://polymarket.com/market/rocket-lab-neutron-launch-2026"
             },
             {
-                "external_id": "poly-spce-delta-revenue-2026",
+                "external_id": "mock_poly_spce_delta_revenue_2026",
                 "ticker": "SPCE",
                 "title": "Will Virgin Galactic generate over $10M revenue in 2026?",
                 "description": "Resolves YES if Virgin Galactic reports annual revenue exceeding $10M from Delta-class spaceships.",
@@ -69,7 +69,7 @@ class MockPolymarketProvider(PredictionMarketProvider):
                 "url": "https://polymarket.com/market/virgin-galactic-delta-revenue"
             },
             {
-                "external_id": "poly-satl-defense-award-2026",
+                "external_id": "mock_poly_satl_defense_award_2026",
                 "ticker": "SATL",
                 "title": "Will Satellogic secure >$20M US or NATO defense imaging contract in 2026?",
                 "description": "Resolves YES if Satellogic announces a cumulative contract value >=$20M with defense agencies.",
@@ -86,7 +86,7 @@ class MockPolymarketProvider(PredictionMarketProvider):
             },
             # Sector-wide Events (Cross-Company Event Mapping)
             {
-                "external_id": "poly-spacex-starship-orbital-catch",
+                "external_id": "mock_poly_spacex_starship_orbital_catch",
                 "ticker": "SPCX",
                 "event_key": "spacex_starship_orbital_success",
                 "title": "Will SpaceX successfully catch Starship Upper Stage from orbit in 2026?",
@@ -103,7 +103,7 @@ class MockPolymarketProvider(PredictionMarketProvider):
                 "url": "https://polymarket.com/market/spacex-starship-upper-stage-catch"
             },
             {
-                "external_id": "poly-us-space-force-sda-tranche-awards",
+                "external_id": "mock_poly_us_space_force_sda_tranche_awards",
                 "ticker": None,
                 "event_key": "us_space_force_sda_defense_contracts",
                 "title": "Will US Space Force SDA award Tranche 3 satellite constellation contracts by Q3?",
@@ -150,7 +150,8 @@ class MockPolymarketProvider(PredictionMarketProvider):
                 probability_change_6h=defn["delta_6h"],
                 probability_change_24h=defn["delta_24h"],
                 url=defn["url"],
-                event_key=defn.get("event_key")
+                event_key=defn.get("event_key"),
+                source="MOCK"
             )
             self._markets.append(market)
 
@@ -171,7 +172,7 @@ class MockPolymarketProvider(PredictionMarketProvider):
                 return m
         return None
 
-    async def get_history(self, market_id: str) -> List[MarketProbabilityPoint]:
+    async def get_history(self, market_id: str, clob_token_id: Optional[str] = None) -> List[MarketProbabilityPoint]:
         market = await self.get_market(market_id)
         if not market:
             return []
@@ -194,7 +195,8 @@ class MockPolymarketProvider(PredictionMarketProvider):
                 timestamp=ts,
                 yes_probability=round(p, 4),
                 no_probability=round(1.0 - p, 4),
-                volume=round(market.volume * (0.85 + 0.15 * progress), 2)
+                volume=round(market.volume * (0.85 + 0.15 * progress), 2),
+                source="MOCK"
             ))
             
         return points

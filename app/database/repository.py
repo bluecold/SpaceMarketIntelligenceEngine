@@ -1,8 +1,9 @@
+import json
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
 from collections import defaultdict
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, func
+from sqlalchemy import desc, func, or_
 from app.database.models import (
     TickerModel, SocialPostModel, NewsItemModel,
     MarketSnapshotModel, SSISnapshotModel, JobRunModel,
@@ -53,23 +54,26 @@ def ensure_tickers_seeded(db: Session):
 
 def save_social_posts(db: Session, posts_data: List[Dict[str, Any]]) -> int:
     """
-    Save social posts deduplicating by tweet_id.
+    Save social posts deduplicating by (tweet_id, ticker).
     Batches lookup to eliminate N+1 queries, updates engagement metrics on existing posts,
     and returns number of newly added posts.
+    Allows multi-ticker documents (e.g. mentioning ASTS and RKLB) to contribute entity-specific
+    sentiment, relevance, and engagement to each respective ticker.
     """
     if not posts_data:
         return 0
 
     tweet_ids = [str(d["tweet_id"]) for d in posts_data if "tweet_id" in d]
     existing_posts = {
-        p.tweet_id: p
+        (p.tweet_id, p.ticker): p
         for p in db.query(SocialPostModel).filter(SocialPostModel.tweet_id.in_(tweet_ids)).all()
     }
 
     new_count = 0
     for data in posts_data:
         tweet_id = str(data["tweet_id"])
-        existing = existing_posts.get(tweet_id)
+        ticker_up = data["ticker"].upper()
+        existing = existing_posts.get((tweet_id, ticker_up))
         if existing:
             # Update engagement metrics for posts that went viral / gained engagement
             existing.likes = data.get("likes", existing.likes)
@@ -85,7 +89,7 @@ def save_social_posts(db: Session, posts_data: List[Dict[str, Any]]) -> int:
 
             post = SocialPostModel(
                 tweet_id=tweet_id,
-                ticker=data["ticker"].upper(),
+                ticker=ticker_up,
                 username=data.get("username", "unknown"),
                 text=data["text"],
                 created_at=created_at,
@@ -106,7 +110,7 @@ def save_social_posts(db: Session, posts_data: List[Dict[str, Any]]) -> int:
                 source=data.get("source", "MOCK" if str(tweet_id).startswith("mock_") else "LIVE")
             )
             db.add(post)
-            existing_posts[tweet_id] = post
+            existing_posts[(tweet_id, ticker_up)] = post
             new_count += 1
 
     db.commit()
@@ -127,20 +131,35 @@ def get_recent_social_posts(db: Session, ticker: str, hours: int = 24) -> List[S
 
 
 def save_news_items(db: Session, news_data: List[Dict[str, Any]]) -> int:
-    """Save news items deduplicating by URL. Returns number of newly added items."""
+    """
+    Save news items deduplicating by (url, ticker).
+    Allows a multi-entity news article (e.g. covering ASTS and RKLB) to contribute
+    entity-specific sentiment, relevance, and catalysts to each ticker.
+    Returns number of newly added items.
+    """
+    if not news_data:
+        return 0
+
+    urls = [d["url"] for d in news_data if "url" in d and d["url"]]
+    existing_news = {
+        (n.url, n.ticker): n
+        for n in db.query(NewsItemModel).filter(NewsItemModel.url.in_(urls)).all()
+    }
+
     new_count = 0
     for data in news_data:
         url = data.get("url")
         if not url:
             continue
-        existing = db.query(NewsItemModel).filter(NewsItemModel.url == url).first()
+        ticker_up = data["ticker"].upper()
+        existing = existing_news.get((url, ticker_up))
         if not existing:
             pub_at = data.get("published_at", utc_now())
             if hasattr(pub_at, "tzinfo") and pub_at.tzinfo is not None:
                 pub_at = pub_at.astimezone(timezone.utc).replace(tzinfo=None)
-                
+
             news = NewsItemModel(
-                ticker=data["ticker"],
+                ticker=ticker_up,
                 title=data["title"],
                 summary=data.get("summary"),
                 source=data.get("source"),
@@ -155,6 +174,7 @@ def save_news_items(db: Session, news_data: List[Dict[str, Any]]) -> int:
                 catalyst_importance=data.get("catalyst_importance", "MEDIUM")
             )
             db.add(news)
+            existing_news[(url, ticker_up)] = news
             new_count += 1
     db.commit()
     return new_count
@@ -163,9 +183,10 @@ def save_news_items(db: Session, news_data: List[Dict[str, Any]]) -> int:
 def get_recent_news_items(db: Session, ticker: str, days: int = 3) -> List[NewsItemModel]:
     """Retrieve news items for a ticker within the specified lookback window."""
     since = utc_now() - timedelta(days=days)
+    ticker_up = ticker.upper()
     return (
         db.query(NewsItemModel)
-        .filter(NewsItemModel.ticker == ticker)
+        .filter(NewsItemModel.ticker == ticker_up)
         .filter(NewsItemModel.published_at >= since)
         .order_by(desc(NewsItemModel.published_at))
         .all()
@@ -182,6 +203,10 @@ def save_prediction_markets(db: Session, markets: List[PredictionMarketData]) ->
         end_d = m.end_date
         if end_d and end_d.tzinfo is not None:
             end_d = end_d.astimezone(timezone.utc).replace(tzinfo=None)
+
+        res_d = getattr(m, "resolution_date", None)
+        if res_d and res_d.tzinfo is not None:
+            res_d = res_d.astimezone(timezone.utc).replace(tzinfo=None)
             
         if not existing:
             market_db = PredictionMarketModel(
@@ -193,6 +218,7 @@ def save_prediction_markets(db: Session, markets: List[PredictionMarketData]) ->
                 status=m.status,
                 created_at=now,
                 end_date=end_d,
+                resolution_date=res_d,
                 yes_probability=m.yes_probability,
                 no_probability=m.no_probability,
                 volume=m.volume,
@@ -200,6 +226,8 @@ def save_prediction_markets(db: Session, markets: List[PredictionMarketData]) ->
                 spread=m.spread,
                 quality_score=m.quality_score,
                 event_key=m.event_key,
+                clob_token_id=getattr(m, "clob_token_id", None),
+                condition_id=getattr(m, "condition_id", None),
                 polarity=getattr(m, "polarity", 1),
                 url=m.url,
                 source=getattr(m, "source", "MOCK" if str(m.external_id).startswith("mock_") or "mock" in str(m.external_id) else "LIVE"),
@@ -210,6 +238,15 @@ def save_prediction_markets(db: Session, markets: List[PredictionMarketData]) ->
             market_id = market_db.id
             count += 1
         else:
+            existing.status = m.status
+            existing.title = m.title
+            existing.description = m.description
+            if m.ticker:
+                existing.ticker = m.ticker
+            if end_d:
+                existing.end_date = end_d
+            if res_d:
+                existing.resolution_date = res_d
             existing.yes_probability = m.yes_probability
             existing.no_probability = m.no_probability
             existing.volume = m.volume
@@ -217,7 +254,15 @@ def save_prediction_markets(db: Session, markets: List[PredictionMarketData]) ->
             existing.spread = m.spread
             existing.quality_score = m.quality_score
             existing.event_key = m.event_key
+            if getattr(m, "clob_token_id", None):
+                existing.clob_token_id = m.clob_token_id
+            if getattr(m, "condition_id", None):
+                existing.condition_id = m.condition_id
             existing.polarity = getattr(m, "polarity", 1)
+            if m.url:
+                existing.url = m.url
+            if hasattr(m, "source") and m.source:
+                existing.source = m.source
             existing.collected_at = now
             market_id = existing.id
 
@@ -262,14 +307,26 @@ def save_prediction_markets(db: Session, markets: List[PredictionMarketData]) ->
 def get_recent_prediction_markets(
     db: Session,
     ticker: Optional[str] = None,
-    mappings: Optional[Dict[str, Dict[str, float]]] = None
+    mappings: Optional[Dict[str, Dict[str, float]]] = None,
+    max_age_days: Optional[int] = 7,
+    include_expired: bool = False
 ) -> List[PredictionMarketModel]:
     """
-    Get active prediction markets, filtered and prioritized:
+    Get active, valid prediction markets, filtered and prioritized:
     1. Direct contracts for the specified ticker (top priority).
     2. Sector & Macro events with an impact mapping on the ticker.
+    Ensures freshness (collected_at >= since) and valid expiration (end_date >= now).
     """
+    now = utc_now()
     query = db.query(PredictionMarketModel).filter(PredictionMarketModel.status == "ACTIVE")
+    
+    if max_age_days is not None:
+        since = now - timedelta(days=max_age_days)
+        query = query.filter(PredictionMarketModel.collected_at >= since)
+        
+    if not include_expired:
+        query = query.filter(or_(PredictionMarketModel.end_date == None, PredictionMarketModel.end_date >= now))
+
     all_active = query.order_by(desc(PredictionMarketModel.quality_score)).all()
     
     if not ticker:
@@ -300,8 +357,9 @@ def save_divergences(db: Session, ticker: str, divergences_data: List[Dict[str, 
     """
     Save or update active divergence episodes for a ticker.
     Maintains stateful divergence episodes:
-    - Ongoing episodes: updates last_seen, strength, confidence, and description without duplicating.
-    - New episodes: inserts a new active DivergenceModel row.
+    - Ongoing episodes: identified by composite (type, direction) key; updates last_seen, strength, confidence,
+      description, and sources without duplicating or corrupting directional state.
+    - Direction changes or new episode types: resolve previous episodes and insert fresh active DivergenceModel row.
     - Ceased episodes: sets resolved_at = now to mark them as resolved.
     """
     now = utc_now()
@@ -313,20 +371,28 @@ def save_divergences(db: Session, ticker: str, divergences_data: List[Dict[str, 
         .filter(DivergenceModel.ticker == ticker_sym, DivergenceModel.resolved_at == None)
         .all()
     )
-    active_map = {ep.type: ep for ep in active_episodes}
-    detected_types = set()
+    # Map active episodes by composite key (type, direction)
+    active_map = {(ep.type, ep.direction): ep for ep in active_episodes}
+    detected_keys = set()
     count = 0
 
     # 2. Update existing active episodes or create new ones
     for d in divergences_data:
         div_type = d["type"]
-        detected_types.add(div_type)
-        if div_type in active_map:
-            ep = active_map[div_type]
+        div_dir = d.get("direction", "NEUTRAL")
+        key = (div_type, div_dir)
+        detected_keys.add(key)
+        
+        if key in active_map:
+            ep = active_map[key]
             ep.last_seen = now
+            ep.direction = div_dir
             ep.strength = d.get("strength", 1.0)
             ep.confidence = d.get("confidence", 0.5)
             ep.description = d["description"]
+            ep.source_a = d.get("source_a", ep.source_a)
+            ep.source_b = d.get("source_b", ep.source_b)
+            ep.source_c = d.get("source_c", ep.source_c)
         else:
             new_ep = DivergenceModel(
                 ticker=ticker_sym,
@@ -336,7 +402,7 @@ def save_divergences(db: Session, ticker: str, divergences_data: List[Dict[str, 
                 source_a=d["source_a"],
                 source_b=d["source_b"],
                 source_c=d.get("source_c"),
-                direction=d["direction"],
+                direction=div_dir,
                 strength=d.get("strength", 1.0),
                 confidence=d.get("confidence", 0.5),
                 description=d["description"],
@@ -345,9 +411,9 @@ def save_divergences(db: Session, ticker: str, divergences_data: List[Dict[str, 
             db.add(new_ep)
         count += 1
 
-    # 3. Resolve episodes that ceased in this execution
-    for div_type, ep in active_map.items():
-        if div_type not in detected_types:
+    # 3. Resolve episodes that ceased or changed direction in this execution
+    for key, ep in active_map.items():
+        if key not in detected_keys:
             ep.resolved_at = now
 
     db.commit()
@@ -438,7 +504,10 @@ def get_active_alerts_batch(db: Session, tickers: Optional[List[str]] = None) ->
 def save_market_snapshot(db: Session, data: Dict[str, Any]) -> MarketSnapshotModel:
     snapshot = MarketSnapshotModel(
         ticker=data["ticker"],
-        timestamp=utc_now(),
+        timestamp=data.get("timestamp") or utc_now(),
+        observed_at=data.get("observed_at"),
+        candle_date=data.get("candle_date"),
+        market_session=data.get("market_session"),
         price=data.get("price"),
         volume=data.get("volume"),
         market_status=data.get("status", "AVAILABLE"),
@@ -475,6 +544,17 @@ def save_ssi_snapshot(db: Session, data: Dict[str, Any]) -> SSISnapshotModel:
     base_sig = data.get("base_signal", sig_val)
     mod_sig = data.get("signal_modifier")
 
+    # Serialize fundamental and effective weight payloads for historical backtest reproduction
+    fund_obj = data.get("fundamentals") or data.get("fundamentals_data")
+    fund_json = json.dumps(fund_obj) if isinstance(fund_obj, dict) else (fund_obj if isinstance(fund_obj, str) else None)
+
+    weights_obj = data.get("effective_weights")
+    weights_json = json.dumps(weights_obj) if isinstance(weights_obj, dict) else (weights_obj if isinstance(weights_obj, str) else None)
+
+    runway = data.get("runway_months")
+    if runway is None and isinstance(fund_obj, dict):
+        runway = fund_obj.get("runway_months")
+
     snapshot = SSISnapshotModel(
         ticker=data["ticker"],
         timestamp=utc_now(),
@@ -496,11 +576,27 @@ def save_ssi_snapshot(db: Session, data: Dict[str, Any]) -> SSISnapshotModel:
         confidence=data["confidence"],
         data_completeness=data["data_completeness"],
         data_quality=data.get("data_quality", data["data_completeness"]),
+        prediction_quality=data.get("prediction_quality", 50.0),
         post_count=data.get("post_count"),
+        raw_post_count=data.get("raw_post_count", data.get("post_count")),
+        relevant_post_count=data.get("relevant_post_count", data.get("post_count")),
+        unique_post_count=data.get("unique_post_count", data.get("post_count")),
+        author_count=data.get("author_count"),
         news_count=data.get("news_count"),
         prediction_count=data.get("prediction_count"),
+        data_source=data.get("data_source", "LIVE"),
+        social_source=data.get("social_source", "LIVE"),
+        prediction_source=data.get("prediction_source", "LIVE"),
+        news_source=data.get("news_source", "LIVE"),
+        market_source=data.get("market_source", "LIVE"),
         price=data.get("price"),
         volume=data.get("volume"),
+        rsi14=data.get("rsi14"),
+        market_status=data.get("market_status", "AVAILABLE"),
+        runway_months=runway,
+        fundamentals_data=fund_json,
+        effective_weights=weights_json,
+        rules_version=data.get("rules_version", "2.0.0"),
         explanation=data.get("explanation")
     )
     db.add(snapshot)

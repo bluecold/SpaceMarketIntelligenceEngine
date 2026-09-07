@@ -1,12 +1,14 @@
+import json
 import math
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from collections import defaultdict
 import numpy as np
 from sqlalchemy.orm import Session
-from app.database.models import SSISnapshotModel, MarketSnapshotModel
+from app.database.models import SSISnapshotModel, MarketSnapshotModel, utc_now
 from app.scoring.smi import calculate_smi
-from app.config import INITIAL_TICKERS
+from app.scoring.signal import generate_signal_and_explanation
+from app.config import INITIAL_TICKERS, settings
 
 
 def calculate_financial_metrics(
@@ -15,7 +17,7 @@ def calculate_financial_metrics(
     holding_period_days: int = 1
 ) -> Dict[str, Any]:
     """
-    Computes standard quantitative trading and backtesting metrics:
+    Computes standard quantitative trading and event-level backtesting metrics:
     Win Rate, Profit Factor, Expectancy, Max Drawdown, Sharpe Ratio, Sortino Ratio.
     Annualizes Sharpe and Sortino based on the actual holding horizon: sqrt(252 / holding_period_days).
     """
@@ -32,12 +34,13 @@ def calculate_financial_metrics(
             "sortino_ratio": 0.0
         }
 
+    arr_returns = np.array(returns, dtype=float)
     wins = [r for r in returns if r > 0]
     losses = [r for r in returns if r < 0]
     
     win_rate = (len(wins) / len(returns)) * 100.0 if returns else 0.0
-    avg_return = float(np.mean(returns))
-    median_return = float(np.median(returns))
+    avg_return = float(np.mean(arr_returns))
+    median_return = float(np.median(arr_returns))
     
     total_gains = sum(wins) if wins else 0.0
     total_losses = abs(sum(losses)) if losses else 0.0
@@ -48,8 +51,8 @@ def calculate_financial_metrics(
     loss_rate = (len(losses) / len(returns))
     expectancy = ((win_rate / 100.0) * avg_win) - (loss_rate * avg_loss)
 
-    # Max Drawdown calculation from cumulative equity curve
-    equity_curve = np.cumprod(1.0 + np.array(returns) / 100.0)
+    # Max Drawdown calculation from cumulative equity curve (incorporating initial capital 1.0)
+    equity_curve = np.insert(np.cumprod(1.0 + arr_returns / 100.0), 0, 1.0)
     peak = np.maximum.accumulate(equity_curve)
     drawdowns = (equity_curve - peak) / peak
     max_drawdown = abs(float(np.min(drawdowns))) * 100.0 if len(drawdowns) > 0 else 0.0
@@ -59,14 +62,22 @@ def calculate_financial_metrics(
     annualization_factor = math.sqrt(periods_per_year)
 
     # Sharpe Ratio
-    std_return = float(np.std(returns)) if len(returns) > 1 else 0.0
+    std_return = float(np.std(arr_returns)) if len(arr_returns) > 1 else 0.0
     excess_mean = avg_return - (risk_free_rate / periods_per_year)
     sharpe_ratio = (excess_mean / std_return * annualization_factor) if std_return > 0 else 0.0
 
-    # Sortino Ratio (downside deviation only)
-    downside_returns = [r for r in returns if r < 0]
-    downside_std = float(np.std(downside_returns)) if len(downside_returns) > 1 else (std_return if std_return > 0 else 0.0)
-    sortino_ratio = (excess_mean / downside_std * annualization_factor) if downside_std > 0 else 0.0
+    # Sortino Ratio: Target Downside Deviation (Lower Partial Moment 2 with target = MAR)
+    target = risk_free_rate / periods_per_year
+    downside_diffs = np.minimum(0.0, arr_returns - target)
+    downside_variance = float(np.mean(downside_diffs ** 2))
+    downside_std = math.sqrt(downside_variance)
+
+    if downside_std > 0:
+        sortino_ratio = (excess_mean / downside_std) * annualization_factor
+    elif excess_mean > 0:
+        sortino_ratio = 99.0  # Zero downside risk with positive excess returns
+    else:
+        sortino_ratio = 0.0
 
     return {
         "total_trades": len(returns),
@@ -96,6 +107,280 @@ def _parse_timestamp(ts: Any) -> Optional[datetime]:
     return None
 
 
+def simulate_portfolio_execution(
+    trades: List[Dict[str, Any]],
+    initial_capital: float = 100000.0,
+    max_concurrent_positions: int = 5,
+    transaction_cost_bps: float = 10.0,
+    holding_period_days: int = 3
+) -> Dict[str, Any]:
+    """
+    Simulates realistic portfolio execution across multiple simultaneous trade signals:
+    - Capital allocation with position limits (e.g. 20% max per position for max_concurrent=5).
+    - Prevents overlapping sequential leverage by tracking cash balance and active positions.
+    - Applies realistic transaction costs and slippage on entries and exits (deducted from cash).
+    - Computes portfolio-level equity curve, max drawdown, and capital utilization across all events.
+    - Resolves holding_period_days when trade exit_time is unspecified.
+    """
+    if not trades:
+        return {
+            "initial_capital": initial_capital,
+            "ending_capital": initial_capital,
+            "total_net_return_pct": 0.0,
+            "portfolio_max_drawdown_pct": 0.0,
+            "max_concurrent_positions": 0,
+            "avg_capital_invested_pct": 0.0,
+            "total_transaction_costs": 0.0,
+            "total_executed_trades": 0,
+            "skipped_trades_no_cash": 0
+        }
+
+    # Normalize trades with parsed timestamps and holding_period_days fallback
+    normalized_trades = []
+    for t in trades:
+        entry_dt = _parse_timestamp(t.get("entry_time"))
+        exit_dt = _parse_timestamp(t.get("exit_time"))
+        if exit_dt is None and entry_dt is not None and holding_period_days > 0:
+            exit_dt = entry_dt + timedelta(days=holding_period_days)
+
+        normalized_trades.append({
+            "ticker": t.get("ticker", "UNKNOWN"),
+            "entry_time": entry_dt,
+            "exit_time": exit_dt,
+            "return": float(t.get("return", 0.0))
+        })
+
+    # Sort trades chronologically by entry_time
+    sorted_trades = sorted(
+        normalized_trades,
+        key=lambda t: t["entry_time"] if t["entry_time"] is not None else datetime.min
+    )
+
+    cost_multiplier = transaction_cost_bps / 10000.0
+    cash = initial_capital
+    max_pos_capital = initial_capital / float(max_concurrent_positions)
+
+    active_positions: List[Dict[str, Any]] = []
+    executed_trades = 0
+    skipped_no_cash = 0
+    total_costs = 0.0
+    max_concurrent_seen = 0
+
+    equity_points: List[float] = [initial_capital]
+    invested_fractions: List[float] = [0.0]
+
+    # Process events in chronological sequence
+    for trade in sorted_trades:
+        curr_entry = trade["entry_time"]
+        curr_exit = trade["exit_time"]
+        t_return = trade["return"]
+
+        # 1. Close any positions that have reached their exit time before or at this entry
+        if curr_entry is not None:
+            closing_positions = []
+            remaining_positions = []
+            for pos in active_positions:
+                pos_exit = pos.get("exit_time")
+                if pos_exit is not None and pos_exit <= curr_entry:
+                    closing_positions.append(pos)
+                else:
+                    remaining_positions.append(pos)
+
+            # Sort closing positions chronologically by their exit time
+            closing_positions.sort(key=lambda p: p.get("exit_time") or datetime.min)
+
+            for pos in closing_positions:
+                gross_proceeds = pos["allocated"] * (1.0 + pos["return"] / 100.0)
+                exit_cost = gross_proceeds * cost_multiplier
+                net_proceeds = gross_proceeds - exit_cost
+                cash += net_proceeds
+                total_costs += exit_cost
+
+            if closing_positions:
+                active_positions = remaining_positions
+                active_val = sum(p["allocated"] for p in active_positions)
+                curr_equity = cash + active_val
+                equity_points.append(curr_equity)
+                invested_fractions.append(active_val / curr_equity if curr_equity > 0 else 0.0)
+
+        # 2. Check position limit and available cash (accounting for entry commission)
+        max_affordable = cash / (1.0 + cost_multiplier)
+        allocated = min(max_affordable, max_pos_capital)
+
+        if len(active_positions) >= max_concurrent_positions or allocated < 10.0:
+            skipped_no_cash += 1
+            continue
+
+        entry_cost = allocated * cost_multiplier
+        total_costs += entry_cost
+        cash -= (allocated + entry_cost)
+
+        active_positions.append({
+            "ticker": trade["ticker"],
+            "allocated": allocated,
+            "entry_time": curr_entry,
+            "exit_time": curr_exit,
+            "return": t_return
+        })
+        executed_trades += 1
+        max_concurrent_seen = max(max_concurrent_seen, len(active_positions))
+
+        # Current total portfolio equity after entry
+        active_val = sum(p["allocated"] for p in active_positions)
+        curr_equity = cash + active_val
+        equity_points.append(curr_equity)
+        invested_fractions.append(active_val / curr_equity if curr_equity > 0 else 0.0)
+
+    # 3. Close all remaining open positions at the end of the simulation
+    active_positions.sort(key=lambda p: p.get("exit_time") or datetime.max)
+    while active_positions:
+        pos = active_positions.pop(0)
+        gross_proceeds = pos["allocated"] * (1.0 + pos["return"] / 100.0)
+        exit_cost = gross_proceeds * cost_multiplier
+        net_proceeds = gross_proceeds - exit_cost
+        cash += net_proceeds
+        total_costs += exit_cost
+
+        active_val = sum(p["allocated"] for p in active_positions)
+        curr_equity = cash + active_val
+        equity_points.append(curr_equity)
+        invested_fractions.append(active_val / curr_equity if curr_equity > 0 else 0.0)
+
+    ending_capital = cash
+    if len(equity_points) == 0 or equity_points[-1] != ending_capital:
+        equity_points.append(ending_capital)
+        invested_fractions.append(0.0)
+
+    # Calculate portfolio max drawdown from equity points
+    eq_arr = np.array(equity_points, dtype=float)
+    peak = np.maximum.accumulate(eq_arr)
+    drawdowns = (eq_arr - peak) / peak
+    port_max_dd = abs(float(np.min(drawdowns))) * 100.0 if len(drawdowns) > 0 else 0.0
+
+    total_net_return = ((ending_capital - initial_capital) / initial_capital) * 100.0
+    avg_invested = float(np.mean(invested_fractions)) * 100.0
+
+    return {
+        "initial_capital": round(initial_capital, 2),
+        "ending_capital": round(ending_capital, 2),
+        "total_net_return_pct": round(total_net_return, 2),
+        "portfolio_max_drawdown_pct": round(port_max_dd, 2),
+        "max_concurrent_positions": max_concurrent_seen,
+        "avg_capital_invested_pct": round(avg_invested, 1),
+        "total_transaction_costs": round(total_costs, 2),
+        "total_executed_trades": executed_trades,
+        "skipped_trades_no_cash": skipped_no_cash
+    }
+
+
+def compute_hypothesis_significance(
+    model_a_trades: List[Dict[str, Any]],
+    model_b_trades: List[Dict[str, Any]],
+    min_required_trades: int = 30,
+    n_bootstrap: int = 1000,
+    random_seed: int = 42
+) -> Dict[str, Any]:
+    """
+    Performs a non-parametric block / time-cluster bootstrap hypothesis test
+    comparing Model B (Treatment: Multisource + Polymarket) against Model A (Control: Baseline).
+
+    Tests:
+    H0: Delta E(Return) <= 0  (Polymarket adds zero or negative incremental edge)
+    H1: Delta E(Return) > 0   (Polymarket adds strictly positive alpha)
+
+    Guarantees:
+    - Does NOT assume normal returns or constant variance.
+    - Preserves autocorrelation and cross-asset clustering by resampling contiguous blocks.
+    - Reports 95% Bootstrap Confidence Interval and empirical one-sided p-value.
+    - Distinguishes sample count threshold (min_sample_reached) from true statistical significance (is_statistically_significant).
+    """
+    n_a = len(model_a_trades)
+    n_b = len(model_b_trades)
+    min_sample = min(n_a, n_b)
+    min_sample_reached = (min_sample >= min_required_trades)
+
+    returns_a = np.array([t["return"] for t in model_a_trades], dtype=float) if n_a > 0 else np.array([], dtype=float)
+    returns_b = np.array([t["return"] for t in model_b_trades], dtype=float) if n_b > 0 else np.array([], dtype=float)
+
+    mean_delta = float(np.mean(returns_b) - np.mean(returns_a)) if (n_a > 0 and n_b > 0) else 0.0
+
+    if not min_sample_reached or n_a == 0 or n_b == 0:
+        return {
+            "min_sample_size": min_sample,
+            "min_sample_reached": min_sample_reached,
+            "is_statistically_significant": False,
+            "positive_edge_significant": False,
+            "negative_edge_significant": False,
+            "difference_significant": False,
+            "p_value": 1.0,
+            "confidence_interval_95": {"lower": 0.0, "upper": 0.0},
+            "mean_return_delta_pct": round(mean_delta, 2),
+            "test_method": "Block Bootstrap (N < 30 insufficient sample)"
+        }
+
+    rng = np.random.default_rng(random_seed)
+
+    # Contiguous block size to capture serial and cross-asset market dependencies
+    block_size = max(1, min(5, min_sample // 10))
+    n_blocks = max(1, min_sample // block_size)
+
+    delta_means = np.empty(n_bootstrap, dtype=float)
+
+    for b in range(n_bootstrap):
+        if n_a == n_b:
+            # Fully synchronized paired block resampling
+            idx = rng.integers(0, max(1, min_sample - block_size + 1), size=n_blocks)
+            resampled_a = np.concatenate([returns_a[i : i + block_size] for i in idx])
+            resampled_b = np.concatenate([returns_b[i : i + block_size] for i in idx])
+            delta_means[b] = float(np.mean(resampled_b - resampled_a))
+        else:
+            # Synchronized timeline-aligned block resampling
+            idx_rel = rng.random(size=n_blocks)
+            idx_a = (idx_rel * max(1, n_a - block_size)).astype(int)
+            idx_b = (idx_rel * max(1, n_b - block_size)).astype(int)
+            resampled_a = np.concatenate([returns_a[i : i + block_size] for i in idx_a])
+            resampled_b = np.concatenate([returns_b[i : i + block_size] for i in idx_b])
+            delta_means[b] = float(np.mean(resampled_b) - np.mean(resampled_a))
+
+    # 95% Confidence Interval (percentile method)
+    ci_lower = float(np.percentile(delta_means, 2.5))
+    ci_upper = float(np.percentile(delta_means, 97.5))
+
+    # Empirical one-sided p-values:
+    # p_value_pos: probability that Delta Mean <= 0 (testing for positive alpha B > A)
+    # p_value_neg: probability that Delta Mean >= 0 (testing for negative alpha B < A)
+    p_value_pos = float(np.mean(delta_means <= 0.0))
+    p_value_neg = float(np.mean(delta_means >= 0.0))
+
+    # Directional significance:
+    # 1. Positive edge: Model B strictly outperforms Model A with 95% CI > 0
+    positive_edge_significant = bool(min_sample_reached and p_value_pos < 0.05 and ci_lower > 0.0)
+
+    # 2. Negative edge: Model B strictly underperforms Model A with 95% CI < 0
+    negative_edge_significant = bool(min_sample_reached and p_value_neg < 0.05 and ci_upper < 0.0)
+
+    # 3. Difference significance (two-sided): 95% CI strictly excludes 0 in either direction
+    difference_significant = bool(positive_edge_significant or negative_edge_significant)
+
+    reported_p_value = p_value_pos if mean_delta >= 0 else p_value_neg
+
+    return {
+        "min_sample_size": min_sample,
+        "min_sample_reached": min_sample_reached,
+        "is_statistically_significant": positive_edge_significant,
+        "positive_edge_significant": positive_edge_significant,
+        "negative_edge_significant": negative_edge_significant,
+        "difference_significant": difference_significant,
+        "p_value": round(reported_p_value, 4),
+        "confidence_interval_95": {
+            "lower": round(ci_lower, 2),
+            "upper": round(ci_upper, 2)
+        },
+        "mean_return_delta_pct": round(mean_delta, 2),
+        "test_method": f"Paired Block Bootstrap (B={n_bootstrap}, block_size={block_size}, 95% CI)"
+    }
+
+
 def evaluate_backtest_dataset(
     snapshots: List[Dict[str, Any]],
     holding_period_days: int = 3,
@@ -118,15 +403,28 @@ def evaluate_backtest_dataset(
     model_a_trades: List[Dict[str, Any]] = [] # Model A: Without Polymarket
     model_b_trades: List[Dict[str, Any]] = [] # Model B: With Polymarket
 
-    # Group snapshots by ticker to prevent cross-asset price contamination
-    grouped_by_ticker: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    for s in snapshots:
-        ticker_key = s.get("ticker", "DEFAULT")
-        grouped_by_ticker[ticker_key].append(s)
+    static_weights = {
+        "social": settings.WEIGHT_SOCIAL,
+        "prediction": settings.WEIGHT_PREDICTION,
+        "news": settings.WEIGHT_NEWS,
+        "momentum": settings.WEIGHT_MOMENTUM,
+        "fundamental": settings.WEIGHT_FUNDAMENTALS,
+        "risk": settings.WEIGHT_RISK
+    }
 
-    for ticker_sym, raw_snaps in grouped_by_ticker.items():
-        # Sort chronologically if timestamps are available
-        has_timestamps = any(_parse_timestamp(s.get("timestamp")) is not None for s in raw_snaps)
+    # Group snapshots by ticker for isolated trajectory analysis
+    ticker_groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for s in snapshots:
+        ticker_groups[s.get("ticker", "UNKNOWN")].append(s)
+
+    all_trades_a = []
+    all_trades_b = []
+
+    for sym, raw_snaps in ticker_groups.items():
+        if len(raw_snaps) < 2:
+            continue
+
+        has_timestamps = any(s.get("timestamp") is not None for s in raw_snaps)
         if has_timestamps:
             ticker_snaps = sorted(
                 raw_snaps,
@@ -164,7 +462,7 @@ def evaluate_backtest_dataset(
             post_cnt = current.get("post_count")
             news_cnt = current.get("news_count")
             pred_cnt = current.get("prediction_count")
-            pred_qual = current.get("prediction_quality", 80.0)
+            pred_qual = current.get("prediction_quality", 50.0)
 
             # Model A: SMI computed WITHOUT Polymarket (prediction_score=None, weight redistributed)
             signal_a = False
@@ -180,10 +478,28 @@ def evaluate_backtest_dataset(
                     fundamental_score=fund,
                     post_count=post_cnt,
                     news_count=news_cnt,
-                    prediction_count=0
+                    prediction_count=0,
+                    custom_weights=static_weights
                 )
                 smi_a = smi_a_res["smi"]
-                if smi_a >= buy_threshold:
+                sig_a_res = generate_signal_and_explanation(
+                    ticker=sym,
+                    smi=smi_a,
+                    social_score=soc,
+                    prediction_score=None,
+                    news_score=news,
+                    technical_score_raw=tech,
+                    source_agreement=smi_a_res.get("source_agreement"),
+                    data_quality=smi_a_res.get("data_quality"),
+                    indicators=current.get("indicators") or {
+                        "price": curr_price,
+                        "rsi14": current.get("rsi14", current.get("rsi")),
+                        "status": current.get("market_status", "AVAILABLE")
+                    },
+                    fundamentals=current.get("fundamentals"),
+                    social_stats={"total_posts": post_cnt} if post_cnt is not None else None
+                )
+                if smi_a >= buy_threshold and sig_a_res.get("base_signal") in ["BUY", "STRONG BUY"]:
                     signal_a = True
 
             # Model B: SMI computed WITH Polymarket (incorporating prediction markets)
@@ -201,14 +517,16 @@ def evaluate_backtest_dataset(
                         fundamental_score=fund,
                         post_count=post_cnt,
                         news_count=news_cnt,
-                        prediction_count=pred_cnt
+                        prediction_count=pred_cnt,
+                        custom_weights=static_weights
                     )
                     smi_b = smi_b_res["smi"]
                 else:
                     if smi_a is not None:
                         smi_b = smi_a
+                        smi_b_res = smi_a_res
                     else:
-                        smi_a_res = calculate_smi(
+                        smi_b_res = calculate_smi(
                             social_score=soc,
                             prediction_score=None,
                             news_score=news,
@@ -218,10 +536,29 @@ def evaluate_backtest_dataset(
                             fundamental_score=fund,
                             post_count=post_cnt,
                             news_count=news_cnt,
-                            prediction_count=0
+                            prediction_count=0,
+                            custom_weights=static_weights
                         )
-                        smi_b = smi_a_res["smi"]
-                if smi_b >= buy_threshold:
+                        smi_b = smi_b_res["smi"]
+
+                sig_b_res = generate_signal_and_explanation(
+                    ticker=sym,
+                    smi=smi_b,
+                    social_score=soc,
+                    prediction_score=pred,
+                    news_score=news,
+                    technical_score_raw=tech,
+                    source_agreement=smi_b_res.get("source_agreement"),
+                    data_quality=smi_b_res.get("data_quality"),
+                    indicators=current.get("indicators") or {
+                        "price": curr_price,
+                        "rsi14": current.get("rsi14", current.get("rsi")),
+                        "status": current.get("market_status", "AVAILABLE")
+                    },
+                    fundamentals=current.get("fundamentals"),
+                    social_stats={"total_posts": post_cnt} if post_cnt is not None else None
+                )
+                if smi_b >= buy_threshold and sig_b_res.get("base_signal") in ["BUY", "STRONG BUY"]:
                     signal_b = True
 
             if not signal_a and not signal_b:
@@ -234,7 +571,7 @@ def evaluate_backtest_dataset(
             if curr_ts is not None:
                 target_time = curr_ts + timedelta(days=holding_period_days)
                 max_tolerance_time = target_time + timedelta(days=max(2, holding_period_days))
-                
+
                 # Search forward for the earliest snapshot satisfying target holding period
                 for j in range(i + 1, len(ticker_snaps)):
                     cand_ts = _parse_timestamp(ticker_snaps[j].get("timestamp"))
@@ -261,7 +598,7 @@ def evaluate_backtest_dataset(
 
             if signal_a:
                 model_a_trades.append({
-                    "ticker": ticker_sym,
+                    "ticker": sym,
                     "entry_time": curr_ts,
                     "exit_time": exit_ts,
                     "entry_idx": i,
@@ -273,7 +610,7 @@ def evaluate_backtest_dataset(
 
             if signal_b:
                 model_b_trades.append({
-                    "ticker": ticker_sym,
+                    "ticker": sym,
                     "entry_time": curr_ts,
                     "exit_time": exit_ts,
                     "entry_idx": i,
@@ -293,10 +630,21 @@ def evaluate_backtest_dataset(
     metrics_a = calculate_financial_metrics(model_a_returns, holding_period_days=holding_period_days)
     metrics_b = calculate_financial_metrics(model_b_returns, holding_period_days=holding_period_days)
 
-    # Hypothesis conclusion with statistical significance test
-    min_sample = min(metrics_a["total_trades"], metrics_b["total_trades"])
-    is_statistically_significant = (min_sample >= 30)
-    
+    portfolio_a = simulate_portfolio_execution(model_a_trades, holding_period_days=holding_period_days)
+    portfolio_b = simulate_portfolio_execution(model_b_trades, holding_period_days=holding_period_days)
+
+    # Hypothesis conclusion with formal statistical significance test
+    significance_res = compute_hypothesis_significance(
+        model_a_trades=model_a_trades,
+        model_b_trades=model_b_trades,
+        min_required_trades=getattr(settings, "DYNAMIC_WEIGHT_MIN_TRADES", 30)
+    )
+
+    is_statistically_significant = significance_res["positive_edge_significant"]
+    difference_significant = significance_res["difference_significant"]
+    min_sample = significance_res["min_sample_size"]
+    min_sample_reached = significance_res["min_sample_reached"]
+
     sharpe_diff = metrics_b["sharpe_ratio"] - metrics_a["sharpe_ratio"]
     pf_diff = metrics_b["profit_factor"] - metrics_a["profit_factor"]
     wr_diff = metrics_b["win_rate"] - metrics_a["win_rate"]
@@ -309,16 +657,26 @@ def evaluate_backtest_dataset(
         "buy_threshold": buy_threshold,
         "model_a_baseline": {
             "name": "Model A (X Social + Technical + News Baseline)",
-            "metrics": metrics_a
+            "metrics": metrics_a,
+            "portfolio": portfolio_a
         },
         "model_b_multisource": {
             "name": "Model B (Multi-Source with Polymarket PMS)",
-            "metrics": metrics_b
+            "metrics": metrics_b,
+            "portfolio": portfolio_b
         },
         "hypothesis_analysis": {
             "polymarket_incremental_value": polymarket_adds_value,
             "is_statistically_significant": is_statistically_significant,
+            "positive_edge_significant": significance_res["positive_edge_significant"],
+            "negative_edge_significant": significance_res["negative_edge_significant"],
+            "difference_significant": difference_significant,
+            "min_sample_reached": min_sample_reached,
             "min_sample_size": min_sample,
+            "p_value": significance_res["p_value"],
+            "confidence_interval_95": significance_res["confidence_interval_95"],
+            "mean_return_delta_pct": significance_res["mean_return_delta_pct"],
+            "test_method": significance_res["test_method"],
             "win_rate_delta_pp": round(wr_diff, 1),
             "profit_factor_delta": round(pf_diff, 2),
             "sharpe_delta": round(sharpe_diff, 2)
@@ -338,8 +696,10 @@ def calculate_calibrated_prediction_weight(
     
     Guarantees:
     1. Statistical Sample Gate: Requires >= min_trades (default 30) on both arms before departing from base prior.
-    2. Strict Risk Bounds: Limits calibrated weight to [pred_min (5%), pred_max (25%)].
-    3. Sum Conservation: Proportionally renormalizes the other 5 pillar weights so the sum is identically 1.0000.
+    2. Statistical Significance Gate: Requires statistical significance (two-sided difference_significant with 95% CI != 0)
+       so feedback is not activated merely by reaching N=30 on random noise.
+    3. Strict Risk Bounds: Limits calibrated weight to [pred_min (5%), pred_max (25%)].
+    4. Sum Conservation: Proportionally renormalizes the other 5 pillar weights so the sum is identically 1.0000.
     """
     from app.config import settings
 
@@ -360,16 +720,22 @@ def calculate_calibrated_prediction_weight(
     trades_b = horizon.get("model_b_multisource", {}).get("metrics", {}).get("total_trades", 0)
     sample_size = min(trades_a, trades_b)
     
-    delta_sharpe = float(horizon.get("hypothesis_analysis", {}).get("sharpe_delta", 0.0))
-    win_rate_delta = float(horizon.get("hypothesis_analysis", {}).get("win_rate_delta_pp", 0.0))
+    hyp_analysis = horizon.get("hypothesis_analysis", {})
+    delta_sharpe = float(hyp_analysis.get("sharpe_delta", 0.0))
+    win_rate_delta = float(hyp_analysis.get("win_rate_delta_pp", 0.0))
+    # Check difference_significant for two-directional calibration with conservative default False
+    is_diff_significant = hyp_analysis.get(
+        "difference_significant",
+        hyp_analysis.get("is_statistically_significant", False)
+    )
 
     base_weights = {
         "social": getattr(settings, "WEIGHT_SOCIAL", 0.30),
         "prediction": base_pred_weight,
         "news": getattr(settings, "WEIGHT_NEWS", 0.20),
-        "momentum": getattr(settings, "WEIGHT_MOMENTUM", 0.20),
+        "momentum": getattr(settings, "WEIGHT_MOMENTUM", 0.15),
         "fundamental": getattr(settings, "WEIGHT_FUNDAMENTALS", 0.10),
-        "risk": getattr(settings, "WEIGHT_RISK", 0.05)
+        "risk": getattr(settings, "WEIGHT_RISK", 0.10)
     }
 
     if sample_size < min_sample:
@@ -383,33 +749,45 @@ def calculate_calibrated_prediction_weight(
             "win_rate_delta_pp": win_rate_delta,
             "sample_size": sample_size,
             "min_required_sample": min_sample,
-            "effective_weights": dict(base_weights)
+            "effective_weights": base_weights
         }
 
-    # Bounded modulation by Delta Sharpe: multiplier between 0.50x and 1.667x
-    # delta_sharpe = +1.0 -> multiplier = 1.5 -> weight = 0.225
-    # delta_sharpe = -1.0 -> multiplier = 0.5 -> weight = 0.075
-    raw_delta_factor = max(-0.5, min(0.5, delta_sharpe / 2.0))
-    raw_multiplier = 1.0 + raw_delta_factor
-    calibrated_pred_weight = max(p_min, min(p_max, base_pred_weight * raw_multiplier))
-    actual_multiplier = calibrated_pred_weight / base_pred_weight
+    if not is_diff_significant:
+        return {
+            "is_calibrated": False,
+            "status": f"PRIOR_BASELINE_NOT_STATISTICALLY_SIGNIFICANT (p={hyp_analysis.get('p_value', 'N/A')})",
+            "base_weight": base_pred_weight,
+            "calibrated_weight": base_pred_weight,
+            "multiplier": 1.0,
+            "delta_sharpe": delta_sharpe,
+            "win_rate_delta_pp": win_rate_delta,
+            "sample_size": sample_size,
+            "min_required_sample": min_sample,
+            "effective_weights": base_weights
+        }
 
-    # Proportional re-normalization of other 5 pillars
-    other_base_sum = sum(v for k, v in base_weights.items() if k != "prediction")
-    remaining_budget = 1.0 - calibrated_pred_weight
-    scale_factor = remaining_budget / other_base_sum if other_base_sum > 0 else 1.0
+    # Proportional adjustment based on Delta Sharpe
+    # Delta Sharpe +1.0 -> multiplier 1.5 -> weight = 0.15 * 1.5 = 0.225
+    raw_multiplier = 1.0 + (delta_sharpe * 0.5)
+    calibrated_pred_weight = max(p_min, min(p_max, base_pred_weight * raw_multiplier))
+    actual_multiplier = calibrated_pred_weight / base_pred_weight if base_pred_weight > 0 else 1.0
+
+    # Renormalize other weights to ensure sum == 1.0000
+    other_sum_base = sum(w for k, w in base_weights.items() if k != "prediction")
+    remaining_weight = 1.0 - calibrated_pred_weight
+    scale_factor = remaining_weight / other_sum_base if other_sum_base > 0 else 1.0
 
     effective_weights = {}
-    for k, v in base_weights.items():
+    for k, w in base_weights.items():
         if k == "prediction":
             effective_weights[k] = round(calibrated_pred_weight, 4)
         else:
-            effective_weights[k] = round(v * scale_factor, 4)
+            effective_weights[k] = round(w * scale_factor, 4)
 
-    # Reconcile rounding to strict 1.0000
-    diff = 1.0 - sum(effective_weights.values())
-    if abs(diff) > 1e-6:
-        effective_weights["social"] = round(effective_weights["social"] + diff, 4)
+    # Correct rounding drift on largest component
+    drift = 1.0 - sum(effective_weights.values())
+    if abs(drift) > 1e-6:
+        effective_weights["social"] = round(effective_weights["social"] + drift, 4)
 
     return {
         "is_calibrated": True,
@@ -425,25 +803,52 @@ def calculate_calibrated_prediction_weight(
     }
 
 
-def run_historical_backtest(db: Session, lookback_days: int = 60) -> Dict[str, Any]:
+def run_historical_backtest(
+    db: Session,
+    lookback_days: int = 60,
+    include_mock: bool = False
+) -> Dict[str, Any]:
     """
     Runs full backtesting engine over database snapshot history.
-    Filters snapshots within lookback_days window.
+    Filters snapshots within lookback_days window and excludes synthetic (MOCK) data by default.
     """
     cutoff = utc_now() - timedelta(days=lookback_days)
-    snaps_db = (
+    query = (
         db.query(SSISnapshotModel)
         .filter(SSISnapshotModel.timestamp >= cutoff)
-        .order_by(SSISnapshotModel.timestamp.asc())
-        .all()
     )
+    if not include_mock:
+        query = query.filter(SSISnapshotModel.data_source != "MOCK")
+
+    snaps_db = query.order_by(SSISnapshotModel.timestamp.asc()).all()
     
-    snapshots_list = [
-        {
+    snapshots_list = []
+    for s in snaps_db:
+        fund_dict = None
+        if getattr(s, "fundamentals_data", None):
+            try:
+                fund_dict = json.loads(s.fundamentals_data)
+            except Exception:
+                fund_dict = None
+        if fund_dict is None and getattr(s, "runway_months", None) is not None:
+            fund_dict = {"runway_months": s.runway_months}
+
+        weights_dict = None
+        if getattr(s, "effective_weights", None):
+            try:
+                weights_dict = json.loads(s.effective_weights)
+            except Exception:
+                weights_dict = None
+
+        mkt_status = getattr(s, "market_status", None) or "AVAILABLE"
+        rsi_val = getattr(s, "rsi14", None)
+
+        snapshots_list.append({
             "ticker": s.ticker,
             "timestamp": s.timestamp,
             "social_score": s.social_score,
             "prediction_score": s.prediction_score,
+            "prediction_quality": getattr(s, "prediction_quality", 50.0),
             "news_score": s.news_score,
             "momentum_score": s.momentum_score,
             "risk_score": s.risk_score,
@@ -453,11 +858,24 @@ def run_historical_backtest(db: Session, lookback_days: int = 60) -> Dict[str, A
             "post_count": getattr(s, "post_count", None),
             "news_count": getattr(s, "news_count", None),
             "prediction_count": getattr(s, "prediction_count", None),
+            "data_quality": getattr(s, "data_quality", 100.0),
             "price": s.price,
-            "signal": s.signal
-        }
-        for s in snaps_db
-    ]
+            "volume": getattr(s, "volume", None),
+            "signal": s.signal,
+            "base_signal": getattr(s, "base_signal", None),
+            "signal_modifier": getattr(s, "signal_modifier", None),
+            "rsi14": rsi_val,
+            "market_status": mkt_status,
+            "fundamentals": fund_dict,
+            "effective_weights": weights_dict,
+            "rules_version": getattr(s, "rules_version", "2.0.0"),
+            "indicators": {
+                "price": s.price,
+                "rsi14": rsi_val,
+                "status": mkt_status,
+                "technical_score": s.technical_score
+            }
+        })
 
     # Evaluate for 1D, 3D, 5D holding horizons
     horizon_1d = evaluate_backtest_dataset(snapshots_list, holding_period_days=1)

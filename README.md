@@ -17,12 +17,16 @@ SMIE sintetiza de forma desacoplada la **narrativa social (X/Twitter)**, las **p
 - **`Risk / Safety Score` (0–100):** Métrica cuantitativa de seguridad y compresión de riesgo calculada a partir de ATR normalizado, posición frente a bandas de Bollinger y drawdown.
 - **`Canonical Signals & Dilution Modifiers`:** Desacoplamiento estricto entre `base_signal` canónico (`STRONG BUY`, `BUY`, `WATCH`, `HOLD`, `AVOID`, `STRONG AVOID`) y `signal_modifier` (`OVEREXTENDED`, `DILUTION RISK`, `CONFLICTING SOURCES`, `LOW DATA QUALITY`, `NO MKT DATA`).
 - **`Market Score` (0–100):** Confirmación técnica del precio basada en EMA200, RSI(14) con suavizado Wilder RMA, Bollinger Bands, MACD normalizado por ATR/Precio y ratio de volumen.
-- **`Fundamental Health & Capital Raise Risk`:** Salud financiera sectorial basada en Cash Runway (40%), Solvencia (25%), Crecimiento YoY (20%) y Márgenes (15%). Detección por umbral: activa alertas críticas `CAPITAL_RAISE_RISK` y modificadores de dilución cuando el runway cae por debajo de 6 meses.
-- **`Catastrophic Catalyst Coverage`:** Categoría dedicada `LAUNCH_FAILURE` con importancia `CRITICAL` y sesgo `BEARISH` para explosiones, fallos de lanzamiento, anomalías de cohetes y pérdidas de payload.
-- **`Data Provenance & Live Data Governance`:** Trazabilidad estricta a nivel de fila (`source` en `social_posts` y `prediction_markets`), cálculo dinámico de procedencia (`LIVE`, `DEGRADED`, `MOCK`), purga automática de datos sintéticos y distintivos visuales en el radar de alertas y notificaciones.
+- **`Fundamental Health & Adaptive Normalization`:** Salud financiera sectorial basada en componentes observados (Cash Runway 40%, Solvencia 25%, Crecimiento YoY 20% y Márgenes 15%) reescalados dinámicamente sin imputaciones ficticias de 50.0. Detección por umbral: activa alertas críticas `CAPITAL_RAISE_RISK` y modificadores de dilución cuando el runway cae por debajo de 6 meses.
+- **`Single-Source Confidence Gating`:** Eliminación del acuerdo artificial ($1.0$); si existe solo 1 fuente activa aislada, se exige corroboración cruzada y se omite el bono de confianza ($+15\%$) para evitar sobreponderar publicaciones aisladas.
+- **`Paired Block Bootstrap Backtesting`:** Remuestreo por bloques temporales emparejados y sincronizados (*Paired Block Bootstrap*) para contrastar significancia estadística entre el Modelo A y el Modelo B preservando la autocorrelación serial del mercado.
+- **`Effective Weights Vector Persistence`:** Exportación y persistencia inmutable del vector normalizado de pesos efectivos (`effective_weights`) por snapshot y versión de estrategia.
+- **`Catastrophic Catalyst Coverage`:** Categoría dedicada `LAUNCH_FAILURE` con importancia `CRITICAL` y sesgo `BEARISH` para explosiones, fallos de lanzamiento, anomalías de cohetes y pérdidas de payload, con ranking estricto para evitar contradicciones entre razones.
+- **`Data Provenance & Live Data Governance`:** Trazabilidad estricta a nivel de fila (`source` en `social_posts` y `prediction_markets`), cálculo dinámico de procedencia (`LIVE`, `DEGRADED`, `MOCK`), purga automática de datos sintéticos y distintivos visuales en el radar de alertas y dashboard.
 - **`Atomic Mutex Locking (HTTP 409)`:** Ejecución asíncrona no bloqueante vía FastAPI `BackgroundTasks`, respuesta inmediata HTTP 202 Accepted, adquisición atómica anti-carrera y rechazo instantáneo HTTP 409 Conflict.
 - **`Episode-Based Desktop Notifications`:** Notificaciones de escritorio en tiempo real (Windows Toast) con arranque en frío silencioso, claves por episodio (`{alert_id}@{opened_at}`) que permiten alertar oportunamente sobre reaperturas sin duplicados intermedios.
 - **`Closed-Loop Dynamic Weight Calibration`:** Retroalimentación empírica en ciclo cerrado desde el motor de backtesting hacia las ponderaciones del SMI basada en $\Delta\text{Sharpe}$ y compuertas de significancia bilateral ($N \ge 30$).
+- **`171 Tests Automatizados`:** Cobertura exhaustiva de integridad, paridad de estrategias, no-anticipación temporal, desambiguación semántica y convergencia matemática.
 
 ---
 
@@ -90,4 +94,4 @@ Abre tu navegador en: **`http://localhost:8000`**
 - **RKLB** — Rocket Lab
 - **SATL** — Satellogic
 - **SPCE** — Virgin Galactic
-- **SPCX** — Procure Space ETF / Proxy de Eventos Sectoriales (SpaceX Starship, Artemis, FCC)
+- **SPCX** — SpaceX (Space Exploration Technologies Corp.)

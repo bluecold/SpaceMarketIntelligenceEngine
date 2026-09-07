@@ -709,6 +709,442 @@ def test_negative_semantic_polarity_scoring():
     assert bd["markets"][0]["adjusted_delta_24h"] == -10.0
 
 
+def test_polymarket_resolution_rule_does_not_invert_positive_question():
+    """
+    Validates the fix for audit issue 9:
+    'Will Rocket Lab launch successfully?' with resolution rule
+    'Resolves No in case of launch failure.' must maintain polarity = 1.
+    The negative resolution condition for 'No' must not invert a favorable question.
+    """
+    from app.collectors.polymarket_provider import PolymarketGammaProvider
+
+    provider = PolymarketGammaProvider()
+    event_data = {
+        "id": "ev-pos-audit",
+        "title": "Rocket Lab Launch Success",
+        "slug": "rocket-lab-electron-launch",
+        "description": "Market resolution rules: Resolves No in case of launch failure, delay, or mission cancellation."
+    }
+    market_data = {
+        "id": "m-pos-audit",
+        "question": "Will Rocket Lab launch successfully?",
+        "outcomes": '["Yes", "No"]',
+        "outcomePrices": '["0.85", "0.15"]',  # 85% chance of success
+        "volumeNum": 250000.0,
+        "liquidityNum": 100000.0,
+        "spread": 0.01,
+        "priceChange24h": 5.0
+    }
+
+    parsed = provider._parse_gamma_market(event_data, market_data, ticker="RKLB")
+    assert parsed is not None
+    assert parsed.polarity == 1, f"Expected polarity 1 (bullish on YES), got {parsed.polarity}"
+
+    # Calculate PMS for this market: 85% probability of success should be highly bullish (> 70)
+    pms, conf, qual, bd = calculate_prediction_market_score("RKLB", [parsed])
+    assert pms is not None
+    assert pms > 70.0, f"Expected bullish PMS (>70) for 85% success probability, got {pms}"
+    assert bd["markets"][0]["probability"] == 0.85
+    assert bd["markets"][0]["polarity"] == 1
+
+
+def test_polymarket_explicit_reviewable_polarity_mapping():
+    """
+    Validates that explicit reviewable polarity mapping (PMS_EXPLICIT_POLARITY_MAP)
+    takes precedence over automated heuristic classification.
+    """
+    from app.collectors.polymarket_provider import PolymarketGammaProvider, PMS_EXPLICIT_POLARITY_MAP
+
+    provider = PolymarketGammaProvider()
+    test_market_id = "custom-override-market-123"
+    PMS_EXPLICIT_POLARITY_MAP[test_market_id] = -1
+
+    try:
+        event_data = {"id": "ev-override", "title": "Overridden Market", "slug": "overridden-slug"}
+        market_data = {
+            "id": test_market_id,
+            "question": "Neutral sounding space event question?",
+            "outcomes": '["Yes", "No"]',
+            "outcomePrices": '["0.50", "0.50"]'
+        }
+        parsed = provider._parse_gamma_market(event_data, market_data, ticker="ASTS")
+        assert parsed is not None
+        assert parsed.polarity == -1, f"Expected explicit override polarity -1, got {parsed.polarity}"
+    finally:
+        PMS_EXPLICIT_POLARITY_MAP.pop(test_market_id, None)
+
+
+def test_polymarket_status_inference_active_closed_resolved():
+    """
+    Test that PolymarketGammaProvider dynamically parses market status:
+    - Active market with future end_date -> ACTIVE
+    - Market with closed=True -> CLOSED / RESOLVED
+    - Market with resolutionDate -> RESOLVED
+    - Market with past end_date -> CLOSED
+    """
+    from app.collectors.polymarket_provider import PolymarketGammaProvider
+
+    provider = PolymarketGammaProvider()
+    future_date = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+    past_date = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+
+    # 1. Active future market
+    m1 = provider._parse_gamma_market(
+        event={"id": "ev-1", "title": "Future Launch", "active": True, "closed": False},
+        m={"id": "m-1", "question": "Will ASTS launch satellite?", "endDate": future_date, "outcomes": '["Yes", "No"]', "outcomePrices": '["0.7", "0.3"]'},
+        ticker="ASTS"
+    )
+    assert m1 is not None
+    assert m1.status == "ACTIVE"
+    assert m1.end_date is not None
+
+    # 2. Closed market
+    m2 = provider._parse_gamma_market(
+        event={"id": "ev-2", "title": "Closed Event", "active": False, "closed": True},
+        m={"id": "m-2", "question": "Did Rocket Lab launch in 2025?", "closed": True, "outcomes": '["Yes", "No"]', "outcomePrices": '["1.0", "0.0"]'},
+        ticker="RKLB"
+    )
+    assert m2 is not None
+    assert m2.status in ("CLOSED", "RESOLVED")
+
+    # 3. Market with resolutionDate
+    m3 = provider._parse_gamma_market(
+        event={"id": "ev-3", "title": "Resolved Event", "active": False, "closed": True},
+        m={"id": "m-3", "question": "SpaceX Starship orbital flight test", "resolutionDate": past_date, "resolved": True, "outcomes": '["Yes", "No"]', "outcomePrices": '["1.0", "0.0"]'},
+        ticker="SPCX"
+    )
+    assert m3 is not None
+    assert m3.status == "RESOLVED"
+    assert m3.resolution_date is not None
+
+    # 4. Market with past endDate and not explicitly marked closed
+    m4 = provider._parse_gamma_market(
+        event={"id": "ev-4", "title": "Past Event", "active": True, "closed": False},
+        m={"id": "m-4", "question": "Expired contract", "endDate": past_date, "outcomes": '["Yes", "No"]', "outcomePrices": '["0.5", "0.5"]'},
+        ticker="LUNR"
+    )
+    assert m4 is not None
+    assert m4.status == "CLOSED"
+
+
+def test_repository_upsert_updates_status_and_resolution_date():
+    """
+    Test that save_prediction_markets updates status, resolution_date, probabilities and quality
+    when an existing market transitions to RESOLVED/CLOSED.
+    """
+    import uuid
+    from app.database.connection import SessionLocal
+    from app.database.repository import save_prediction_markets, ensure_tickers_seeded
+    from app.database.models import PredictionMarketModel
+
+    with SessionLocal() as db:
+        ensure_tickers_seeded(db)
+        market_ext_id = f"poly-audit-15-test-{uuid.uuid4().hex[:6]}"
+
+        # 1. Initial insert as ACTIVE
+        initial_market = PredictionMarketData(
+            external_id=market_ext_id,
+            ticker="ASTS",
+            title="ASTS Q1 Deployment",
+            status="ACTIVE",
+            created_at=datetime.now(timezone.utc),
+            end_date=datetime.now(timezone.utc) + timedelta(days=30),
+            yes_probability=0.60,
+            no_probability=0.40,
+            volume=50000.0,
+            liquidity=25000.0,
+            spread=0.02,
+            quality_score=75.0
+        )
+        save_prediction_markets(db, [initial_market])
+
+        saved = db.query(PredictionMarketModel).filter(PredictionMarketModel.external_id == market_ext_id).first()
+        assert saved is not None
+        assert saved.status == "ACTIVE"
+        assert saved.yes_probability == 0.60
+
+        # 2. Update to RESOLVED
+        res_date = datetime.now(timezone.utc)
+        updated_market = PredictionMarketData(
+            external_id=market_ext_id,
+            ticker="ASTS",
+            title="ASTS Q1 Deployment (Resolved)",
+            status="RESOLVED",
+            created_at=datetime.now(timezone.utc),
+            end_date=datetime.now(timezone.utc) + timedelta(days=30),
+            resolution_date=res_date,
+            yes_probability=1.00,
+            no_probability=0.00,
+            volume=75000.0,
+            liquidity=0.0,
+            spread=0.00,
+            quality_score=90.0
+        )
+        save_prediction_markets(db, [updated_market])
+
+        updated = db.query(PredictionMarketModel).filter(PredictionMarketModel.external_id == market_ext_id).first()
+        assert updated is not None
+        assert updated.status == "RESOLVED"
+        assert updated.yes_probability == 1.00
+        assert updated.resolution_date is not None
+
+
+def test_get_recent_prediction_markets_filters_expired_and_stale():
+    """
+    Test that get_recent_prediction_markets filters out:
+    - Markets with status != ACTIVE
+    - Markets with past end_date
+    - Markets with stale collected_at beyond max_age_days
+    """
+    import uuid
+    from app.database.connection import SessionLocal
+    from app.database.repository import save_prediction_markets, get_recent_prediction_markets, ensure_tickers_seeded, utc_now
+    from app.database.models import PredictionMarketModel
+
+    with SessionLocal() as db:
+        ensure_tickers_seeded(db)
+        now = utc_now()
+        uid = uuid.uuid4().hex[:6]
+        id_active = f"poly-filter-active-{uid}"
+        id_expired = f"poly-filter-expired-{uid}"
+        id_closed = f"poly-filter-closed-{uid}"
+        id_stale = f"poly-filter-stale-{uid}"
+
+        # 1. Fresh active market
+        m_active = PredictionMarketData(
+            external_id=id_active,
+            ticker="RKLB",
+            title="RKLB Active Mission",
+            status="ACTIVE",
+            created_at=datetime.now(timezone.utc),
+            end_date=datetime.now(timezone.utc) + timedelta(days=20),
+            yes_probability=0.80,
+            no_probability=0.20,
+            quality_score=80.0
+        )
+
+        # 2. Expired market (end_date in past)
+        m_expired = PredictionMarketData(
+            external_id=id_expired,
+            ticker="RKLB",
+            title="RKLB Expired Mission",
+            status="ACTIVE",
+            created_at=datetime.now(timezone.utc),
+            end_date=datetime.now(timezone.utc) - timedelta(days=2),
+            yes_probability=0.50,
+            no_probability=0.50,
+            quality_score=70.0
+        )
+
+        # 3. Closed market
+        m_closed = PredictionMarketData(
+            external_id=id_closed,
+            ticker="RKLB",
+            title="RKLB Closed Mission",
+            status="CLOSED",
+            created_at=datetime.now(timezone.utc),
+            end_date=datetime.now(timezone.utc) + timedelta(days=10),
+            yes_probability=0.50,
+            no_probability=0.50,
+            quality_score=70.0
+        )
+
+        save_prediction_markets(db, [m_active, m_expired, m_closed])
+
+        # 4. Stale market (manually backdate collected_at in DB)
+        m_stale = PredictionMarketModel(
+            external_id=id_stale,
+            ticker="RKLB",
+            title="RKLB Stale Mission",
+            status="ACTIVE",
+            created_at=now - timedelta(days=20),
+            end_date=now + timedelta(days=20),
+            yes_probability=0.70,
+            no_probability=0.30,
+            quality_score=75.0,
+            collected_at=now - timedelta(days=15)
+        )
+        db.add(m_stale)
+        db.commit()
+
+        # Query recent markets for RKLB with default max_age_days=7
+        recent_rklb = get_recent_prediction_markets(db, ticker="RKLB", max_age_days=7, include_expired=False)
+        returned_ids = [m.external_id for m in recent_rklb]
+
+        assert id_active in returned_ids
+        assert id_expired not in returned_ids
+        assert id_closed not in returned_ids
+        assert id_stale not in returned_ids
+
+
+def test_gamma_clob_token_ids_parsing():
+    """
+    Verify that PolymarketGammaProvider._parse_gamma_market extracts the correct
+    clob_token_id according to the YES outcome index, as well as condition_id.
+    """
+    from app.collectors.polymarket_provider import PolymarketGammaProvider
+
+    provider = PolymarketGammaProvider()
+    event_data = {"id": "ev-100", "title": "ASTS Satellite Launch", "slug": "asts-satellite-launch"}
+    
+    # 1. Normal order ["Yes", "No"] with JSON string clobTokenIds
+    m_json_str = {
+        "id": "916715",
+        "conditionId": "0xabc123condition",
+        "question": "Will AST SpaceMobile launch satellite in 2026?",
+        "outcomes": '["Yes", "No"]',
+        "outcomePrices": '["0.75", "0.25"]',
+        "clobTokenIds": '["21742633143463909520857905973063548906377770857508003661148888062955562858712", "48331023948230948203948230948230948230948230948230948230948230948230948230948"]',
+        "volume": "100000",
+        "liquidity": "25000",
+        "spread": "0.02"
+    }
+    parsed = provider._parse_gamma_market(event_data, m_json_str, "ASTS")
+    assert parsed is not None
+    assert parsed.external_id == "916715"
+    assert parsed.condition_id == "0xabc123condition"
+    assert parsed.clob_token_id == "21742633143463909520857905973063548906377770857508003661148888062955562858712"
+    assert parsed.yes_probability == 0.75
+
+    # 2. Reverse order ["No", "Yes"] with python list clobTokenIds
+    m_reverse = {
+        "id": "916716",
+        "conditionId": "0xdef456condition",
+        "question": "Will Rocket Lab launch Neutron in 2026?",
+        "outcomes": ["No", "Yes"],
+        "outcomePrices": ["0.30", "0.70"],
+        "clobTokenIds": ["token_no_123", "token_yes_456"],
+        "volumeNum": 50000,
+        "liquidityNum": 15000,
+        "spread": 0.02
+    }
+    parsed_rev = provider._parse_gamma_market(event_data, m_reverse, "RKLB")
+    assert parsed_rev is not None
+    assert parsed_rev.clob_token_id == "token_yes_456"
+    assert parsed_rev.yes_probability == 0.70
+
+
+def test_get_history_with_gamma_id_resolution(monkeypatch):
+    """
+    Verify that PolymarketGammaProvider.get_history automatically resolves
+    a short Gamma ID into its CLOB token ID before fetching prices-history.
+    """
+    from app.collectors.polymarket_provider import PolymarketGammaProvider
+    import httpx
+
+    gamma_id = "916715"
+    clob_token = "21742633143463909520857905973063548906377770857508003661148888062955562858712"
+
+    gamma_market_resp = {
+        "id": gamma_id,
+        "conditionId": "0xabc123",
+        "question": "ASTS Satellite",
+        "outcomes": ["Yes", "No"],
+        "outcomePrices": ["0.80", "0.20"],
+        "clobTokenIds": [clob_token, "other_token"]
+    }
+
+    clob_history_resp = {
+        "history": [
+            {"t": 1756400000, "p": 0.75, "v": 5000.0},
+            {"t": 1756403600, "p": 0.80, "v": 12000.0}
+        ]
+    }
+
+    requested_urls = []
+
+    class FakeResponse:
+        def __init__(self, status_code, json_data):
+            self.status_code = status_code
+            self._json = json_data
+        def json(self):
+            return self._json
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+        async def get(self, url, params=None):
+            requested_urls.append((url, params))
+            if "gamma-api.polymarket.com/markets/916715" in url:
+                return FakeResponse(200, gamma_market_resp)
+            elif "clob.polymarket.com/prices-history" in url:
+                # If queried with CLOB token, return data; if queried with gamma ID, return empty
+                if params and params.get("market") == clob_token:
+                    return FakeResponse(200, clob_history_resp)
+                return FakeResponse(200, {"history": []})
+            return FakeResponse(404, {})
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    provider = PolymarketGammaProvider()
+    
+    # Call get_history with gamma ID
+    points = asyncio.run(provider.get_history(gamma_id))
+    assert len(points) == 2
+    assert points[0].yes_probability == 0.75
+    assert points[1].yes_probability == 0.80
+
+    # Ensure gamma lookup happened and CLOB was called with clob_token
+    assert any("gamma-api.polymarket.com/markets/916715" in req[0] for req in requested_urls)
+    assert any(req[1] and req[1].get("market") == clob_token for req in requested_urls if "prices-history" in req[0])
+
+
+def test_save_prediction_markets_clob_token_persistence():
+    """
+    Verify that save_prediction_markets persists clob_token_id and condition_id to DB
+    and updates them on subsequent upserts.
+    """
+    import uuid
+    from app.database.connection import get_db
+    from app.database.models import PredictionMarketModel
+    from app.database.repository import save_prediction_markets
+
+    uid = str(uuid.uuid4())[:8]
+    ext_id = f"test_clob_persist_{uid}"
+    clob_id = f"clob_token_{uid}"
+    cond_id = f"cond_{uid}"
+
+    db = next(get_db())
+    try:
+        m = PredictionMarketData(
+            external_id=ext_id,
+            ticker="ASTS",
+            title="ASTS Test Market",
+            status="ACTIVE",
+            created_at=datetime.now(timezone.utc),
+            yes_probability=0.65,
+            no_probability=0.35,
+            clob_token_id=clob_id,
+            condition_id=cond_id
+        )
+
+        # 1. Insert
+        inserted = save_prediction_markets(db, [m])
+        assert inserted == 1
+
+        db_item = db.query(PredictionMarketModel).filter(PredictionMarketModel.external_id == ext_id).first()
+        assert db_item is not None
+        assert db_item.clob_token_id == clob_id
+        assert db_item.condition_id == cond_id
+
+        # 2. Update with new clob_token_id
+        m.clob_token_id = f"updated_{clob_id}"
+        save_prediction_markets(db, [m])
+
+        db.refresh(db_item)
+        assert db_item.clob_token_id == f"updated_{clob_id}"
+    finally:
+        db.query(PredictionMarketModel).filter(PredictionMarketModel.external_id == ext_id).delete()
+        db.commit()
+        db.close()
+
+
+
+
 
 
 

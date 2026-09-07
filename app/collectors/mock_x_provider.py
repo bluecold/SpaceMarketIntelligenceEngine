@@ -60,7 +60,8 @@ class MockXProvider(XProvider):
                 likes=random.randint(2, 450),
                 reposts=random.randint(0, 120),
                 replies=random.randint(0, 45),
-                views=random.randint(150, 12000)
+                views=random.randint(150, 12000),
+                source="MOCK"
             ))
             
         return posts

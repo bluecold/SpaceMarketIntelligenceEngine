@@ -7,9 +7,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class TickerConfig(BaseModel):
     symbol: str
     name: str
+    narrative_entity: str
     aliases: List[str]
     sector: str = "Space Technology"
     is_private_or_test: bool = False
+    is_tradable: bool = True
+    market_symbol: Optional[str] = None
+    exchange: str = "NASDAQ"
+    validation_status: str = "VALIDATED"
 
 
 # Core initial space stocks specified for SMIE v2.0
@@ -17,33 +22,62 @@ INITIAL_TICKERS = [
     TickerConfig(
         symbol="ASTS",
         name="AST SpaceMobile",
+        narrative_entity="AST SpaceMobile",
         aliases=["$ASTS", "AST SpaceMobile", "ASTSpaceMobile", "ASTS_SpaceMobile", "BlueBird"],
-        sector="Direct-to-Cell / Satellite Telecom"
+        sector="Direct-to-Cell / Satellite Telecom",
+        is_private_or_test=False,
+        is_tradable=True,
+        market_symbol="ASTS",
+        exchange="NASDAQ",
+        validation_status="VALIDATED"
     ),
     TickerConfig(
         symbol="RKLB",
         name="Rocket Lab",
+        narrative_entity="Rocket Lab",
         aliases=["$RKLB", "Rocket Lab", "RocketLab", "Neutron rocket", "Electron rocket"],
-        sector="Launch Vehicles & Space Systems"
+        sector="Launch Vehicles & Space Systems",
+        is_private_or_test=False,
+        is_tradable=True,
+        market_symbol="RKLB",
+        exchange="NASDAQ",
+        validation_status="VALIDATED"
     ),
     TickerConfig(
         symbol="SATL",
         name="Satellogic",
+        narrative_entity="Satellogic",
         aliases=["$SATL", "Satellogic", "Aleph-1"],
-        sector="Geospatial & Earth Observation"
+        sector="Geospatial & Earth Observation",
+        is_private_or_test=False,
+        is_tradable=True,
+        market_symbol="SATL",
+        exchange="NASDAQ",
+        validation_status="VALIDATED"
     ),
     TickerConfig(
         symbol="SPCE",
         name="Virgin Galactic",
+        narrative_entity="Virgin Galactic",
         aliases=["$SPCE", "Virgin Galactic", "VirginGalactic", "VSS Unity", "Delta Class"],
-        sector="Commercial Spaceflight & Tourism"
+        sector="Commercial Spaceflight & Tourism",
+        is_private_or_test=False,
+        is_tradable=True,
+        market_symbol="SPCE",
+        exchange="NYSE",
+        validation_status="VALIDATED"
     ),
     TickerConfig(
         symbol="SPCX",
-        name="SpaceX / Space ETF",
-        aliases=["$SPCX", "SpaceX", "Space X", "Starship", "Starlink", "Procure Space ETF"],
-        sector="Space ETF & Sector Proxy",
-        is_private_or_test=False
+        name="SpaceX",
+        narrative_entity="SpaceX",
+        aliases=["$SPCX", "SpaceX", "Space X", "Starship", "Starlink"],
+        sector="Launch Vehicles & Satellite Infrastructure",
+        is_private_or_test=False,
+        is_tradable=True,
+        market_symbol="SPCX",
+        exchange="NASDAQ",
+        validation_status="VALIDATED"
     )
 ]
 
@@ -85,6 +119,7 @@ DEFAULT_EVENT_COMPANY_MAPPINGS: Dict[str, Dict[str, float]] = {
 
 class Settings(BaseSettings):
     APP_NAME: str = "Space Market Intelligence Engine"
+    ENVIRONMENT: str = "development"  # "development", "testing", "production"
     DEBUG: bool = True
     DATABASE_URL: str = "sqlite:///./data/space_sentiment.db"
     TIMEZONE: str = "America/Argentina/Cordoba"
@@ -124,6 +159,9 @@ class Settings(BaseSettings):
     POLYMARKET_API_URL: str = "https://gamma-api.polymarket.com"
     POLYMARKET_MIN_QUALITY: float = 30.0  # Quality threshold below which weight becomes 0
     POLYMARKET_LOOKBACK_HOURS: int = 24
+
+    # News Provider
+    NEWS_PROVIDER: str = "rss"  # "rss" or "mock"
     
     # Sentiment Model
     SENTIMENT_MODEL: str = "heuristic"  # "heuristic" or "ProsusAI/finbert"

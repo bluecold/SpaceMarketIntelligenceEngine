@@ -86,6 +86,9 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                 "market_source": getattr(ssi_snap, "market_source", "LIVE") or "LIVE",
                 "price": ssi_snap.price,
                 "market_status": mkt_snap.market_status if mkt_snap else "AVAILABLE",
+                "observed_at": mkt_snap.observed_at.isoformat() + "Z" if (mkt_snap and mkt_snap.observed_at) else None,
+                "candle_date": mkt_snap.candle_date if mkt_snap else None,
+                "market_session": mkt_snap.market_session if mkt_snap else None,
                 "timestamp": ssi_snap.timestamp.isoformat() + "Z" if ssi_snap.timestamp else None,
                 "data_age_hours": age_hours,
                 "is_stale": is_stale

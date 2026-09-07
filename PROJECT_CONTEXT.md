@@ -165,5 +165,14 @@ La suite de pruebas (`tests/`) está totalmente aislada de la red y la base de d
 ```powershell
 python -m pytest tests/ -v
 ```
-- **112 pruebas automatizadas** que se ejecutan en **~2.2 segundos**.
-- Cobertura integral de: paridad de estrategias sin sesgo de anticipación, invarianza de escala ATR, concurrencia atómica HTTP 409, episodios de alertas, extracción de fundamentales vía DataFrames, contracción bayesiana, detección de catalizadores destructivos (`LAUNCH_FAILURE`) y normalización adaptativa de 6 pilares.
+- **171 pruebas automatizadas** que se ejecutan de forma reproducible y con 100% de éxito.
+- Cobertura integral de:
+  - **Paridad de Estrategias y Cero Sesgo de Anticipación:** Validación matemática idéntica entre ejecución live y backtesting.
+  - **Invarianza de Escala ATR & Macd Normalizado:** Preservación de escalas relativas ante acciones de alta o baja volatilidad.
+  - **Gobernanza de Datos y Procedencia (Data Provenance):** Trazabilidad estricta (`LIVE`, `DEGRADED`, `MOCK`), flags de control y purga segura.
+  - **Single-Source Confidence Gating:** Eliminación de bonificación indebida (+15%) cuando solo existe una fuente activa.
+  - **Normalización Fundamental Adaptativa:** Reescalado dinámico sobre componentes observados sin imputación artificial neutra de 50.0.
+  - **Paired Block Bootstrap:** Remuestreo por bloques temporalmente sincronizados entre Model A y Model B para cálculo de significancia estadística.
+  - **Persistencia de Pesos Efectivos:** Serialización completa del vector `effective_weights` por snapshot.
+  - **Episodios de Alertas y Mutex Atómico HTTP 409:** Notificaciones silenciosas en arranque y prevención de carreras concurrentes en pipeline.
+  - **Cobertura de Catalizadores Catastróficos:** Detección prioritaria de `LAUNCH_FAILURE` evitando falsas contradicciones con noticias generales de lanzamientos.

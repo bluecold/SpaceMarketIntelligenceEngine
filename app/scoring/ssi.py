@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Dict, Any, Optional, List
 from app.database.models import SocialPostModel
 from app.scoring.social import calculate_social_score
@@ -5,7 +6,8 @@ from app.scoring.social import calculate_social_score
 
 def calculate_ssi(
     posts: Optional[List[SocialPostModel]] = None,
-    social_score: Optional[float] = None
+    social_score: Optional[float] = None,
+    analysis_timestamp: Optional[datetime] = None
 ) -> Dict[str, Any]:
     """
     Computes the Space Sentiment Index (SSI, 0 - 100) representing pure social sentiment from X/Twitter.
@@ -15,7 +17,7 @@ def calculate_ssi(
     Does NOT include prediction markets, news catalysts, or technical price indicators (those belong to SMI).
     """
     if posts is not None:
-        stats = calculate_social_score(posts)
+        stats = calculate_social_score(posts, analysis_timestamp=analysis_timestamp)
         return {
             "ssi": stats["social_score"],
             "social_score": stats["social_score"],

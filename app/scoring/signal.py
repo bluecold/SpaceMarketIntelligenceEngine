@@ -47,11 +47,15 @@ def generate_signal_and_explanation(
     # Extract post count to apply Bayesian shrinkage on small social sample sizes
     post_count = None
     if social_stats:
-        post_count = social_stats.get("total_posts") or social_stats.get("relevant_posts")
+        post_count = (
+            social_stats.get("effective_sample_size")
+            or social_stats.get("total_posts")
+            or social_stats.get("relevant_posts")
+        )
         
-    raw_social = social_score if social_score is not None else primary_index
-    effective_social = apply_bayesian_shrinkage(raw_social, post_count)
-    effective_mom = smi_mom_1d if smi_mom_1d != 0.0 else ssi_mom_1d
+    raw_social = social_score
+    effective_social = apply_bayesian_shrinkage(raw_social, post_count) if (raw_social is not None and post_count is not None) else raw_social
+    effective_mom = smi_mom_1d if (smi_mom_1d is not None and smi_mom_1d != 0.0) else (ssi_mom_1d if (ssi_mom_1d is not None and ssi_mom_1d != 0.0) else None)
     
     rsi = indicators.get("rsi14")
     price = indicators.get("price")
@@ -66,8 +70,14 @@ def generate_signal_and_explanation(
     cash_val = runway_info.get("cash")
     burn_val = runway_info.get("burn")
 
+    has_any_data = any(x is not None for x in [smi, ssi, social_score, prediction_score, news_score, technical_score_raw, fundamental_score, indicators.get("price")])
+    signal_modifier = None
+
     # 1. Base Signal Thresholds (Using SMI as the comprehensive index)
-    if primary_index >= settings.THRESHOLD_STRONG_BUY:
+    if not has_any_data or (data_quality is not None and data_quality == 0.0):
+        base_signal = "HOLD"
+        signal_modifier = "NO DATA"
+    elif primary_index >= settings.THRESHOLD_STRONG_BUY:
         base_signal = "STRONG BUY"
     elif primary_index >= settings.THRESHOLD_BUY:
         base_signal = "BUY"
@@ -79,8 +89,6 @@ def generate_signal_and_explanation(
         base_signal = "AVOID"
     else:
         base_signal = "STRONG AVOID"
-
-    signal_modifier = None
 
     # Capital Preservation Gate 1: Acute Source Contradiction (source_agreement <= -0.60)
     if source_agreement is not None and source_agreement <= -0.60:
@@ -119,7 +127,7 @@ def generate_signal_and_explanation(
     # 2. Tripartite Divergence Engine (X ↔ Polymarket ↔ Price)
     active_divergences = detect_divergences(
         ticker=ticker,
-        social_score=effective_social,
+        social_score=raw_social,
         prediction_score=prediction_score,
         prediction_delta_24h=eff_pred_delta,
         news_score=news_score,
@@ -154,7 +162,7 @@ def generate_signal_and_explanation(
             "level": "CRITICAL",
             "message": f"🛑 {ticker} issued STRONG AVOID signal (SMI: {primary_index}/100) — high capital risk"
         })
-    elif base_signal == "BUY" and effective_mom >= 3.0:
+    elif base_signal == "BUY" and effective_mom is not None and effective_mom >= 3.0:
         alerts.append({
             "id": f"{ticker}:SIGNAL:MOMENTUM_BUY",
             "ticker": ticker,
@@ -171,7 +179,7 @@ def generate_signal_and_explanation(
             else "MEDIUM"
         )
         alerts.append({
-            "id": f"{ticker}:DIVERGENCE:{div.type}",
+            "id": f"{ticker}:DIVERGENCE:{div.type}:{div.direction}",
             "ticker": ticker,
             "type": div.type,
             "category": "DIVERGENCE",
@@ -196,16 +204,21 @@ def generate_signal_and_explanation(
                 })
 
     # Fundamental Balance Sheet & Runway Alerts
-    cash_m = (cash_val / 1e6) if cash_val else 0.0
-    burn_m = (burn_val / 1e6) if burn_val else 0.0
+    cash_m = (cash_val / 1e6) if cash_val is not None else 0.0
+    burn_m = (burn_val / 1e6) if burn_val is not None else 0.0
+    as_of_str = f" as of {runway_info.get('as_of_date')}" if runway_info.get('as_of_date') else ""
     if runway_months is not None and runway_months < 6.0:
+        if runway_months == 0.0:
+            msg = f"🚨 {ticker} Critical Runway Alert: Cash exhausted (0.0 months remaining, ${cash_m:.0f}M cash / ${burn_m:.0f}M annual burn{as_of_str}) — acute survival/insolvency risk"
+        else:
+            msg = f"🚨 {ticker} Critical Runway Alert: {runway_months:.1f} months of cash remaining (${cash_m:.0f}M cash / ${burn_m:.0f}M annual burn{as_of_str}) — acute dilution/capital raise risk"
         alerts.append({
             "id": f"{ticker}:FUNDAMENTAL:CAPITAL_RAISE_RISK",
             "ticker": ticker,
             "type": "CAPITAL_RAISE_RISK",
             "category": "FUNDAMENTAL",
             "level": "CRITICAL",
-            "message": f"🚨 {ticker} Critical Runway Alert: {runway_months:.1f} months of cash remaining (${cash_m:.0f}M cash / ${burn_m:.0f}M annual burn) — acute dilution/capital raise risk"
+            "message": msg
         })
     elif runway_months is not None and runway_months < 12.0 and risk_tier == "HIGH":
         alerts.append({
@@ -214,7 +227,7 @@ def generate_signal_and_explanation(
             "type": "DILUTION_WATCH",
             "category": "FUNDAMENTAL",
             "level": "HIGH",
-            "message": f"⚠️ {ticker} Low Runway Alert: {runway_months:.1f} months of cash remaining (${cash_m:.0f}M cash) — watch for financing announcements"
+            "message": f"⚠️ {ticker} Low Runway Alert: {runway_months:.1f} months of cash remaining (${cash_m:.0f}M cash{as_of_str}) — watch for financing announcements"
         })
 
     # 4. Build Detailed Multi-Source "WHY?" Reasons (Explanations)
@@ -222,7 +235,9 @@ def generate_signal_and_explanation(
 
     # Fundamental Balance Sheet reasons
     if runway_months is not None:
-        if runway_months < 6.0:
+        if runway_months == 0.0:
+            reasons.append(f"- 🚨 Critical Capital Exhaustion: 0.0 months of cash runway remaining (${cash_m:.0f}M cash / ${burn_m:.0f}M burn{as_of_str}) — severe dilution/insolvency risk")
+        elif runway_months < 6.0:
             reasons.append(f"- 🚨 Critical Capital Raise Risk: only {runway_months:.1f} months of cash runway remaining before dilution")
         elif runway_months < 12.0:
             reasons.append(f"- Low cash runway: {runway_months:.1f} months of liquidity available (${cash_m:.0f}M cash)")
@@ -230,21 +245,27 @@ def generate_signal_and_explanation(
             reasons.append(f"+ Strong balance sheet runway: >24 months of cash reserves (low dilution risk)")
 
     # Social Narrative reasons
-    bull_pct = social_stats.get("weighted_bullish_pct", 0)
-    bear_pct = social_stats.get("weighted_bearish_pct", 0)
-    if bull_pct >= 60.0:
-        reasons.append(f"+ High social bullish sentiment: {bull_pct}% of relevant posts are bullish")
-    elif bear_pct >= 40.0:
-        reasons.append(f"- Elevated social bearish sentiment: {bear_pct}% of relevant posts are bearish")
+    bull_pct = social_stats.get("weighted_bullish_pct", 0) if social_stats else 0
+    bear_pct = social_stats.get("weighted_bearish_pct", 0) if social_stats else 0
+    if raw_social is not None and (post_count is None or post_count > 0):
+        if bull_pct >= 60.0:
+            reasons.append(f"+ High social bullish sentiment: {bull_pct}% of relevant posts are bullish")
+        elif bear_pct >= 40.0:
+            reasons.append(f"- Elevated social bearish sentiment: {bear_pct}% of relevant posts are bearish")
 
-    if effective_mom >= 8.0:
-        reasons.append(f"+ Rapid SMI acceleration (+{effective_mom:.1f} pts in 24h): strong momentum expansion")
-    elif effective_mom >= 4.0:
-        reasons.append(f"+ SMI momentum rising (+{effective_mom:.1f} pts in 24h)")
-    elif effective_mom <= -8.0:
-        reasons.append(f"- Severe SMI breakdown ({effective_mom:.1f} pts in 24h): rapid sentiment drop")
-    elif effective_mom <= -4.0:
-        reasons.append(f"- SMI momentum deteriorating ({effective_mom:.1f} pts in 24h)")
+    # No Data State reason
+    if not has_any_data or (data_quality is not None and data_quality == 0.0):
+        reasons.append("- No data sources available for evaluation (NO DATA)")
+
+    if effective_mom is not None and effective_mom != 0.0:
+        if effective_mom >= 8.0:
+            reasons.append(f"+ Rapid SMI acceleration (+{effective_mom:.1f} pts in 24h): strong momentum expansion")
+        elif effective_mom >= 4.0:
+            reasons.append(f"+ SMI momentum rising (+{effective_mom:.1f} pts in 24h)")
+        elif effective_mom <= -8.0:
+            reasons.append(f"- Severe SMI breakdown ({effective_mom:.1f} pts in 24h): rapid sentiment drop")
+        elif effective_mom <= -4.0:
+            reasons.append(f"- SMI momentum deteriorating ({effective_mom:.1f} pts in 24h)")
 
     # Prediction Market reasons
     if prediction_score is not None:
@@ -266,8 +287,19 @@ def generate_signal_and_explanation(
                 unique_catalysts[cat_type] = cat
             else:
                 existing_imp = unique_catalysts[cat_type].get("importance", "MEDIUM")
-                if current_rank < IMPORTANCE_RANK.get(existing_imp, 99):
+                existing_rank = IMPORTANCE_RANK.get(existing_imp, 99)
+                if current_rank < existing_rank:
                     unique_catalysts[cat_type] = cat
+                elif current_rank == existing_rank:
+                    # Risk-first tie breaker (BEARISH priority for capital preservation)
+                    if cat.get("direction") == "BEARISH" and unique_catalysts[cat_type].get("direction") != "BEARISH":
+                        unique_catalysts[cat_type] = cat
+
+        # Resolve inter-category conflicts: LAUNCH_FAILURE / LAUNCH_DELAY supersede generic LAUNCH
+        if "LAUNCH_FAILURE" in unique_catalysts or "LAUNCH_DELAY" in unique_catalysts:
+            unique_catalysts.pop("LAUNCH", None)
+        if "LAUNCH_FAILURE" in unique_catalysts and "LAUNCH_DELAY" in unique_catalysts:
+            unique_catalysts.pop("LAUNCH_DELAY", None)
 
         sorted_catalysts = sorted(
             unique_catalysts.values(),
@@ -319,5 +351,7 @@ def generate_signal_and_explanation(
         "active_divergences": [d.model_dump() for d in active_divergences],
         "explanation": explanation_text,
         "reasons": reasons,
-        "alerts": alerts
+        "alerts": alerts,
+        "social_score_raw": raw_social,
+        "social_score_effective": effective_social
     }

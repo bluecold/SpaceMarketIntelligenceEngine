@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from sqlalchemy import (
-    Column, Integer, String, Float, DateTime, Text, Boolean, ForeignKey, Index
+    Column, Integer, String, Float, DateTime, Text, Boolean, ForeignKey, Index, UniqueConstraint
 )
 from sqlalchemy.orm import relationship
 from app.database.connection import Base
@@ -28,9 +28,12 @@ class TickerModel(Base):
 
 class SocialPostModel(Base):
     __tablename__ = "social_posts"
+    __table_args__ = (
+        UniqueConstraint("tweet_id", "ticker", name="uq_social_posts_tweet_ticker"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
-    tweet_id = Column(String(64), unique=True, index=True, nullable=False)
+    tweet_id = Column(String(64), index=True, nullable=False)
     ticker = Column(String(10), ForeignKey("tickers.symbol"), index=True, nullable=False)
     username = Column(String(100), nullable=False)
     text = Column(Text, nullable=False)
@@ -64,13 +67,16 @@ class SocialPostModel(Base):
 
 class NewsItemModel(Base):
     __tablename__ = "news_items"
+    __table_args__ = (
+        UniqueConstraint("url", "ticker", name="uq_news_items_url_ticker"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     ticker = Column(String(10), ForeignKey("tickers.symbol"), index=True, nullable=False)
     title = Column(String(255), nullable=False)
     summary = Column(Text, nullable=True)
     source = Column(String(100), nullable=True)
-    url = Column(String(500), unique=True, index=True, nullable=False)
+    url = Column(String(500), index=True, nullable=False)
     published_at = Column(DateTime, nullable=False, index=True)
     collected_at = Column(DateTime, default=utc_now)
 
@@ -106,6 +112,8 @@ class PredictionMarketModel(Base):
     spread = Column(Float, default=0.0)             # Bid-Ask spread
     quality_score = Column(Float, default=50.0)     # 0 to 100
     event_key = Column(String(100), nullable=True, index=True) # e.g. "spacex_starship_orbital_success"
+    clob_token_id = Column(String(128), nullable=True, index=True) # 256-bit asset token ID for CLOB prices-history
+    condition_id = Column(String(128), nullable=True) # Polymarket condition ID
     polarity = Column(Integer, default=1) # +1 = Bullish when YES occurs, -1 = Bearish when YES occurs
     
     url = Column(String(500), nullable=True)
@@ -174,6 +182,9 @@ class MarketSnapshotModel(Base):
     id = Column(Integer, primary_key=True, index=True)
     ticker = Column(String(10), index=True, nullable=False)
     timestamp = Column(DateTime, default=utc_now, index=True)
+    observed_at = Column(DateTime, nullable=True, index=True)
+    candle_date = Column(String(20), nullable=True)
+    market_session = Column(String(20), nullable=True)  # REGULAR, CLOSED, WEEKEND
     price = Column(Float, nullable=True)
     volume = Column(Float, nullable=True)
     market_status = Column(String(30), default="AVAILABLE")  # AVAILABLE, DATA_UNAVAILABLE, ERROR
@@ -224,8 +235,13 @@ class SSISnapshotModel(Base):
     confidence = Column(Float, nullable=False)        # 0 to 100 %
     data_completeness = Column(Float, nullable=False) # 0 to 100 %
     data_quality = Column(Float, default=100.0)       # 0 to 100 %
+    prediction_quality = Column(Float, default=50.0)  # 0 to 100 %
     
-    post_count = Column(Integer, nullable=True)       # Social post sample count
+    post_count = Column(Integer, nullable=True)       # Effective social post sample count (deduped & author-bounded)
+    raw_post_count = Column(Integer, nullable=True)   # Total raw social posts fetched
+    relevant_post_count = Column(Integer, nullable=True) # Posts passing relevance threshold
+    unique_post_count = Column(Integer, nullable=True) # Unique posts after text deduplication
+    author_count = Column(Integer, nullable=True)     # Distinct authors count
     news_count = Column(Integer, nullable=True)       # News articles count
     prediction_count = Column(Integer, nullable=True) # Prediction markets count
     
@@ -238,6 +254,15 @@ class SSISnapshotModel(Base):
 
     price = Column(Float, nullable=True)
     volume = Column(Float, nullable=True)
+    rsi14 = Column(Float, nullable=True)
+    market_status = Column(String(30), default="AVAILABLE")
+    
+    # Fundamental Context & Governance
+    runway_months = Column(Float, nullable=True)
+    fundamentals_data = Column(Text, nullable=True)     # JSON serialized fundamental financial metrics
+    effective_weights = Column(Text, nullable=True)     # JSON serialized effective weights applied to SMI
+    rules_version = Column(String(20), default="2.0.0") # Version of scoring matrix & rules
+
     explanation = Column(Text, nullable=True)
 
     ticker_rel = relationship("TickerModel", back_populates="ssi_snapshots")

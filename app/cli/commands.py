@@ -1,19 +1,19 @@
 import asyncio
 import click
 from app.config import settings, INITIAL_TICKERS
-from app.jobs.runner import run_full_pipeline, get_x_provider, get_polymarket_provider, get_news_provider
+from app.jobs.runner import (
+    run_full_pipeline, get_x_provider, get_polymarket_provider, get_news_provider,
+    ingest_prediction_markets, ingest_social_posts_for_ticker, ingest_news_for_ticker,
+    ingest_market_for_ticker
+)
 from app.collectors.market_provider import YFinanceMarketProvider
 from app.database.connection import SessionLocal, init_db
 from app.database.repository import (
-    get_latest_ssi_snapshot, get_recent_social_posts,
+    ensure_tickers_seeded, get_latest_ssi_snapshot, get_recent_social_posts,
     get_latest_market_snapshot, get_recent_prediction_markets,
-    get_active_divergences, save_social_posts, save_news_items
+    get_active_divergences
 )
 from app.sentiment.classifier import get_sentiment_classifier
-from app.sentiment.weighting import (
-    calculate_relevance_score, calculate_recency_weight,
-    calculate_engagement_score, detect_catalysts
-)
 from app.reports.daily_report import generate_daily_report
 from app.backtesting.engine import run_historical_backtest
 
@@ -38,7 +38,9 @@ def run_all():
                 f"Confidence: {data['confidence']}%"
             )
     else:
-        click.echo(click.style(f"[ERROR] {res.get('error')}", fg="red"))
+        err_msg = res.get("error", "Pipeline execution failed")
+        click.echo(click.style(f"[ERROR] {err_msg}", fg="red"))
+        raise click.ClickException(str(err_msg))
 
 
 @cli.command("collect-social")
@@ -49,45 +51,17 @@ def collect_social():
         init_db()
         db = SessionLocal()
         try:
+            ensure_tickers_seeded(db)
             x_provider = get_x_provider()
             sentiment_classifier = get_sentiment_classifier()
             total_added = 0
             for cfg in INITIAL_TICKERS:
                 ticker = cfg.symbol
-                query = f"${ticker} OR \"{cfg.name}\""
-                posts_data = await x_provider.search(query=query, ticker=ticker, max_results=settings.SOCIAL_MAX_POSTS_PER_TICKER)
-                clean_posts = []
-                for p in posts_data:
-                    sent_res = sentiment_classifier.analyze(p.text)
-                    rel_score = calculate_relevance_score(p.text, ticker, cfg.name)
-                    rec_weight = calculate_recency_weight(p.created_at)
-                    eng_score = calculate_engagement_score(p.likes, p.reposts, p.replies, p.views)
-                    cat_type, cat_dir, cat_imp = detect_catalysts(p.text)
-                    clean_posts.append({
-                        "tweet_id": p.tweet_id,
-                        "ticker": ticker,
-                        "username": p.username,
-                        "text": p.text,
-                        "created_at": p.created_at,
-                        "url": p.url,
-                        "likes": p.likes,
-                        "reposts": p.reposts,
-                        "replies": p.replies,
-                        "views": p.views,
-                        "sentiment_score": sent_res["score"],
-                        "sentiment_label": sent_res["label"],
-                        "sentiment_confidence": sent_res["confidence"],
-                        "relevance_score": rel_score,
-                        "engagement_score": eng_score,
-                        "recency_weight": rec_weight,
-                        "catalyst": cat_type,
-                        "catalyst_direction": cat_dir,
-                        "catalyst_importance": cat_imp
-                    })
-                if clean_posts:
-                    added = save_social_posts(db, clean_posts)
-                    total_added += added
-                    click.echo(f"  [{ticker}] Ingested {len(clean_posts)} posts ({added} new).")
+                added, clean_posts, _ = await ingest_social_posts_for_ticker(
+                    db, cfg, x_provider=x_provider, sentiment_classifier=sentiment_classifier
+                )
+                total_added += added
+                click.echo(f"  [{ticker}] Ingested {len(clean_posts)} posts ({added} new).")
             click.echo(click.style(f"[DONE] Social posts collected ({total_added} new saved).", fg="green"))
         finally:
             db.close()
@@ -99,11 +73,17 @@ def collect_polymarket():
     """Collect prediction markets from Polymarket."""
     click.echo("[SMIE] Ingesting Polymarket prediction markets...")
     async def _run():
-        provider = get_polymarket_provider()
-        markets = await provider.get_markets()
-        click.echo(f"Retrieved {len(markets)} space prediction markets.")
-        for m in markets[:5]:
-            click.echo(f"  - {m.title} (YES: {int(m.yes_probability*100)}%, Quality: {m.quality_score})")
+        init_db()
+        db = SessionLocal()
+        try:
+            ensure_tickers_seeded(db)
+            provider = get_polymarket_provider()
+            markets = await ingest_prediction_markets(db, poly_provider=provider)
+            click.echo(f"Retrieved and saved {len(markets)} space prediction markets.")
+            for m in markets[:5]:
+                click.echo(f"  - {m.title} (YES: {int(m.yes_probability*100)}%, Quality: {m.quality_score})")
+        finally:
+            db.close()
     asyncio.run(_run())
 
 
@@ -115,37 +95,17 @@ def collect_news():
         init_db()
         db = SessionLocal()
         try:
+            ensure_tickers_seeded(db)
             news_provider = get_news_provider()
             sentiment_classifier = get_sentiment_classifier()
             total_added = 0
             for cfg in INITIAL_TICKERS:
                 ticker = cfg.symbol
-                query = f"{ticker} {cfg.name} space satellite rocket"
-                raw_news = await news_provider.get_news(query=query, ticker=ticker, max_results=20)
-                clean_news = []
-                for n in raw_news:
-                    sent_res = sentiment_classifier.analyze(f"{n.title} {n.summary}")
-                    rel_score = calculate_relevance_score(f"{n.title} {n.summary}", ticker, cfg.name)
-                    cat_type, cat_dir, cat_imp = detect_catalysts(f"{n.title} {n.summary}")
-                    clean_news.append({
-                        "ticker": ticker,
-                        "title": n.title,
-                        "summary": n.summary,
-                        "source": n.source,
-                        "url": n.url,
-                        "published_at": n.published_at,
-                        "sentiment_score": sent_res["score"],
-                        "sentiment_label": sent_res["label"],
-                        "sentiment_confidence": sent_res["confidence"],
-                        "relevance_score": rel_score,
-                        "catalyst": cat_type,
-                        "catalyst_direction": cat_dir,
-                        "catalyst_importance": cat_imp
-                    })
-                if clean_news:
-                    added = save_news_items(db, clean_news)
-                    total_added += added
-                    click.echo(f"  [{ticker}] Ingested {len(clean_news)} articles ({added} new).")
+                added, clean_news, _ = await ingest_news_for_ticker(
+                    db, cfg, news_provider=news_provider, sentiment_classifier=sentiment_classifier
+                )
+                total_added += added
+                click.echo(f"  [{ticker}] Ingested {len(clean_news)} articles ({added} new).")
             click.echo(click.style(f"[DONE] News collection completed ({total_added} new saved).", fg="green"))
         finally:
             db.close()
@@ -156,24 +116,51 @@ def collect_news():
 def collect_market():
     """Collect market data & compute technical indicators."""
     click.echo("[SMIE] Collecting market data via yfinance...")
-    asyncio.run(run_full_pipeline())
-    click.echo(click.style("[DONE] Market indicators updated.", fg="green"))
+    async def _run():
+        init_db()
+        db = SessionLocal()
+        try:
+            ensure_tickers_seeded(db)
+            market_provider = YFinanceMarketProvider()
+            total_added = 0
+            for cfg in INITIAL_TICKERS:
+                ticker = cfg.symbol
+                try:
+                    indicators, _ = await ingest_market_for_ticker(db, cfg, market_provider=market_provider)
+                    total_added += 1
+                    price_val = indicators.get("price")
+                    price_str = f"${price_val:.2f}" if price_val is not None else "N/A"
+                    click.echo(f"  [{ticker}] Price: {price_str} | Status: {indicators.get('status')} | Tech Score: {indicators.get('technical_score') or '--'}")
+                except Exception as e:
+                    click.echo(click.style(f"  [{ticker}] Market collection error: {e}", fg="red"))
+            click.echo(click.style(f"[DONE] Market indicators updated ({total_added} tickers).", fg="green"))
+        finally:
+            db.close()
+    asyncio.run(_run())
 
 
 @cli.command("calculate-smi")
 def calculate_smi_cmd():
     """Calculate SMI, SSI, and PMS scores for all tickers."""
     click.echo("[SMIE] Calculating Space Market Intelligence scores...")
+    init_db()
     res = asyncio.run(run_full_pipeline())
-    click.echo(click.style("[DONE] Scores & snapshots updated.", fg="green"))
+    if res.get("status") == "SUCCESS":
+        click.echo(click.style("[DONE] Scores & snapshots updated.", fg="green"))
+    else:
+        err_msg = res.get("error", "Pipeline calculation failed")
+        click.echo(click.style(f"[ERROR] {err_msg}", fg="red"))
+        raise click.ClickException(str(err_msg))
 
 
 @cli.command("calculate-divergences")
 def calculate_divergences_cmd():
     """Detect and evaluate tripartite divergences."""
     click.echo("[SMIE] Evaluating X ↔ Polymarket ↔ Price divergences...")
+    init_db()
     db = SessionLocal()
     try:
+        ensure_tickers_seeded(db)
         divs = get_active_divergences(db, hours=48)
         click.echo(f"Found {len(divs)} active divergences across sector:")
         for d in divs:
@@ -185,8 +172,10 @@ def calculate_divergences_cmd():
 @cli.command("daily-report")
 def daily_report_cmd():
     """Generate and display the Space Market Intelligence Daily Report."""
+    init_db()
     db = SessionLocal()
     try:
+        ensure_tickers_seeded(db)
         rep = generate_daily_report(db)
         click.echo(rep["markdown_report"])
     finally:
@@ -197,8 +186,10 @@ def daily_report_cmd():
 def backtest_cmd():
     """Run quantitative backtesting comparing Model A (X+Market) vs Model B (X+Market+Polymarket)."""
     click.echo(click.style("[SMIE] Running Quantitative Backtesting Engine...", fg="cyan"))
+    init_db()
     db = SessionLocal()
     try:
+        ensure_tickers_seeded(db)
         res = run_historical_backtest(db)
         click.echo(f"Total Snapshots Evaluated: {res['total_snapshots_analyzed']}")
         click.echo("==================================================")
@@ -232,10 +223,14 @@ def analyze(ticker):
     click.echo(f"[SMIE] Analyzing ticker {ticker}...")
 
     # Run pipeline to ensure fresh data
-    asyncio.run(run_full_pipeline())
+    init_db()
+    res = asyncio.run(run_full_pipeline())
+    if res.get("status") != "SUCCESS":
+        click.echo(click.style(f"[WARNING] Pipeline returned status {res.get('status')}: {res.get('error')}", fg="yellow"))
 
     db = SessionLocal()
     try:
+        ensure_tickers_seeded(db)
         ssi_snap = get_latest_ssi_snapshot(db, ticker)
         mkt_snap = get_latest_market_snapshot(db, ticker)
         posts = get_recent_social_posts(db, ticker, hours=24)
@@ -250,14 +245,23 @@ def analyze(ticker):
         click.echo(click.style(f"SPACE MARKET INTELLIGENCE ENGINE --- {ticker}", fg="cyan", bold=True))
         click.echo("==================================================")
         smi_val = ssi_snap.smi if ssi_snap.smi is not None else ssi_snap.ssi
-        click.echo(f"SMI (Market Intelligence Index): {smi_val:.1f} / 100")
-        click.echo(f"SSI (Social Sentiment Index):    {ssi_snap.social_score:.1f} / 100")
-        click.echo(f"PMS (Prediction Market Score):   {ssi_snap.prediction_score or '--'} / 100")
+        smi_str = f"{smi_val:.1f}" if smi_val is not None else "--"
+        ssi_str = f"{ssi_snap.social_score:.1f}" if ssi_snap.social_score is not None else "--"
+        pms_str = f"{ssi_snap.prediction_score:.1f}" if ssi_snap.prediction_score is not None else "--"
+        conf_str = f"{ssi_snap.confidence:.1f}%" if ssi_snap.confidence is not None else "--"
+        dq_val = ssi_snap.data_quality if ssi_snap.data_quality is not None else ssi_snap.data_completeness
+        dq_str = f"{dq_val:.1f}%" if dq_val is not None else "--"
+        mkt_str = f"{((ssi_snap.technical_score/40.0)*100.0):.1f}/100" if ssi_snap.technical_score is not None else "N/A"
+        price_str = f"${ssi_snap.price:.2f}" if ssi_snap.price is not None else "N/A"
+
+        click.echo(f"SMI (Market Intelligence Index): {smi_str} / 100")
+        click.echo(f"SSI (Social Sentiment Index):    {ssi_str} / 100")
+        click.echo(f"PMS (Prediction Market Score):   {pms_str} / 100")
         click.echo(f"Signal:                          {ssi_snap.signal}")
-        click.echo(f"Confidence:                      {ssi_snap.confidence:.1f}%")
-        click.echo(f"Data Quality:                    {ssi_snap.data_quality if ssi_snap.data_quality is not None else ssi_snap.data_completeness:.1f}%")
-        click.echo(f"Market Score:                    {((ssi_snap.technical_score/40.0)*100.0):.1f}/100" if ssi_snap.technical_score else "Market Score:                    N/A")
-        click.echo(f"Latest Price:                    ${ssi_snap.price or 'N/A'}")
+        click.echo(f"Confidence:                      {conf_str}")
+        click.echo(f"Data Quality:                    {dq_str}")
+        click.echo(f"Market Score:                    {mkt_str}")
+        click.echo(f"Latest Price:                    {price_str}")
         click.echo(f"Social Posts (24h):              {len(posts)}")
         click.echo(f"Prediction Markets:              {len(markets)}")
 

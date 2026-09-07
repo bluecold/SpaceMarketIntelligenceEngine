@@ -36,7 +36,14 @@ def generate_daily_report(db: Session) -> Dict[str, Any]:
         markets = get_recent_prediction_markets(db, ticker=symbol)
 
         for d in divs:
-            all_divergences.append({"ticker": symbol, "type": d.type, "direction": d.direction, "desc": d.description})
+            all_divergences.append({
+                "ticker": symbol,
+                "type": d.type,
+                "direction": d.direction,
+                "strength": d.strength,
+                "confidence": d.confidence,
+                "desc": d.description
+            })
 
         for p in posts:
             if p.catalyst and not any(c["ticker"] == symbol and c["name"] == p.catalyst for c in all_catalysts):
@@ -107,13 +114,16 @@ def generate_daily_report(db: Session) -> Dict[str, Any]:
     top_bullish_smi = f"{evaluated_tickers[0]['smi']:.1f}" if evaluated_tickers else "N/A"
     top_bearish_smi = f"{evaluated_tickers[-1]['smi']:.1f}" if evaluated_tickers else "N/A"
 
-    # Largest SSI increase
+    # Largest Sentiment Move (ranked by absolute magnitude)
     evaluated_with_delta = [t for t in ticker_summaries if t["delta_1d"] is not None]
-    largest_ssi_move = max(evaluated_with_delta, key=lambda x: x["delta_1d"]) if evaluated_with_delta else None
+    largest_ssi_move = max(evaluated_with_delta, key=lambda x: abs(x["delta_1d"])) if evaluated_with_delta else None
     
-    # Strongest Divergences
-    bull_divs = [d for d in all_divergences if d["direction"] == "BULLISH"]
-    bear_divs = [d for d in all_divergences if d["direction"] == "BEARISH"]
+    # Strongest Divergences (ranked by strength and confidence descending)
+    bull_divs = [d for d in all_divergences if d.get("direction") == "BULLISH"]
+    bear_divs = [d for d in all_divergences if d.get("direction") == "BEARISH"]
+
+    bull_divs.sort(key=lambda d: (d.get("strength") or 0.0, d.get("confidence") or 0.0), reverse=True)
+    bear_divs.sort(key=lambda d: (d.get("strength") or 0.0, d.get("confidence") or 0.0), reverse=True)
 
     strongest_bull_div = bull_divs[0]["ticker"] if bull_divs else "None"
     strongest_bear_div = bear_divs[0]["ticker"] if bear_divs else "None"

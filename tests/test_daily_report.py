@@ -467,12 +467,14 @@ def test_jobs_async_execution_and_status_endpoints():
 async def test_concurrent_job_409_conflict_rejection():
     """Verify that a concurrent POST /api/jobs/run returns HTTP 409 Conflict when a job is running."""
     import asyncio
+    from unittest.mock import patch
     from fastapi.testclient import TestClient
     from app.main import app
-    from app.api.jobs import _PIPELINE_LOCK
+    from app.jobs.runner import PIPELINE_LOCK
+    from app.api.jobs import _execute_pipeline_task
 
-    # Manually acquire the mutex to simulate a running background task
-    await _PIPELINE_LOCK.acquire()
+    # 1. Test when lock is already held, endpoint immediately returns 409
+    await PIPELINE_LOCK.acquire()
     try:
         client = TestClient(app)
         res_conflict = client.post("/api/jobs/run")
@@ -480,7 +482,38 @@ async def test_concurrent_job_409_conflict_rejection():
         err_data = res_conflict.json()
         assert "already in progress" in err_data.get("detail", "")
     finally:
-        _PIPELINE_LOCK.release()
+        PIPELINE_LOCK.release()
+
+    # 2. Test real race condition lifecycle: background execution holds lock and releases it in finally
+    slow_task_started = asyncio.Event()
+    release_slow_task = asyncio.Event()
+
+    async def mock_slow_pipeline(existing_job_id=None, lock_already_acquired=False):
+        slow_task_started.set()
+        await release_slow_task.wait()
+        return {"status": "SUCCESS", "records_processed": 1}
+
+    with patch("app.api.jobs.run_full_pipeline", side_effect=mock_slow_pipeline):
+        assert not PIPELINE_LOCK.locked()
+        await PIPELINE_LOCK.acquire()
+
+        task = asyncio.create_task(_execute_pipeline_task(99999))
+        await slow_task_started.wait()
+
+        # While background task is executing, PIPELINE_LOCK is locked
+        assert PIPELINE_LOCK.locked()
+
+        # Second simultaneous request receives 409 Conflict
+        res_concurrent = client.post("/api/jobs/run")
+        assert res_concurrent.status_code == 409
+        assert "already in progress" in res_concurrent.json().get("detail", "")
+
+        # Complete the background task
+        release_slow_task.set()
+        await task
+
+        # Mutex must be released upon task completion
+        assert not PIPELINE_LOCK.locked()
 
 
 def test_multiple_critical_catalysts_separate_alert_ids():
@@ -726,6 +759,359 @@ async def test_fundamentals_dataframe_extraction_and_cache():
         # Verify cached retrieval
         cached = await provider.get_fundamentals("ASTS")
         assert cached == data
+
+
+@pytest.mark.anyio
+async def test_fundamentals_fcf_capex_deduction_and_yoy_quarterly_growth():
+    """
+    Verify:
+    1. FCF is correctly derived as OCF - abs(CAPEX) when explicit FCF is absent.
+    2. FCF is NOT falsely substituted by OCF alone when CAPEX is unknown.
+    3. Quarterly YoY revenue growth is computed against 4 quarters prior (Q_t vs Q_{t-4}), not QoQ.
+    """
+    import pandas as pd
+    from unittest.mock import MagicMock, patch
+    from app.collectors.market_provider import YFinanceMarketProvider, _FUNDAMENTALS_CACHE
+
+    _FUNDAMENTALS_CACHE.clear()
+    provider = YFinanceMarketProvider()
+
+    # Case 1: OCF = +10M, CAPEX = -120M -> Derived FCF = -110M per quarter -> TTM = -440M
+    mock_q_cf = pd.DataFrame(
+        {
+            "2026-06-30": [10000000.0, -120000000.0, 50000000.0],
+            "2026-03-31": [10000000.0, -120000000.0, 60000000.0],
+            "2025-12-31": [10000000.0, -120000000.0, 70000000.0],
+            "2025-09-30": [10000000.0, -120000000.0, 80000000.0],
+        },
+        index=["Operating Cash Flow", "Capital Expenditure", "End Cash Position"]
+    )
+    # 5 quarters of revenue: Q0=150M, Q1=140M, Q2=130M, Q3=120M, Q4=100M -> YoY = (150-100)/100 = 0.50 (50%)
+    mock_q_fin = pd.DataFrame(
+        {
+            "2026-06-30": [150000000.0, 60000000.0],
+            "2026-03-31": [140000000.0, 55000000.0],
+            "2025-12-31": [130000000.0, 50000000.0],
+            "2025-09-30": [120000000.0, 45000000.0],
+            "2025-06-30": [100000000.0, 40000000.0],
+        },
+        index=["Total Revenue", "Gross Profit"]
+    )
+    mock_bs = pd.DataFrame(
+        {"2026-06-30": [50000000.0, 0.0]},
+        index=["Cash And Cash Equivalents", "Total Debt"]
+    )
+
+    mock_ticker = MagicMock()
+    mock_ticker.quarterly_balance_sheet = mock_bs
+    mock_ticker.quarterly_cashflow = mock_q_cf
+    mock_ticker.quarterly_financials = mock_q_fin
+    mock_ticker.fast_info.market_cap = 2000000000.0
+
+    with patch("yfinance.Ticker", return_value=mock_ticker):
+        data = await provider.get_fundamentals("RKLB")
+        # Sum of 4 quarters: 4 * (10M - 120M) = -440M
+        assert data["free_cashflow"] == -440000000.0
+        # True YoY growth: (150M - 100M) / 100M = 0.50 (50% YoY, not 7.1% QoQ)
+        assert data["revenue_growth"] == 0.50
+
+    # Case 2: Only OCF is available, CAPEX is missing -> FCF must NOT be set to OCF
+    _FUNDAMENTALS_CACHE.clear()
+    mock_q_cf_no_capex = pd.DataFrame(
+        {"2026-06-30": [10000000.0]},
+        index=["Operating Cash Flow"]
+    )
+    mock_ticker2 = MagicMock()
+    mock_ticker2.quarterly_balance_sheet = mock_bs
+    mock_ticker2.quarterly_cashflow = mock_q_cf_no_capex
+    mock_ticker2.quarterly_financials = mock_q_fin
+    mock_ticker2.cashflow = None
+    mock_ticker2.financials = None
+
+    with patch("yfinance.Ticker", return_value=mock_ticker2):
+        data2 = await provider.get_fundamentals("LUNR")
+        assert data2["free_cashflow"] is None, "FCF must remain None when CAPEX is unavailable, never falsified as OCF"
+
+
+def test_snapshot_provenance_pipeline_persistence_api_and_backtest():
+    """Verify that heterogeneous provenance tags (MOCK, EXCLUDED, DEGRADED) are faithfully persisted and returned via APIs."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.database.connection import SessionLocal, init_db
+    from app.database.repository import ensure_tickers_seeded, save_ssi_snapshot, get_latest_ssi_snapshot
+
+    init_db()
+    db = SessionLocal()
+    try:
+        ensure_tickers_seeded(db)
+
+        # 1. Save snapshot with explicit heterogeneous provenance
+        mock_payload = {
+            "ticker": "ASTS",
+            "social_score": 70.0,
+            "prediction_score": None,
+            "news_score": 65.0,
+            "momentum_score": 50.0,
+            "fundamental_score": None,
+            "risk_score": 25.0,
+            "technical_score": 28.0,
+            "ssi": 70.0,
+            "smi": 68.0,
+            "signal": "HOLD (DEGRADED)",
+            "base_signal": "HOLD",
+            "signal_modifier": "DEGRADED",
+            "confidence": 75.0,
+            "data_completeness": 60.0,
+            "data_quality": 60.0,
+            "post_count": 5,
+            "news_count": 3,
+            "prediction_count": 0,
+            "data_source": "MOCK",
+            "social_source": "MOCK",
+            "prediction_source": "EXCLUDED",
+            "news_source": "LIVE",
+            "market_source": "DEGRADED",
+            "price": 18.50
+        }
+        saved = save_ssi_snapshot(db, mock_payload)
+
+        # 2. Verify repository layer preserves exact fields (not default LIVE)
+        assert saved.data_source == "MOCK"
+        assert saved.social_source == "MOCK"
+        assert saved.prediction_source == "EXCLUDED"
+        assert saved.news_source == "LIVE"
+        assert saved.market_source == "DEGRADED"
+
+        # Verify DB query
+        latest = get_latest_ssi_snapshot(db, "ASTS")
+        assert latest is not None
+        assert latest.data_source == "MOCK"
+        assert latest.social_source == "MOCK"
+        assert latest.prediction_source == "EXCLUDED"
+        assert latest.news_source == "LIVE"
+        assert latest.market_source == "DEGRADED"
+    finally:
+        db.close()
+
+    # 3. Verify /api/dashboard returns exact provenance
+    client = TestClient(app)
+    res_dash = client.get("/api/dashboard")
+    assert res_dash.status_code == 200
+    dash_data = res_dash.json()
+    asts_rank = next((r for r in dash_data.get("rankings", []) if r["ticker"] == "ASTS"), None)
+    assert asts_rank is not None
+    assert asts_rank["data_source"] == "MOCK"
+    assert asts_rank["social_source"] == "MOCK"
+    assert asts_rank["prediction_source"] == "EXCLUDED"
+    assert asts_rank["news_source"] == "LIVE"
+    assert asts_rank["market_source"] == "DEGRADED"
+
+    # 4. Verify /api/tickers/ASTS returns exact provenance
+    res_ticker = client.get("/api/tickers/ASTS")
+    assert res_ticker.status_code == 200
+    ticker_data = res_ticker.json()
+    header = ticker_data["header"]
+    assert header["data_source"] == "MOCK"
+    assert header["social_source"] == "MOCK"
+    assert header["prediction_source"] == "EXCLUDED"
+    assert header["news_source"] == "LIVE"
+    assert header["market_source"] == "DEGRADED"
+
+
+def test_daily_report_magnitude_ranking_and_divergence_sorting():
+    """
+    Validates fix for Audit Observation 22:
+    1. Largest sentiment move is selected by absolute magnitude (|delta_1d|), correctly picking
+       a -15.0 drop over a +2.0 gain.
+    2. Strongest divergences are sorted by (strength, confidence) descending rather than loop order.
+    """
+    from app.database.models import SSISnapshotModel, DivergenceModel, TickerModel
+    from app.database.connection import SessionLocal, init_db
+    from app.reports.daily_report import generate_daily_report
+    from datetime import datetime, timezone
+
+    init_db()
+    db = SessionLocal()
+    try:
+        # Clean snapshots and divergences
+        db.query(SSISnapshotModel).delete()
+        db.query(DivergenceModel).delete()
+        db.commit()
+
+        now = datetime.now(timezone.utc)
+
+        # Create snapshots: RKLB with +2.0 move, ASTS with -15.0 move
+        snap_rklb = SSISnapshotModel(
+            ticker="RKLB", timestamp=now, smi=70.0, ssi=70.0, ssi_momentum_1d=2.0,
+            signal="BUY", confidence=80.0, data_completeness=100.0, data_quality=100.0
+        )
+        snap_asts = SSISnapshotModel(
+            ticker="ASTS", timestamp=now, smi=40.0, ssi=40.0, ssi_momentum_1d=-15.0,
+            signal="AVOID", confidence=85.0, data_completeness=100.0, data_quality=100.0
+        )
+        db.add_all([snap_rklb, snap_asts])
+
+        # Create divergences: weaker RKLB first, stronger SPCE second
+        div_weak = DivergenceModel(
+            ticker="RKLB", type="EARLY_REVERSAL", direction="BULLISH",
+            strength=0.60, confidence=0.50, description="Moderate divergence",
+            timestamp=now, last_seen=now, resolved_at=None, source_a="A", source_b="B"
+        )
+        div_strong = DivergenceModel(
+            ticker="SPCE", type="BULLISH_CONFIRMATION", direction="BULLISH",
+            strength=0.95, confidence=0.90, description="Extremely strong alignment",
+            timestamp=now, last_seen=now, resolved_at=None, source_a="A", source_b="B"
+        )
+        db.add_all([div_weak, div_strong])
+        db.commit()
+
+        report = generate_daily_report(db)
+        markdown = report["markdown_report"]
+
+        # 1. Largest sentiment move must be ASTS with -15.0 (not RKLB with +2.0)
+        assert "Largest Sentiment Move:    ASTS (-15.0 1D)" in markdown
+
+        # 2. Strongest Bullish Divergence must be SPCE (strength 0.95 > 0.60)
+        assert "- Strongest Bullish Div:     SPCE" in markdown
+    finally:
+        db.close()
+
+
+def test_legacy_schema_migration_with_existing_indexes_and_data():
+    """
+    Verify that init_db seamlessly migrates from a legacy database schema with pre-existing
+    single-column unique constraints and global SQLite index names without index collisions,
+    ensuring no orphaned _old tables and zero data loss.
+    """
+    from sqlalchemy import create_engine, text, inspect
+    from app.database.connection import init_db
+
+    # Create isolated in-memory engine with legacy schema
+    legacy_engine = create_engine("sqlite://", echo=False)
+    with legacy_engine.connect() as conn:
+        # 1. Create legacy tickers table
+        conn.execute(text("""
+            CREATE TABLE tickers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol VARCHAR(10) UNIQUE NOT NULL,
+                name VARCHAR(100) NOT NULL,
+                sector VARCHAR(100) DEFAULT 'Space Technology',
+                is_active BOOLEAN DEFAULT 1,
+                created_at DATETIME
+            );
+        """))
+        conn.execute(text("INSERT INTO tickers (symbol, name) VALUES ('ASTS', 'AST SpaceMobile'), ('RKLB', 'Rocket Lab');"))
+
+        # 2. Create legacy social_posts with single-column UNIQUE and standard indexes
+        conn.execute(text("""
+            CREATE TABLE social_posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tweet_id VARCHAR(64) UNIQUE NOT NULL,
+                ticker VARCHAR(10) NOT NULL,
+                username VARCHAR(100) NOT NULL,
+                text TEXT NOT NULL,
+                url VARCHAR(255),
+                created_at DATETIME NOT NULL,
+                collected_at DATETIME,
+                likes INTEGER DEFAULT 0,
+                reposts INTEGER DEFAULT 0,
+                replies INTEGER DEFAULT 0,
+                views INTEGER DEFAULT 0,
+                sentiment_score FLOAT NOT NULL,
+                sentiment_label VARCHAR(20) NOT NULL,
+                sentiment_confidence FLOAT DEFAULT 1.0,
+                relevance_score FLOAT DEFAULT 1.0,
+                engagement_score FLOAT DEFAULT 0.0,
+                recency_weight FLOAT DEFAULT 1.0
+            );
+        """))
+        conn.execute(text("CREATE INDEX ix_social_posts_tweet_id ON social_posts (tweet_id);"))
+        conn.execute(text("CREATE INDEX ix_social_posts_ticker ON social_posts (ticker);"))
+        conn.execute(text("CREATE INDEX ix_social_posts_created_at ON social_posts (created_at);"))
+        conn.execute(text("""
+            INSERT INTO social_posts (tweet_id, ticker, username, text, created_at, sentiment_score, sentiment_label)
+            VALUES ('tweet_1001', 'ASTS', 'user1', 'ASTS Launch bullish!', '2026-09-01 12:00:00', 0.85, 'BULLISH');
+        """))
+
+        # 3. Create legacy news_items with single-column UNIQUE and indexes
+        conn.execute(text("""
+            CREATE TABLE news_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker VARCHAR(10) NOT NULL,
+                title VARCHAR(255) NOT NULL,
+                summary TEXT,
+                source VARCHAR(100),
+                url VARCHAR(500) UNIQUE NOT NULL,
+                published_at DATETIME NOT NULL,
+                collected_at DATETIME,
+                sentiment_score FLOAT DEFAULT 0.0,
+                sentiment_label VARCHAR(20) DEFAULT 'NEUTRAL'
+            );
+        """))
+        conn.execute(text("CREATE INDEX ix_news_items_url ON news_items (url);"))
+        conn.execute(text("CREATE INDEX ix_news_items_published_at ON news_items (published_at);"))
+        conn.execute(text("""
+            INSERT INTO news_items (ticker, title, url, published_at)
+            VALUES ('ASTS', 'ASTS Signs Major Telecom Deal', 'https://news.com/asts-deal', '2026-09-01 10:00:00');
+        """))
+
+        # 4. Create legacy ssi_snapshots with NOT NULL on social_score
+        conn.execute(text("""
+            CREATE TABLE ssi_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker VARCHAR(10) NOT NULL,
+                timestamp DATETIME,
+                social_score FLOAT NOT NULL,
+                ssi FLOAT NOT NULL,
+                signal VARCHAR(100) NOT NULL,
+                confidence FLOAT NOT NULL,
+                data_completeness FLOAT NOT NULL
+            );
+        """))
+        conn.execute(text("""
+            INSERT INTO ssi_snapshots (ticker, timestamp, social_score, ssi, signal, confidence, data_completeness)
+            VALUES ('ASTS', '2026-09-01 12:00:00', 75.0, 75.0, 'BUY', 80.0, 100.0);
+        """))
+        conn.commit()
+
+    # Run init_db on the legacy engine
+    init_db(target_engine=legacy_engine)
+
+    # Verify migration results with inspector and queries
+    with legacy_engine.connect() as conn:
+        inspector = inspect(conn)
+        tables = set(inspector.get_table_names())
+
+        # 1. No temporary _old tables must remain
+        assert "_social_posts_old" not in tables
+        assert "_news_items_old" not in tables
+        assert "_ssi_snapshots_old" not in tables
+
+        # 2. Existing data was fully preserved
+        social_count = conn.execute(text("SELECT COUNT(*) FROM social_posts;")).scalar()
+        assert social_count == 1
+        social_post = conn.execute(text("SELECT tweet_id, ticker, sentiment_score FROM social_posts;")).fetchone()
+        assert social_post[0] == "tweet_1001"
+        assert social_post[1] == "ASTS"
+        assert social_post[2] == 0.85
+
+        news_count = conn.execute(text("SELECT COUNT(*) FROM news_items;")).scalar()
+        assert news_count == 1
+
+        snap_count = conn.execute(text("SELECT COUNT(*) FROM ssi_snapshots;")).scalar()
+        assert snap_count == 1
+
+        # 3. Composite unique constraint allows same tweet_id on different ticker
+        conn.execute(text("""
+            INSERT INTO social_posts (tweet_id, ticker, username, text, created_at, sentiment_score, sentiment_label)
+            VALUES ('tweet_1001', 'RKLB', 'user2', 'Comparing ASTS and RKLB', '2026-09-01 13:00:00', 0.50, 'NEUTRAL');
+        """))
+        conn.commit()
+        updated_social_count = conn.execute(text("SELECT COUNT(*) FROM social_posts;")).scalar()
+        assert updated_social_count == 2
+
+
+
 
 
 

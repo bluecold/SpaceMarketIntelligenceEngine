@@ -87,17 +87,24 @@ class TwikitProvider(XProvider):
                             created_dt = datetime.now(timezone.utc)
                     else:
                         created_dt = datetime.now(timezone.utc)
+                    likes_val = int(getattr(tweet, 'favorite_count', 0) or 0)
+                    reposts_val = int(getattr(tweet, 'retweet_count', 0) or 0)
+                    replies_val = int(getattr(tweet, 'reply_count', 0) or 0)
+                    views_val = int(getattr(tweet, 'view_count', 0) or 0)
+                    user_name = getattr(tweet.user, 'name', 'x_user') if getattr(tweet, 'user', None) else 'x_user'
+
                     posts.append(SocialPostData(
                         tweet_id=str(tweet.id),
                         ticker=ticker,
-                        username=getattr(tweet.user, 'name', 'x_user') if hasattr(tweet, 'user') else 'x_user',
-                        text=getattr(tweet, 'text', ''),
+                        username=user_name,
+                        text=getattr(tweet, 'text', '') or '',
                         created_at=created_dt,
                         url=f"https://x.com/x/status/{tweet.id}",
-                        likes=getattr(tweet, 'favorite_count', 0),
-                        reposts=getattr(tweet, 'retweet_count', 0),
-                        replies=getattr(tweet, 'reply_count', 0),
-                        views=getattr(tweet, 'view_count', 0)
+                        likes=likes_val,
+                        reposts=reposts_val,
+                        replies=replies_val,
+                        views=views_val,
+                        source="LIVE"
                     ))
             logger.info(f"Twikit collected {len(posts)} posts for {ticker} query '{query}'.")
             if not posts and getattr(settings, "ALLOW_MOCK_FALLBACK", False):

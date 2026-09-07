@@ -3,7 +3,7 @@ from app.config import settings
 from app.scoring.social import apply_bayesian_shrinkage
 
 
-def calculate_source_agreement(active_directions: List[float]) -> float:
+def calculate_source_agreement(active_directions: List[float]) -> Optional[float]:
     """
     Calculate the Pairwise Directional Concordance (-1.0 to +1.0) among active information sources.
     
@@ -12,10 +12,11 @@ def calculate_source_agreement(active_directions: List[float]) -> float:
     - Contradictory signals (+/-) yield negative agreement (divergence) approaching -1.0.
     - Neutral sources (|d| < 0.10) contribute 0.0 (neutral impact).
     
+    Returns None if fewer than 2 active sources exist (no cross-source corroboration possible).
     Guarantees strict bounds within [-1.0, +1.0].
     """
     if len(active_directions) <= 1:
-        return 1.0  # Single source has trivial self-agreement
+        return None
 
     pairs = 0
     total_concordance = 0.0
@@ -38,7 +39,7 @@ def calculate_source_agreement(active_directions: List[float]) -> float:
             pairs += 1
 
     if pairs == 0:
-        return 1.0
+        return 0.0
 
     avg_concordance = total_concordance / pairs
     return round(max(-1.0, min(1.0, avg_concordance)), 2)
@@ -178,11 +179,10 @@ def calculate_smi(
     if total_effective_weight > 0:
         normalized_weights = {k: v / total_effective_weight for k, v in effective_weights.items()}
         weighted_smi = sum(active_scores[k] * normalized_weights[k] for k in active_scores.keys())
+        smi = max(0.0, min(100.0, round(weighted_smi, 1)))
     else:
         normalized_weights = {}
-        weighted_smi = social_score if social_score is not None else 50.0
-
-    smi = max(0.0, min(100.0, round(weighted_smi, 1)))
+        smi = None
 
     # 3. Source Agreement (-1.0 to +1.0)
     source_agreement = calculate_source_agreement(active_directions)
@@ -190,42 +190,50 @@ def calculate_smi(
     # 4. Data Quality Score (0 to 100%)
     total_pillars = len(BASE_WEIGHTS)
     active_pillars = len(active_scores)
-    data_quality = round(100.0 * (active_pillars / float(total_pillars)), 1)
+    data_quality = round(100.0 * (active_pillars / float(total_pillars)), 1) if total_pillars > 0 else 0.0
 
     # 5. Confidence Score (0 to 100%)
-    base_conf = data_quality * 0.50
-    agreement_bonus = source_agreement * 15.0
-    
-    depth_bonus = 0.0
-    if post_count is not None:
-        if post_count >= 30:
-            depth_bonus += 12.0
-        elif post_count >= 10:
-            depth_bonus += 6.0
-    elif social_score is not None:
-        depth_bonus += 6.0
-
-    if news_count is not None:
-        if news_count >= 3:
-            depth_bonus += 10.0
-        elif news_count >= 1:
-            depth_bonus += 5.0
-    elif news_score is not None:
-        depth_bonus += 5.0
-
-    if prediction_score is not None and prediction_quality >= 50.0:
-        depth_bonus += 8.0
+    if active_pillars == 0 or smi is None:
+        confidence = 0.0
+    else:
+        base_conf = data_quality * 0.50
+        agreement_bonus = (source_agreement * 15.0) if source_agreement is not None else 0.0
         
-    if effective_mom is not None:
-        depth_bonus += 5.0
+        depth_bonus = 0.0
+        if post_count is not None:
+            if post_count >= 30:
+                depth_bonus += 12.0
+            elif post_count >= 10:
+                depth_bonus += 6.0
+        elif social_score is not None:
+            depth_bonus += 6.0
 
-    raw_confidence = base_conf + agreement_bonus + depth_bonus
-    confidence = max(10.0, min(99.0, round(raw_confidence, 1)))
+        if news_count is not None:
+            if news_count >= 3:
+                depth_bonus += 10.0
+            elif news_count >= 1:
+                depth_bonus += 5.0
+        elif news_score is not None:
+            depth_bonus += 5.0
+
+        if prediction_score is not None and prediction_quality >= 50.0:
+            depth_bonus += 8.0
+            
+        if effective_mom is not None:
+            depth_bonus += 5.0
+
+        raw_confidence = base_conf + agreement_bonus + depth_bonus
+        confidence = max(10.0, min(99.0, round(raw_confidence, 1)))
 
     # 6. Momentum del SMI
-    smi_mom_1d = round(smi - previous_smi_1d, 1) if previous_smi_1d is not None else 0.0
-    smi_mom_3d = round(smi - previous_smi_3d, 1) if previous_smi_3d is not None else 0.0
-    smi_mom_5d = round(smi - previous_smi_5d, 1) if previous_smi_5d is not None else 0.0
+    if smi is not None:
+        smi_mom_1d = round(smi - previous_smi_1d, 1) if previous_smi_1d is not None else 0.0
+        smi_mom_3d = round(smi - previous_smi_3d, 1) if previous_smi_3d is not None else 0.0
+        smi_mom_5d = round(smi - previous_smi_5d, 1) if previous_smi_5d is not None else 0.0
+    else:
+        smi_mom_1d = None
+        smi_mom_3d = None
+        smi_mom_5d = None
 
     scaled_tech = round((technical_score_raw / 40.0) * 100.0, 1) if technical_score_raw is not None else None
 
@@ -247,5 +255,6 @@ def calculate_smi(
         "smi_momentum_1d": smi_mom_1d,
         "smi_momentum_3d": smi_mom_3d,
         "smi_momentum_5d": smi_mom_5d,
-        "normalized_weights": {k: round(v, 3) for k, v in normalized_weights.items()}
+        "normalized_weights": {k: round(v, 3) for k, v in normalized_weights.items()},
+        "effective_weights": {k: round(v, 4) for k, v in normalized_weights.items()}
     }

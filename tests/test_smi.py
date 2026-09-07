@@ -132,9 +132,9 @@ def test_source_agreement_calculation():
     agreement_neutral = calculate_source_agreement([0.05, 0.02, 0.0])
     assert agreement_neutral == 0.0
 
-    # 6. Single source (trivial agreement = 1.0)
-    assert calculate_source_agreement([0.75]) == 1.0
-    assert calculate_source_agreement([]) == 1.0
+    # 6. Single source (no cross-source corroboration = None) and empty sources (None)
+    assert calculate_source_agreement([0.75]) is None
+    assert calculate_source_agreement([]) is None
 
     # 7. Strict boundary enforcement [-1.0, +1.0]
     res_extreme = calculate_source_agreement([2.0, -2.0])
@@ -463,6 +463,160 @@ def test_fundamental_capital_raise_risk_alert_and_signal_modifier():
 
     # "WHY?" reasons include dilution warning
     assert any("Critical Capital Raise Risk" in r for r in res["reasons"])
+
+
+def test_zero_cash_burn_survival_alert_and_risk_tier():
+    """Verify that total_cash = 0 with negative FCF produces runway_months=0.0, risk_tier=CRITICAL, and triggers survival alert."""
+    from app.scoring.fundamentals import get_fundamental_runway_info, calculate_fundamental_score
+
+    # Company with 0 cash burning $100M/year
+    exhausted_fund = {
+        "total_cash": 0.0,
+        "total_debt": 50_000_000,
+        "free_cashflow": -100_000_000,
+        "balance_sheet_date": "2026-06-30",
+        "period_type": "quarterly"
+    }
+
+    info = get_fundamental_runway_info(exhausted_fund)
+    assert info["runway_months"] == 0.0
+    assert info["risk_tier"] == "CRITICAL"
+    assert info["cash"] == 0.0
+    assert info["burn"] == 100_000_000
+    assert info["as_of_date"] == "2026-06-30"
+    assert info["period_type"] == "quarterly"
+
+    # Fundamental score heavily penalizes exhausted cash
+    score = calculate_fundamental_score(exhausted_fund)
+    assert score is not None
+    assert score <= 20.0
+
+    # Signal generator triggers CAPITAL_RAISE_RISK alert and DILUTION RISK modifier
+    res = generate_signal_and_explanation(
+        ticker="ASTS",
+        smi=85.0,
+        social_score=85.0,
+        fundamentals=exhausted_fund
+    )
+    assert "DILUTION RISK" in res["signal"]
+    assert res["signal_modifier"] == "DILUTION RISK"
+    assert res["base_signal"] == "BUY"
+
+    cap_alerts = [a for a in res["alerts"] if a["type"] == "CAPITAL_RAISE_RISK"]
+    assert len(cap_alerts) == 1
+    assert cap_alerts[0]["level"] == "CRITICAL"
+    assert "Cash exhausted (0.0 months remaining" in cap_alerts[0]["message"]
+    assert "as of 2026-06-30" in cap_alerts[0]["message"]
+    assert any("Critical Capital Exhaustion" in r for r in res["reasons"])
+
+
+def test_missing_debt_does_not_reward_solvency():
+    """Verify that missing total_debt is preserved as None and does not assume debt=0 (Net Cash Positive)."""
+    from app.scoring.fundamentals import get_fundamental_runway_info, calculate_fundamental_score
+
+    # Fund data with unknown debt
+    unknown_debt_fund = {
+        "total_cash": 50_000_000,
+        "total_debt": None,
+        "free_cashflow": 10_000_000,  # Cashflow positive
+    }
+
+    info = get_fundamental_runway_info(unknown_debt_fund)
+    assert info["debt"] is None  # Preserved as None, not coerced to 0.0
+
+    score_unknown_debt = calculate_fundamental_score(unknown_debt_fund)
+
+    # Comparison: Fund data with explicitly zero debt
+    zero_debt_fund = {
+        "total_cash": 50_000_000,
+        "total_debt": 0.0,
+        "free_cashflow": 10_000_000,
+    }
+    score_zero_debt = calculate_fundamental_score(zero_debt_fund)
+
+    # Unknown debt must receive lower (conservative) solvency score than verified zero debt
+    assert score_unknown_debt is not None
+    assert score_zero_debt is not None
+    assert score_unknown_debt < score_zero_debt
+
+
+def test_empty_sources_explicit_unknown_no_fake_neutrality_or_confidence():
+    """
+    Validates fix for Audit Observation 21:
+    1. Zero sources yield SMI=None, confidence=0.0, data_quality=0.0, agreement=None, deltas=None.
+    2. calculate_source_agreement([]) returns None instead of fake 1.0 agreement.
+    3. Signal generator creates explicit NO DATA gate without declaring fake neutral 'HOLD' certainty.
+    """
+    res = calculate_smi(
+        social_score=None,
+        prediction_score=None,
+        news_score=None,
+        momentum_score=None,
+        technical_score_raw=None,
+        fundamental_score=None,
+        risk_score=None
+    )
+
+    assert res["smi"] is None
+    assert res["confidence"] == 0.0
+    assert res["data_quality"] == 0.0
+    assert res["source_agreement"] is None
+    assert res["smi_momentum_1d"] is None
+    assert res["normalized_weights"] == {}
+
+    # Source agreement with empty list
+    assert calculate_source_agreement([]) is None
+
+    # Signal generator on no data
+    sig = generate_signal_and_explanation(ticker="ASTS", smi=None, ssi=None, data_quality=0.0)
+    assert sig["signal_modifier"] == "NO DATA"
+    assert any("NO DATA" in r for r in sig["reasons"])
+
+
+def test_fundamental_adaptive_normalization_and_single_source_confidence():
+    """
+    Validates:
+    1. calculate_fundamental_score normalizes adaptively over observed sub-components (no fake 50s).
+    2. calculate_smi with a single active source returns source_agreement=None and no fake +15 agreement bonus.
+    3. calculate_smi returns effective_weights in result dict.
+    """
+    from app.scoring.fundamentals import calculate_fundamental_score
+
+    # Pre-revenue company with only cash and burn (runway score = 85.0) and zero debt (solvency score = 80.0)
+    # Relative weights: runway (0.40) and solvency (0.25) -> total 0.65
+    # Expected weighted score: (85.0 * 0.40/0.65) + (80.0 * 0.25/0.65) = 52.307 + 30.769 = 83.1
+    # Under old logic with fake 50s for growth and margin, it would have been:
+    # 0.4*85 + 0.25*80 + 0.2*50 + 0.15*50 = 34 + 20 + 10 + 7.5 = 71.5
+    fund_data_pre_rev = {
+        "total_cash": 300_000_000,
+        "free_cashflow": -100_000_000, # 3.0 years runway -> 85.0
+        "total_debt": 0,               # Zero debt -> 80.0
+        "revenue_growth": None,        # Unobserved
+        "gross_margins": None          # Unobserved
+    }
+    score_adaptive = calculate_fundamental_score(fund_data_pre_rev)
+    assert score_adaptive == 83.1, f"Expected 83.1 with adaptive normalization, got {score_adaptive}"
+
+    # Single source in SMI (only social_score)
+    smi_single = calculate_smi(
+        social_score=80.0,
+        post_count=15,
+        prediction_score=None,
+        news_score=None,
+        momentum_score=None,
+        fundamental_score=None,
+        risk_score=None,
+        technical_score_raw=None
+    )
+    # Must NOT have source agreement (None)
+    assert smi_single["source_agreement"] is None
+    # Base confidence (1/6 = 16.7 * 0.5 = 8.3) + depth bonus (6.0) = 14.3 -> clamped to 14.3 (not inflated by +15 agreement)
+    assert smi_single["confidence"] < 25.0, f"Expected low single-source confidence, got {smi_single['confidence']}"
+    # Must export effective_weights
+    assert "effective_weights" in smi_single
+    assert smi_single["effective_weights"]["social"] == 1.0
+
+
 
 
 

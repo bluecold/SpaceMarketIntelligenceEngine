@@ -15,15 +15,20 @@ class SocialPostData(BaseModel):
     reposts: int = 0
     replies: int = 0
     views: int = 0
+    source: str = "LIVE"  # "LIVE", "MOCK", "DEGRADED"
 
 
 class MarketData(BaseModel):
     ticker: str
-    timestamp: datetime
+    timestamp: datetime  # Query / collection time
+    observed_at: Optional[datetime] = None  # Underlying candle timestamp
+    candle_date: Optional[str] = None  # Date string of the candle (e.g. "2026-09-04")
+    market_session: Optional[str] = None  # "REGULAR", "CLOSED", "WEEKEND"
     price: Optional[float]
     volume: Optional[float]
     status: str = "AVAILABLE"  # "AVAILABLE", "DATA_UNAVAILABLE", "ERROR"
     raw_df: Optional[Any] = None  # DataFrame of historical OHLCV
+    source: str = "LIVE"
 
 
 class MarketProbabilityPoint(BaseModel):
@@ -31,6 +36,7 @@ class MarketProbabilityPoint(BaseModel):
     yes_probability: float
     no_probability: float
     volume: float = 0.0
+    source: str = "LIVE"
 
 
 class PredictionMarketData(BaseModel):
@@ -57,7 +63,10 @@ class PredictionMarketData(BaseModel):
     
     url: Optional[str] = None
     event_key: Optional[str] = None  # Mapping key if linked to cross-company event
+    clob_token_id: Optional[str] = None  # 256-bit asset token ID for CLOB prices-history
+    condition_id: Optional[str] = None   # Polymarket condition ID
     polarity: int = 1  # +1 = Bullish when YES occurs, -1 = Bearish when YES occurs (e.g. failure/delay)
+    source: str = "LIVE"  # "LIVE", "MOCK"
 
 
 class XProvider(ABC):
@@ -90,6 +99,6 @@ class PredictionMarketProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_history(self, market_id: str) -> List[MarketProbabilityPoint]:
+    async def get_history(self, market_id: str, clob_token_id: Optional[str] = None) -> List[MarketProbabilityPoint]:
         """Fetch historical probability points for a market."""
         pass
