@@ -11,7 +11,8 @@ from app.database.repository import (
     save_prediction_markets, get_recent_prediction_markets,
     save_divergences, save_alerts, save_market_snapshot, get_latest_market_snapshot,
     save_ssi_snapshot, get_latest_ssi_snapshot, get_historical_ssi_snapshot,
-    create_job_run, finish_job_run, utc_now
+    create_job_run, finish_job_run, utc_now,
+    acquire_pipeline_job_lock, update_job_heartbeat
 )
 from app.collectors.mock_x_provider import MockXProvider
 from app.collectors.twikit_provider import TwikitProvider
@@ -26,7 +27,7 @@ from app.sentiment.weighting import (
 )
 from app.technical.indicators import calculate_technical_indicators
 from app.technical.scorer import calculate_technical_score
-from app.scoring.social import calculate_social_score
+from app.scoring.social import calculate_social_score, apply_bayesian_shrinkage
 from app.scoring.prediction import calculate_prediction_market_score
 from app.scoring.momentum import calculate_momentum_score
 from app.scoring.risk import calculate_risk_score
@@ -101,7 +102,7 @@ async def ingest_social_posts_for_ticker(
         rec_weight = calculate_recency_weight(p.created_at)
         eng_score = calculate_engagement_score(p.likes, p.reposts, p.replies, p.views)
 
-        post_cats = detect_catalysts(p.text)
+        post_cats = detect_catalysts(p.text, ticker=ticker)
         if rel_score >= 0.30:
             for c in post_cats:
                 catalysts_found.append({"category": c["category"], "direction": c["direction"], "importance": c["importance"]})
@@ -156,13 +157,21 @@ async def ingest_news_for_ticker(
     news_items = await news_provider.fetch_news(query=f"{ticker} {ticker_config.name}", ticker=ticker, max_results=20)
     processed_news = []
     catalysts_found = []
+    now_utc = utc_now()
 
     for n in news_items:
         text_content = f"{n.title}. {n.summary}"
         sent_res = sentiment_classifier.analyze(text_content)
         rel_score = calculate_relevance_score(text_content, ticker, ticker_config.aliases)
-        news_cats = detect_catalysts(text_content)
-        if rel_score >= 0.30:
+        news_cats = detect_catalysts(text_content, ticker=ticker)
+
+        # Recency Gate (P1.5 audit fix): Only recent articles (<= 3 days) generate active alerts
+        is_recent_news = True
+        if n.published_at:
+            pub_dt = n.published_at.replace(tzinfo=None) if n.published_at.tzinfo is not None else n.published_at
+            is_recent_news = (now_utc - pub_dt).total_seconds() <= (3 * 86400)
+
+        if rel_score >= 0.30 and is_recent_news:
             for c in news_cats:
                 catalysts_found.append({"category": c["category"], "direction": c["direction"], "importance": c["importance"]})
 
@@ -210,10 +219,18 @@ async def ingest_market_for_ticker(
     mkt_data = await market_provider.fetch_market_data(ticker)
     raw_market_df = mkt_data.raw_df
     if mkt_data.status == "AVAILABLE" and raw_market_df is not None:
-        indicators = calculate_technical_indicators(raw_market_df)
+        indicators = calculate_technical_indicators(
+            raw_market_df,
+            market_session=mkt_data.market_session,
+            as_of=mkt_data.timestamp or utc_now()
+        )
         indicators["price"] = mkt_data.price
         indicators["volume"] = mkt_data.volume
         indicators["status"] = "AVAILABLE"
+        if len(raw_market_df) >= 2 and mkt_data.price is not None:
+            prev_close = float(raw_market_df['Close'].iloc[-2])
+            if prev_close > 0:
+                indicators["price_change_1d"] = round(((mkt_data.price - prev_close) / prev_close) * 100.0, 2)
         tech_score_raw = calculate_technical_score(indicators)
         indicators["technical_score"] = tech_score_raw
     else:
@@ -249,6 +266,7 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
     records_processed = 0
     results = {}
     collected_alerts = []
+    has_persist_error = False
 
     try:
         ensure_tickers_seeded(db)
@@ -268,6 +286,8 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 logger.error(f"Polymarket collection error (isolated): {e}")
         else:
             logger.info("Polymarket collection is disabled (POLYMARKET_ENABLED=False).")
+            
+        update_job_heartbeat(db, job_id)
 
         # Process each configured ticker
         for ticker_config in INITIAL_TICKERS:
@@ -275,6 +295,7 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
             logger.info(f"Processing SMIE analysis for {ticker}...")
 
             # --- STEP 1: SOCIAL COLLECTION (X / TWITTER) ---
+            social_success = False
             posts_data = []
             catalysts_found = []
             try:
@@ -283,6 +304,7 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 )
                 catalysts_found.extend(soc_cats)
                 records_processed += len(posts_data)
+                social_success = True
             except Exception as e:
                 logger.error(f"Social collection error for {ticker} (isolated): {e}")
 
@@ -312,12 +334,14 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 pms_breakdown = {"status": "DISABLED", "reason": "POLYMARKET_ENABLED=False"}
 
             # --- STEP 3: NEWS COLLECTION & CATALYSTS ---
+            news_success = False
             try:
                 saved_count, processed_news, news_cats = await ingest_news_for_ticker(
                     db, ticker_config, news_provider=news_provider, sentiment_classifier=sentiment_classifier
                 )
                 catalysts_found.extend(news_cats)
                 records_processed += len(processed_news)
+                news_success = True
             except Exception as e:
                 logger.error(f"News collection error for {ticker} (isolated): {e}")
 
@@ -335,6 +359,21 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
             except Exception as e:
                 logger.error(f"Market data error for {ticker} (isolated): {e}")
                 indicators["status"] = "ERROR"
+                try:
+                    err_snap_data = {
+                        "ticker": ticker,
+                        "observed_at": utc_now(),
+                        "candle_date": None,
+                        "market_session": "UNKNOWN",
+                        "market_status": "ERROR",
+                        "status": "ERROR",
+                        "price": None,
+                        "volume": None,
+                        "technical_score": None
+                    }
+                    save_market_snapshot(db, err_snap_data)
+                except Exception as snap_err:
+                    logger.error(f"Failed to record error market snapshot for {ticker}: {snap_err}")
 
             # --- STEP 5: COMPUTE SCORES, SMI, CONFIDENCE & SIGNALS ---
             now_eval = utc_now()
@@ -360,9 +399,9 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
             except Exception as e:
                 logger.warning(f"Could not compute fundamentals for {ticker}: {e}")
 
-            # Extract 1d price return from raw OHLCV DataFrame
-            price_change_1d = None
-            if raw_market_df is not None and len(raw_market_df) >= 2 and 'Close' in raw_market_df.columns:
+            # Extract 1d price return from indicators or raw OHLCV DataFrame
+            price_change_1d = indicators.get("price_change_1d")
+            if price_change_1d is None and raw_market_df is not None and len(raw_market_df) >= 2 and 'Close' in raw_market_df.columns:
                 close_series = raw_market_df['Close']
                 prev_c = float(close_series.iloc[-2])
                 curr_c = float(close_series.iloc[-1])
@@ -374,9 +413,47 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
             snap_3d = get_historical_ssi_snapshot(db, ticker, target_hours_ago=72.0, tolerance_hours=18.0)
             snap_5d = get_historical_ssi_snapshot(db, ticker, target_hours_ago=120.0, tolerance_hours=24.0)
 
-            prev_smi_1d = snap_1d.smi if snap_1d and snap_1d.smi is not None else (snap_1d.ssi if snap_1d else None)
-            prev_smi_3d = snap_3d.smi if snap_3d and snap_3d.smi is not None else (snap_3d.ssi if snap_3d else None)
-            prev_smi_5d = snap_5d.smi if snap_5d and snap_5d.smi is not None else (snap_5d.ssi if snap_5d else None)
+            def _build_snap_dict(snap):
+                if not snap:
+                    return None
+                pillars = []
+                scores = {}
+                # Social: reconstruct effective score using prior sample size (R2-02 audit fix)
+                if snap.social_score is not None:
+                    p_cnt = getattr(snap, "post_count", None)
+                    if p_cnt is None:
+                        eff_s = snap.social_score
+                        pillars.append("social")
+                        scores["social"] = eff_s
+                    elif p_cnt > 0:
+                        eff_s = apply_bayesian_shrinkage(snap.social_score, p_cnt)
+                        pillars.append("social")
+                        scores["social"] = eff_s
+                # Reconstruct technical momentum fallback when momentum_score is None (R2-02 audit consistency)
+                snap_mom = snap.momentum_score
+                if snap_mom is None and getattr(snap, "technical_score", None) is not None:
+                    snap_mom = (snap.technical_score / 40.0) * 100.0
+
+                for k, v in [
+                    ("prediction", snap.prediction_score),
+                    ("news", snap.news_score),
+                    ("momentum", snap_mom),
+                    ("fundamental", snap.fundamental_score),
+                    ("risk", snap.risk_score if getattr(settings, "WEIGHT_RISK", 0.0) > 0 else None)
+                ]:
+                    if v is not None:
+                        pillars.append(k)
+                        scores[k] = v
+                val = snap.smi if snap.smi is not None else (snap.ssi if snap.ssi is not None else None)
+                return {
+                    "smi": val,
+                    "active_pillars": pillars,
+                    "active_scores": scores
+                }
+
+            prev_1d_dict = _build_snap_dict(snap_1d)
+            prev_3d_dict = _build_snap_dict(snap_3d)
+            prev_5d_dict = _build_snap_dict(snap_5d)
 
             smi_dict = calculate_smi(
                 social_score=social_score,
@@ -387,9 +464,9 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 technical_score_raw=tech_score_raw,
                 fundamental_score=fundamental_score,
                 risk_score=risk_score,
-                previous_smi_1d=prev_smi_1d,
-                previous_smi_3d=prev_smi_3d,
-                previous_smi_5d=prev_smi_5d,
+                previous_smi_1d=prev_1d_dict,
+                previous_smi_3d=prev_3d_dict,
+                previous_smi_5d=prev_5d_dict,
                 post_count=social_res.get("effective_sample_size", len(recent_posts)),
                 news_count=len(recent_news),
                 prediction_count=prediction_count
@@ -413,7 +490,10 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 source_agreement=smi_dict.get("source_agreement"),
                 data_quality=smi_dict.get("data_quality"),
                 fundamentals=fund_raw,
-                fundamental_score=fundamental_score
+                fundamental_score=fundamental_score,
+                risk_score=risk_score,
+                momentum_score=momentum_score,
+                is_mom_comparable_1d=smi_dict.get("is_mom_comparable_1d", True)
             )
 
             # --- STEP 6: DETERMINE DATA PROVENANCE & SAVE STATEFUL DATA ---
@@ -431,7 +511,7 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                     soc_src = "LIVE"
 
             # 2. Prediction Market Provenance from actual markets in window
-            if not getattr(settings, "POLYMARKET_ENABLED", True) or prediction_count == 0:
+            if not getattr(settings, "POLYMARKET_ENABLED", True) or prediction_count == 0 or pms_score is None:
                 pred_src = "EXCLUDED"
             else:
                 relevant_markets = direct_markets + sector_events
@@ -474,15 +554,6 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 overall_data_src = "DEGRADED"
             else:
                 overall_data_src = "LIVE"
-
-            # Save detected divergences to database (creates new episodes, updates active ones, resolves ceased ones)
-            save_divergences(db, ticker, signal_res.get("active_divergences", []))
-
-            # Tag each alert with its underlying data provenance and save to database
-            alerts_to_save = signal_res.get("alerts", [])
-            for al in alerts_to_save:
-                al["data_source"] = overall_data_src
-            save_alerts(db, ticker, alerts_to_save)
 
             runway_info = get_fundamental_runway_info(fund_raw)
             eff_runway = runway_info.get("runway_months")
@@ -531,11 +602,35 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 "explanation": signal_res["explanation"]
             }
 
+            # Atomic Unit of Work (R2-04 & R2-05 audit fix): Persist divergences, alerts & snapshot together
             try:
-                save_ssi_snapshot(db, snapshot_data)
+                save_divergences(db, ticker, signal_res.get("active_divergences", []), commit=False)
+
+                alerts_to_save = signal_res.get("alerts", [])
+                for al in alerts_to_save:
+                    al["data_source"] = overall_data_src
+                # Deterministic categories recomputed on every run must always be resolved if condition ceased
+                resolve_categories = {"SIGNAL", "DIVERGENCE", "FUNDAMENTAL"}
+                # Only resolve catalyst alerts when both news and social collection succeeded without error
+                if news_success and social_success:
+                    resolve_categories.add("CATALYST")
+
+                save_alerts(
+                    db,
+                    ticker,
+                    alerts_to_save,
+                    resolve_missing=True,
+                    resolve_categories=resolve_categories,
+                    commit=False
+                )
+
+                save_ssi_snapshot(db, snapshot_data, commit=False)
+                db.commit()
                 records_processed += 1
-            except Exception as snap_err:
-                logger.error(f"Error persisting snapshot for {ticker}: {snap_err}")
+            except Exception as persist_err:
+                db.rollback()
+                has_persist_error = True
+                logger.error(f"Error persisting snapshot and alerts for {ticker}: {persist_err}")
 
             if signal_res.get("alerts"):
                 collected_alerts.extend(signal_res["alerts"])
@@ -552,11 +647,13 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 "news_count": len(recent_news),
                 "prediction_count": prediction_count
             }
+            update_job_heartbeat(db, job_id)
 
-        finish_job_run(db, job_id, status="SUCCESS", records=records_processed)
-        logger.info("SMIE pipeline completed successfully.")
+        pipeline_status = "PARTIAL" if has_persist_error else "SUCCESS"
+        finish_job_run(db, job_id, status=pipeline_status, records=records_processed)
+        logger.info(f"SMIE pipeline completed with status {pipeline_status}.")
         return {
-            "status": "SUCCESS",
+            "status": pipeline_status,
             "records_processed": records_processed,
             "results": results,
             "alerts": collected_alerts
@@ -572,14 +669,34 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
 
 async def run_full_pipeline(
     existing_job_id: Optional[int] = None,
+    source: str = "CLI",
     lock_already_acquired: bool = False
 ) -> Dict[str, Any]:
     """
     Executes the complete SMIE v2.0 Modular Pipeline.
-    Protected by PIPELINE_LOCK across all entrypoints (API, Scheduler, CLI).
+    Protected by PIPELINE_LOCK (in-memory process lock) and acquire_pipeline_job_lock (atomic distributed DB lock)
+    across all entrypoints (API, Scheduler, CLI).
     If lock_already_acquired is True (e.g. from API endpoint), proceeds directly to execution.
     """
     if lock_already_acquired:
         return await _run_full_pipeline_internal(existing_job_id=existing_job_id)
+
+    if PIPELINE_LOCK.locked():
+        logger.warning(f"Pipeline execution rejected: process lock held. Source: {source}")
+        return {"status": "CONFLICT", "error": "A pipeline execution is already in progress in this process."}
+
     async with PIPELINE_LOCK:
-        return await _run_full_pipeline_internal(existing_job_id=existing_job_id)
+        job_id = existing_job_id
+        if job_id is None:
+            init_db()
+            db = SessionLocal()
+            try:
+                job_run, conflict_err = acquire_pipeline_job_lock(db, source=source)
+                if not job_run:
+                    logger.warning(f"Pipeline execution rejected by database lock: {conflict_err}")
+                    return {"status": "CONFLICT", "error": conflict_err}
+                job_id = job_run.id
+            finally:
+                db.close()
+
+        return await _run_full_pipeline_internal(existing_job_id=job_id)

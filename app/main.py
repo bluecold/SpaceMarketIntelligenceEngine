@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI):
             from apscheduler.schedulers.asyncio import AsyncIOScheduler
             from app.jobs.runner import run_full_pipeline
             scheduler = AsyncIOScheduler()
-            scheduler.add_job(run_full_pipeline, 'interval', minutes=settings.JOB_INTERVAL_MINUTES)
+            scheduler.add_job(run_full_pipeline, 'interval', minutes=settings.JOB_INTERVAL_MINUTES, kwargs={"source": "SCHEDULER"})
             scheduler.start()
             logger.info(f"APScheduler started. Job interval: {settings.JOB_INTERVAL_MINUTES} min.")
         except Exception as e:

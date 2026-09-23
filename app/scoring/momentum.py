@@ -42,8 +42,12 @@ def calculate_momentum_score(
                 score += max(-20.0, dist_pct * 1.5)
 
     # 2. Short term price returns from dataframe
+    is_falling = False
     if raw_df is not None:
         df_slice = raw_df.iloc[: at_index + 1] if at_index is not None else raw_df
+        if len(df_slice) >= 2:
+            close = df_slice['Close']
+            is_falling = bool(close.iloc[-1] < close.iloc[-2])
         if len(df_slice) >= 6:
             close = df_slice['Close']
             ret_1d = ((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2]) * 100.0
@@ -52,11 +56,24 @@ def calculate_momentum_score(
             
             weighted_ret = (0.5 * ret_1d) + (0.3 * ret_3d) + (0.2 * ret_5d)
             score += np.clip(weighted_ret * 2.0, -25.0, 25.0)
+            if weighted_ret < -0.2:
+                is_falling = True
+    else:
+        p_chg = indicators.get("price_change_1d")
+        if p_chg is not None and p_chg < 0:
+            is_falling = True
 
-    # 3. Volume confirmation (Option A: Institutional confirmation >= 1.2x, weakness penalty < 0.8x)
+    # 3. Volume confirmation: Direction-aware (P1.6 audit fix)
+    # High volume confirms direction:
+    # - If price is rising/neutral: institutional accumulation adds up to +10.0
+    # - If price is falling: high volume indicates selling pressure / distribution, penalizing up to -10.0
     if vol_ratio is not None:
         if vol_ratio >= settings.VOLUME_RATIO_INSTITUTIONAL_BUY:
-            score += min(10.0, (vol_ratio - 1.0) * 8.0)
+            vol_delta = min(10.0, (vol_ratio - 1.0) * 8.0)
+            if is_falling:
+                score -= vol_delta
+            else:
+                score += vol_delta
         elif vol_ratio < settings.VOLUME_RATIO_WEAKNESS:
             score -= 5.0
 

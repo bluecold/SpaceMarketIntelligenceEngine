@@ -426,12 +426,192 @@ def test_catalyst_competitor_rivalry():
     assert c_imp == "CRITICAL"
 
 
+def test_catalyst_common_phrases_false_positive_elimination():
+    """
+    Validates the elimination of critical false positives triggered by common financial and idiomatic phrases:
+    1. 'Redwire reports Q2 net loss as defense revenue grows' -> NO false GOVERNMENT_CONTRACT or false REVENUE beat.
+    2. 'Rocket Lab shares drop despite NASA award' -> BULLISH CRITICAL GOVERNMENT_CONTRACT award, NOT false cancellation.
+    3. 'Analysts keep hold rating on ASTS' -> NO false LAUNCH_DELAY.
+    4. 'Planet Labs stock crash after earnings' -> NO false LAUNCH_FAILURE.
+    5. 'explosion of demand' -> NO false LAUNCH_FAILURE.
+    """
+    from app.sentiment.weighting import detect_catalysts, detect_catalyst
+
+    # 1. Net loss with defense revenue growth
+    t1 = "Redwire reports Q2 net loss as defense revenue grows"
+    cats1 = detect_catalysts(t1)
+    gov_cats1 = [c for c in cats1 if c["category"] == "GOVERNMENT_CONTRACT"]
+    assert len(gov_cats1) == 0, f"Expected 0 GOVERNMENT_CONTRACT catalysts for '{t1}', got {gov_cats1}"
+    rev_cats1 = [c for c in cats1 if c["category"] == "REVENUE" and c["direction"] == "BULLISH"]
+    assert len(rev_cats1) == 0, f"Expected no BULLISH REVENUE when net loss is reported, got {rev_cats1}"
+
+    # 2. Shares drop despite NASA award
+    t2 = "Rocket Lab shares drop despite NASA award"
+    top_cat2, top_dir2, top_imp2 = detect_catalyst(t2)
+    assert top_cat2 == "GOVERNMENT_CONTRACT", f"Expected GOVERNMENT_CONTRACT for '{t2}', got {top_cat2}"
+    assert top_dir2 == "BULLISH", f"Expected BULLISH award, got {top_dir2}"
+    assert top_imp2 == "CRITICAL"
+
+    # 3. Analyst hold rating
+    t3 = "Analysts keep hold rating on ASTS"
+    cats3 = detect_catalysts(t3)
+    delay_cats3 = [c for c in cats3 if c["category"] == "LAUNCH_DELAY"]
+    assert len(delay_cats3) == 0, f"Expected 0 LAUNCH_DELAY for '{t3}', got {delay_cats3}"
+
+    # 4. Stock market crash
+    t4 = "Planet Labs stock crash after earnings"
+    cats4 = detect_catalysts(t4)
+    fail_cats4 = [c for c in cats4 if c["category"] == "LAUNCH_FAILURE"]
+    assert len(fail_cats4) == 0, f"Expected 0 LAUNCH_FAILURE for '{t4}', got {fail_cats4}"
+
+    # 5. Idiomatic explosion of demand
+    t5 = "AST SpaceMobile sees explosion of demand for direct to cell connectivity"
+    cats5 = detect_catalysts(t5)
+    fail_cats5 = [c for c in cats5 if c["category"] == "LAUNCH_FAILURE"]
+    assert len(fail_cats5) == 0, f"Expected 0 LAUNCH_FAILURE for '{t5}', got {fail_cats5}"
 
 
+def test_catalyst_competitor_rivalry_word_boundaries():
+    """
+    Validates that competitor rivalry matching enforces regex word boundaries so that:
+    - 'ast' does NOT match 'at last' or 'fast'
+    - 'pl' does NOT match 'complex' or 'application'
+    - Financial performance 'beats' (e.g. 'beats earnings guidance') are not treated as rival defeats
+    - Legitimate entities DO match correctly with word boundaries
+    """
+    from app.sentiment.weighting import detect_catalysts
+
+    # 'at last' and 'fast' should not trigger ASTS in competitor rivalry
+    text_last = "NASA selects SpaceX over Blue Origin at last for lunar mission"
+    cats_last = detect_catalysts(text_last, ticker="ASTS")
+    assert len(cats_last) == 0, f"Expected 0 catalysts for ASTS from 'at last', got {cats_last}"
+
+    text_fast = "SpaceX beats fast rivals for next launch milestone"
+    cats_fast = detect_catalysts(text_fast, ticker="ASTS")
+    ast_rival = [c for c in cats_fast if "selected over" in c.get("keyword", "") or "beat competitor" in c.get("keyword", "")]
+    assert len(ast_rival) == 0, f"ASTS should not match 'fast' in competitor rivalry, got {ast_rival}"
+
+    # 'complex' should not trigger PL in competitor rivalry
+    text_complex = "SpaceX beats complex rivals for next launch milestone"
+    cats_complex = detect_catalysts(text_complex, ticker="PL")
+    pl_rival = [c for c in cats_complex if "selected over" in c.get("keyword", "") or "beat competitor" in c.get("keyword", "")]
+    assert len(pl_rival) == 0, f"PL should not match 'complex' in competitor rivalry, got {pl_rival}"
+
+    # Legitimate mentions DO match
+    text_pl_real = "NASA selects SpaceX over Planet Labs for Earth observation contract"
+    cats_pl_real = detect_catalysts(text_pl_real, ticker="PL")
+    assert any(c["category"] == "GOVERNMENT_CONTRACT" and c["direction"] == "BEARISH" for c in cats_pl_real)
+
+    text_asts_real = "NASA selects SpaceX over AST SpaceMobile for communications contract"
+    cats_asts_real = detect_catalysts(text_asts_real, ticker="ASTS")
+    assert any(c["category"] == "GOVERNMENT_CONTRACT" and c["direction"] == "BEARISH" for c in cats_asts_real)
+
+    # Financial 'beats' should not count as competitor rivalry
+    text_fin_beat = "Rocket Lab reports record revenue surge and beats earnings guidance"
+    cats_fin = detect_catalysts(text_fin_beat, ticker="RKLB")
+    rival_cats = [c for c in cats_fin if c["category"] == "GOVERNMENT_CONTRACT" and "beat competitor" in c.get("keyword", "")]
+    assert len(rival_cats) == 0, f"Expected no competitor defeat for earnings guidance beat, got {rival_cats}"
 
 
+def test_heuristic_classifier_ambiguous_words():
+    """
+    Validates that ambiguous words in HeuristicSentimentClassifier do not cause false polarities:
+    1. 'call' in earnings/conference call is NEUTRAL, not BULLISH.
+    2. 'long' in long-term/long time is NEUTRAL, not BULLISH.
+    3. 'short' in short-term is NEUTRAL, not BEARISH.
+    4. 'put' in 'put into orbit' is NEUTRAL/BULLISH, not BEARISH.
+    5. 'sell-side' in 'sell-side analysts upgrade' does not trigger BEARISH 'sell'.
+    6. 'profit-taking' in 'drops due to profit-taking' does not trigger BULLISH 'profit'.
+    7. 'derisk' / 'risk management' does not trigger BEARISH 'risk'.
+    """
+    from app.sentiment.classifier import HeuristicSentimentClassifier
+    classifier = HeuristicSentimentClassifier()
+
+    # 1. Earnings and conference calls
+    res_call = classifier.analyze("Company will host an earnings call with analysts tomorrow.")
+    assert res_call.label == "NEUTRAL", f"Expected NEUTRAL for earnings call, got {res_call.label}"
+    assert res_call.score == 0.0
+
+    res_conf_call = classifier.analyze("Management discussed satellite constellation during quarterly conference call.")
+    assert res_conf_call.label == "NEUTRAL"
+    assert res_conf_call.score == 0.0
+
+    # Explicit call options DO trigger bullish
+    res_call_opt = classifier.analyze("Traders aggressively buying call options ahead of flight.")
+    assert res_call_opt.label == "BULLISH"
+    assert res_call_opt.score > 0.20
+
+    # 2. Long-term / long time vs Long position
+    res_long_term = classifier.analyze("Long term outlook for commercial space payload delivery.")
+    assert res_long_term.label == "NEUTRAL"
+    assert res_long_term.score == 0.0
+
+    res_go_long = classifier.analyze("Prominent institutional fund decides to go long on ASTS shares.")
+    assert res_go_long.label == "BULLISH"
+    assert res_go_long.score > 0.20
+
+    # 3. Short-term vs Short selling / short interest
+    res_short_term = classifier.analyze("Short-term volatility expected ahead of regulatory announcement.")
+    assert res_short_term.label == "NEUTRAL"
+    assert res_short_term.score == 0.0
+
+    res_short_int = classifier.analyze("Hedge fund initiates aggressive short position as short interest climbs.")
+    assert res_short_int.label == "BEARISH"
+    assert res_short_int.score < -0.20
+
+    # 4. Put into orbit vs Put options
+    res_put_orbit = classifier.analyze("Second batch of commercial satellites was put into orbit successfully.")
+    assert res_put_orbit.label == "BULLISH", f"Expected BULLISH for successful orbit, got {res_put_orbit.label}"
+    assert res_put_orbit.score > 0.20
+
+    res_put_opt = classifier.analyze("Bearish traders loaded on put options targeting sharp price drop.")
+    assert res_put_opt.label == "BEARISH"
+    assert res_put_opt.score < -0.20
+
+    # 5. Sell-side analysts upgrade
+    res_sell_side = classifier.analyze("Sell-side analysts upgrade Rocket Lab to outperform.")
+    assert res_sell_side.label == "BULLISH", f"Expected BULLISH for upgrade, got {res_sell_side.label}"
+    assert res_sell_side.score > 0.20
+
+    # 6. Profit-taking
+    res_profit_take = classifier.analyze("Stock drops 5% due to profit-taking.")
+    assert res_profit_take.label == "BEARISH", f"Expected BEARISH for drop due to profit-taking, got {res_profit_take.label}"
+    assert res_profit_take.score < 0.0
+
+    res_profit_alone = classifier.analyze("Traders engaging in profit-taking ahead of weekend.")
+    assert res_profit_alone.label == "NEUTRAL", f"Profit-taking alone must not be BULLISH, got {res_profit_alone.label}"
+    assert res_profit_alone.score == 0.0
+
+    # 7. Derisk / Risk management vs Downside / Dilution Risk
+    res_derisk = classifier.analyze("Hot fire engine test completed to derisk the launch vehicle architecture.")
+    assert res_derisk.score >= 0.0
+
+    res_dilution_risk = classifier.analyze("ASTS faces high dilution risk and cash burn in upcoming quarter.")
+    assert res_dilution_risk.label == "BEARISH"
+    assert res_dilution_risk.score < -0.20
 
 
+def test_heuristic_classifier_conflicted_signals_confidence():
+    """
+    Validates that signal confidence reflects net agreement / polarization:
+    - 2 bullish + 2 bearish signals (e.g. 'Bullish growth but heavy loss and drop'):
+      Yields score = 0.0, label = NEUTRAL, with confidence heavily penalized (<= 0.40, NOT 0.95!).
+    - Unanimous signals (e.g. 4 bullish hits):
+      Yields high confidence (0.95).
+    """
+    from app.sentiment.classifier import HeuristicSentimentClassifier
+    classifier = HeuristicSentimentClassifier()
 
+    # 1. Severely conflicted text (2 bullish: bullish, growth; 2 bearish: loss, drop)
+    res_conflicted = classifier.analyze("Bullish growth but heavy loss and drop")
+    assert res_conflicted.score == 0.0
+    assert res_conflicted.label == "NEUTRAL"
+    assert res_conflicted.confidence <= 0.40, (
+        f"Conflicted signals (2 bull, 2 bear) must have low confidence (<= 0.40), got {res_conflicted.confidence}"
+    )
 
-
+    # 2. Unanimous high-conviction bullish (4 bullish hits)
+    res_unanimous = classifier.analyze("ASTS wins landmark contract, surges to all-time high with massive revenue growth.")
+    assert res_unanimous.label == "BULLISH"
+    assert res_unanimous.score >= 0.80
+    assert res_unanimous.confidence >= 0.90, f"Unanimous signals should have high confidence, got {res_unanimous.confidence}"

@@ -57,15 +57,16 @@ class PredictionMarketData(BaseModel):
     spread: float = 0.0     # Bid-Ask spread
     quality_score: float = 50.0 # 0 to 100
     
-    probability_change_1h: float = 0.0
-    probability_change_6h: float = 0.0
-    probability_change_24h: float = 0.0
+    probability_change_1h: Optional[float] = None
+    probability_change_6h: Optional[float] = None
+    probability_change_24h: Optional[float] = None
     
     url: Optional[str] = None
     event_key: Optional[str] = None  # Mapping key if linked to cross-company event
     clob_token_id: Optional[str] = None  # 256-bit asset token ID for CLOB prices-history
     condition_id: Optional[str] = None   # Polymarket condition ID
     polarity: int = 1  # +1 = Bullish when YES occurs, -1 = Bearish when YES occurs (e.g. failure/delay)
+    baseline_probability: Optional[float] = None  # Expected prior base-rate anchor (defaults to PMS_DEFAULT_BASE_RATE e.g. 0.20)
     source: str = "LIVE"  # "LIVE", "MOCK"
 
 

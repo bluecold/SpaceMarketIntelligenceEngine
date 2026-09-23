@@ -28,24 +28,39 @@ class HeuristicSentimentClassifier(BaseSentimentClassifier):
     """Fast, deterministic finance lexicon & keyword sentiment analyzer with negation detection and tanh saturation."""
     
     BULLISH_KEYWORDS = [
-        "bull", "bullish", "moon", "buy", "buying", "long", "call", "calls",
+        "bull", "bullish", "moon", "buy", "buying",
+        "go long", "going long", "long position", "long positions", "long on", "heavily long", "long thesis",
+        "call option", "call options", "call buying", "buying calls", "bullish calls",
+        "__BUYING_CALLS__", "__SELLING_PUTS__", "__BULLISH_CALL_FLOW__", "__BULLISH_CALLS__",
         "surge", "surges", "surging", "surged", "beat", "beats", "beating",
         "outperform", "outperforms", "outperforming", "outperformed",
-        "growth", "breakout", "success", "successful", "upgrade", "upgrades", "upgraded", "upgrading",
+        "growth", "breakout", "success", "successful", "successfully", "upgrade", "upgrades", "upgraded", "upgrading",
         "win", "wins", "winning", "won", "milestone", "record high", "all-time high", "all time high",
         "ath", "52-week high", "gamechanger", "expansion", "profit", "profitable",
         "profitability", "rally", "rallies", "rallying", "rallied", "soar", "soars", "soaring", "soared"
     ]
     
     BEARISH_KEYWORDS = [
-        "bear", "bearish", "short", "shorts", "short interest", "sell", "selling",
-        "put", "puts", "dilution", "capital raise", "offering", "downgrade", "downgrades", "downgraded", "downgrading",
+        "bear", "bearish", "short selling", "short seller", "short sellers", "short interest",
+        "short position", "short positions", "shorting", "go short", "going short", "heavily short",
+        "naked short", "fall short", "fell short", "falling short", "short squeeze",
+        "sell", "selling",
+        "put option", "put options", "put buying", "buying puts", "bearish puts", "heavy puts",
+        "__BUYING_PUTS__", "__SELLING_CALLS__", "__BEARISH_PUT_FLOW__", "__BEARISH_PUTS__",
+        "dilution", "capital raise", "offering", "downgrade", "downgrades", "downgraded", "downgrading",
         "delay", "delayed", "delays", "delaying", "failure", "fail", "failed", "failing", "fails",
         "miss", "missed", "misses", "missing", "underperform", "underperforms", "underperforming", "underperformed",
         "burn", "cash burn", "drop", "dropped", "dropping", "drops", "loss", "losses",
         "plunge", "plunges", "plunging", "plunged", "crash", "crashes", "crashing", "crashed",
         "tumble", "tumbles", "tumbling", "tumbled",
-        "halt", "halted", "halting", "risk", "bankruptcy", "lawsuit", "investigation", "stretched", "overvalued"
+        "halt", "halted", "halting",
+        "high risk", "at risk", "downside risk", "dilution risk", "bankruptcy risk", "default risk",
+        "execution risk", "risk warning", "risk of failure", "risk of delay", "risk of dilution", "risk-off",
+        "bankruptcy", "lawsuit", "investigation", "stretched", "overvalued",
+        "cancel", "cancels", "cancelled", "canceling", "cancellation",
+        "terminate", "terminates", "terminated", "terminating", "termination",
+        "revoke", "revokes", "revoked", "revoking", "rescind", "rescinds", "rescinded",
+        "reject", "rejects", "rejected", "lost contract", "contract loss"
     ]
 
     HIGH_PRICE_EXPRESSIONS = [
@@ -71,6 +86,41 @@ class HeuristicSentimentClassifier(BaseSentimentClassifier):
         "no question", "without question", "no wonder", "no surprise"
     ]
 
+    def _preprocess(self, text: str) -> str:
+        t = text.lower()
+        # 1. Options trading idioms resolution (prevents bare buy/sell from cancelling options direction)
+        t = re.sub(r'\b(?:buy|buying|bought|load|loaded|loading|purchas(?:e|ing|ed))\s+(?:put\s+options?|puts)\b', ' __BUYING_PUTS__ ', t)
+        t = re.sub(r'\b(?:sell|selling|sold)\s+(?:put\s+options?|puts)\b', ' __SELLING_PUTS__ ', t)
+        t = re.sub(r'\b(?:buy|buying|bought|load|loaded|loading|purchas(?:e|ing|ed))\s+(?:call\s+options?|calls)\b', ' __BUYING_CALLS__ ', t)
+        t = re.sub(r'\b(?:sell|selling|sold)\s+(?:call\s+options?|calls)\b', ' __SELLING_CALLS__ ', t)
+        t = re.sub(r'\b(?:heavy\s+)?put\s+options?\s+(?:buying|volume|flow|sweeps?)\b', ' __BEARISH_PUT_FLOW__ ', t)
+        t = re.sub(r'\b(?:heavy\s+)?call\s+options?\s+(?:buying|volume|flow|sweeps?)\b', ' __BULLISH_CALL_FLOW__ ', t)
+        t = re.sub(r'\b(?:put\s+options?|bearish\s+puts?)\b', ' __BEARISH_PUTS__ ', t)
+        t = re.sub(r'\b(?:call\s+options?|bullish\s+calls?)\b', ' __BULLISH_CALLS__ ', t)
+
+        # 2. Mask sell-side / buy-side so 'sell'/'buy' don't trigger falsely
+        t = re.sub(r'\bsell\s*-\s*side\b|\bsell\s+side\b', ' __SELL_SIDE__ ', t)
+        t = re.sub(r'\bbuy\s*-\s*side\b|\bbuy\s+side\b', ' __BUY_SIDE__ ', t)
+
+        # 3. Mask profit-taking so 'profit' doesn't trigger falsely
+        t = re.sub(r'\bprofit\s*-\s*taking\b|\bprofit\s+taking\b|\btaking\s+profits?\b', ' __PROFIT_TAKING__ ', t)
+
+        # 4. Mask short-term, short time, in short
+        t = re.sub(r'\bshort\s*-\s*term\b|\bshort\s+term\b|\bin\s+short\b|\bshort\s+notice\b|\bshort\s+time\b', ' __SHORT_TERM__ ', t)
+
+        # 5. Mask earnings / conference / investor calls
+        t = re.sub(r'\b(?:earnings|conference|investor|quarterly|analyst|results|post-earnings)\s+calls?\b', ' __EARNINGS_CALL__ ', t)
+        t = re.sub(r'\b(?:on|during)\s+(?:the\s+)?call\b', ' __ON_CALL__ ', t)
+
+        # 6. Mask derisk / risk management / risk-on
+        t = re.sub(r'\bde-?risking?\b|\bde-?risked\b', ' __DERISK__ ', t)
+        t = re.sub(r'\brisk\s*-\s*on\b|\brisk\s+on\b', ' __RISK_ON__ ', t)
+        t = re.sub(r'\b(?:manage|managing|mitigate|mitigating)\s+risk\b|\brisk\s+management\b|\brisk\s+mitigation\b', ' __RISK_MGMT__ ', t)
+
+        # 7. Mask long-term, long time, long run, long way
+        t = re.sub(r'\blong\s*-\s*term\b|\blong\s+term\b|\blong\s+time\b|\blong\s+run\b|\blong\s+road\b|\blong\s+way\b|\bhow\s+long\b', ' __LONG_TERM__ ', t)
+        return t
+
     def _is_negated(self, kw: str, clean_text: str) -> bool:
         """
         Check if keyword is preceded by a genuine negation within 0-2 intervening words,
@@ -95,7 +145,7 @@ class HeuristicSentimentClassifier(BaseSentimentClassifier):
         return False
 
     def analyze(self, text: str) -> SentimentResult:
-        clean_text = text.lower()
+        clean_text = self._preprocess(text)
         
         bull_hits = 0
         bear_hits = 0
@@ -134,7 +184,7 @@ class HeuristicSentimentClassifier(BaseSentimentClassifier):
         
         total_hits = bull_hits + bear_hits
         if total_hits == 0:
-            return SentimentResult(score=0.0, label="NEUTRAL", confidence=0.7)
+            return SentimentResult(score=0.0, label="NEUTRAL", confidence=0.70)
 
         # Smooth saturation using hyperbolic tangent: tanh((bull_hits - bear_hits) / 2.0)
         # Prevents a single isolated hit from triggering maximum conviction (+1.0)
@@ -149,7 +199,19 @@ class HeuristicSentimentClassifier(BaseSentimentClassifier):
         else:
             label = "NEUTRAL"
 
-        confidence = min(0.95, round(0.40 + 0.15 * min(4, total_hits), 2))
+        # Signal agreement ratio: delta / total
+        agreement = abs(delta_hits) / float(total_hits)
+
+        if label in ("BULLISH", "BEARISH"):
+            volume_factor = min(1.0, 0.40 + 0.15 * total_hits)
+            conf = 0.35 + 0.60 * (agreement * volume_factor)
+            confidence = min(0.95, max(0.35, conf))
+        else:
+            # Conflicted neutral: when opposing signals cancel out (e.g. 2 bull + 2 bear),
+            # confidence is penalized down to reflect high uncertainty / contradiction
+            conf = 0.35 + 0.35 * agreement
+            confidence = min(0.70, max(0.30, conf))
+
         return SentimentResult(score=round(score, 3), label=label, confidence=round(confidence, 2))
 
 

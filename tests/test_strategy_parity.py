@@ -159,16 +159,16 @@ def test_signal_generator_encapsulates_all_filters_without_ui_leakage():
     assert res_overbought["signal_modifier"] == "OVEREXTENDED"
     assert res_overbought["signal"] == "WATCH (OVEREXTENDED)"
 
-    # 3. Market Data Unavailable Rule
+    # 3. Market Data Unavailable Rule: non-operable, demotes to WATCH (NO MKT DATA)
     res_no_mkt = generate_signal_and_explanation(
         ticker="SPCX",
         smi=80.0,
         social_score=80.0,
         indicators={"status": "DATA_UNAVAILABLE"}
     )
-    assert res_no_mkt["base_signal"] == "BUY"
+    assert res_no_mkt["base_signal"] == "WATCH"
     assert res_no_mkt["signal_modifier"] == "NO MKT DATA"
-    assert res_no_mkt["signal"] == "BUY (NO MKT DATA)"
+    assert res_no_mkt["signal"] == "WATCH (NO MKT DATA)"
 
 
 def test_capital_preservation_flat_gate_on_conflicting_or_low_data():

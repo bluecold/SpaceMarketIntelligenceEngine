@@ -56,6 +56,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
 
   const dropdownRef = useRef<HTMLDivElement>(null);
   const isInitialMountRef = useRef<boolean>(true);
+  const mountTimestampRef = useRef<number>(Date.now());
 
   // Persistent notified registry (persisted in localStorage, loaded into ref)
   const notifiedIdsRef = useRef<Set<string>>((() => {
@@ -160,14 +161,14 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
     return true;
   };
 
+  const hasSeededRef = useRef<boolean>(false);
+
   // --- COLD START PROTECTION & REAL-TIME DISPATCH ---
   useEffect(() => {
-    // 1. SILENT COLD-START SEEDING:
-    // On the initial page mount or reload (F5), seed all existing server alerts
+    // 1. SILENT COLD-START SEEDING (P2.14 audit fix):
+    // When alerts arrive for the first time, seed all existing server alerts
     // into the notified set WITHOUT firing desktop notifications.
-    // Unconditionally clear initial mount flag so subsequent fetches with new alerts will notify properly.
-    if (isInitialMountRef.current) {
-      isInitialMountRef.current = false;
+    if (!hasSeededRef.current) {
       if (alerts && alerts.length > 0) {
         const updatedSet = new Set(notifiedIdsRef.current);
         alerts.forEach((al, idx) => {
@@ -175,8 +176,19 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
         });
         notifiedIdsRef.current = updatedSet;
         saveNotifiedIds(updatedSet);
+        hasSeededRef.current = true;
+        isInitialMountRef.current = false;
+        return;
       }
-      return;
+      if (isInitialMountRef.current) {
+        // Initial empty mount render: wait for first network response
+        isInitialMountRef.current = false;
+        return;
+      } else {
+        // Subsequent render with empty alerts means server has zero alerts
+        hasSeededRef.current = true;
+        return;
+      }
     }
 
     if (!alerts || alerts.length === 0) return;
@@ -198,6 +210,15 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
         // Expired or inactive: mark as handled so we don't re-evaluate indefinitely
         updatedSet.add(key);
         return;
+      }
+
+      // Pre-mount check: ignore historical alerts created before this page session was loaded
+      if (alert.timestamp) {
+        const alertTime = new Date(alert.timestamp).getTime();
+        if (!isNaN(alertTime) && alertTime < mountTimestampRef.current - 5000) {
+          updatedSet.add(key);
+          return;
+        }
       }
 
       // Severity check based on user preferences

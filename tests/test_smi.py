@@ -207,39 +207,50 @@ def test_signal_generator_canonical_matrix():
     assert res_ob["signal"] == "WATCH (OVEREXTENDED)"
     assert res_ob["is_overbought"] is True
 
-    # 2B. Regime: Overbought Warning on BUY (70 <= SMI < 80, RSI > 75)
+    # 2B. Regime: Overbought Monotonic Restriction on BUY (RSI > 75 restricts to WATCH)
     res_buy_ob = generate_signal_and_explanation(
         ticker="ASTS",
         smi=75.0,
         social_score=75.0,
         indicators={"status": "AVAILABLE", "price": 28.0, "ema200": 20.0, "rsi14": 80.0}
     )
-    assert res_buy_ob["base_signal"] == "BUY"
+    assert res_buy_ob["base_signal"] == "WATCH"
     assert res_buy_ob["signal_modifier"] == "OVEREXTENDED"
-    assert res_buy_ob["signal"] == "BUY (OVEREXTENDED)"
+    assert res_buy_ob["signal"] == "WATCH (OVEREXTENDED)"
     assert res_buy_ob["is_overbought"] is True
 
-    # 3. Regime: Missing Technical Data (status != "AVAILABLE")
+    # 3. Regime: Missing Technical Data (status != "AVAILABLE", demotes BUY to WATCH)
     res_nodata = generate_signal_and_explanation(
         ticker="SPCX",
         smi=82.0,
         social_score=80.0,
         indicators={"status": "DATA_UNAVAILABLE", "price": None, "ema200": None, "rsi14": None}
     )
-    assert res_nodata["base_signal"] in ["BUY", "STRONG BUY"]
+    assert res_nodata["base_signal"] == "WATCH"
     assert res_nodata["signal_modifier"] == "NO MKT DATA"
     assert "NO MKT DATA" in res_nodata["signal"]
 
-    # 4. Regime: Bearish / Avoid Regime (SMI < 35)
+    # 4. Regime: Bearish / Avoid Regime (20 <= SMI < 45)
     res_avoid = generate_signal_and_explanation(
         ticker="SPCE",
         smi=25.0,
         social_score=25.0,
         indicators={"status": "AVAILABLE", "price": 1.2, "ema200": 2.5, "rsi14": 30.0}
     )
-    assert res_avoid["base_signal"] == "STRONG AVOID"
+    assert res_avoid["base_signal"] == "AVOID"
     assert res_avoid["signal_modifier"] is None
-    assert res_avoid["signal"] == "STRONG AVOID"
+    assert res_avoid["signal"] == "AVOID"
+
+    # 5. Regime: Extreme Bearish / Collapse Regime (SMI < 20)
+    res_strong_avoid = generate_signal_and_explanation(
+        ticker="SPCE",
+        smi=15.0,
+        social_score=15.0,
+        indicators={"status": "AVAILABLE", "price": 0.8, "ema200": 2.5, "rsi14": 20.0}
+    )
+    assert res_strong_avoid["base_signal"] == "STRONG AVOID"
+    assert res_strong_avoid["signal_modifier"] is None
+    assert res_strong_avoid["signal"] == "STRONG AVOID"
 
 
 def test_critical_catalyst_alerts_deduplication():
@@ -318,13 +329,17 @@ def test_risk_score_integration_monotonicity():
     risk_risky = calculate_risk_score(indicators_risky, raw_df=df_risky)
     assert risk_risky is not None and risk_risky <= 30.0, f"Expected low safety score <= 30, got {risk_risky}"
 
-    # 3. Calculate SMI with both
+    # 3. Calculate SMI with both under active risk weighting configuration
+    weights_with_risk = {
+        "social": 0.30, "news": 0.20, "momentum": 0.20, "fundamental": 0.10, "risk": 0.05
+    }
     base_params = {
         "social_score": 75.0,
         "post_count": 25,
         "news_score": 70.0,
         "news_count": 3,
-        "momentum_score": 65.0
+        "momentum_score": 65.0,
+        "custom_weights": weights_with_risk
     }
     smi_safe = calculate_smi(**base_params, risk_score=risk_safe)
     smi_risky = calculate_smi(**base_params, risk_score=risk_risky)
@@ -335,6 +350,15 @@ def test_risk_score_integration_monotonicity():
     # Verify exact difference is aligned with the 5% risk weight
     assert smi_safe["normalized_weights"]["risk"] > 0
     assert smi_risky["normalized_weights"]["risk"] > 0
+
+    # 4. Verify Capital Preservation Gate 4: Acute risk (< 30.0) restricts STRONG BUY to BUY (HIGH RISK)
+    from app.scoring.signal import generate_signal_and_explanation
+    indicators = {"price": 100.0, "status": "AVAILABLE"}
+    sig_safe = generate_signal_and_explanation(ticker="ASTS", smi=88.0, risk_score=risk_safe, indicators=indicators)
+    sig_risky = generate_signal_and_explanation(ticker="ASTS", smi=88.0, risk_score=risk_risky, indicators=indicators)
+    assert sig_safe["base_signal"] == "STRONG BUY"
+    assert sig_risky["base_signal"] == "BUY"
+    assert "HIGH RISK" in sig_risky["signal"]
 
 
 def test_zero_post_count_strictly_excludes_social():
@@ -446,7 +470,8 @@ def test_fundamental_capital_raise_risk_alert_and_signal_modifier():
         ticker="ASTS",
         smi=85.0,
         social_score=85.0,
-        fundamentals=distressed_fund
+        fundamentals=distressed_fund,
+        indicators={"price": 25.0, "status": "AVAILABLE"}
     )
 
     # Signal is modified to include DILUTION RISK and downgraded from STRONG BUY
@@ -496,7 +521,8 @@ def test_zero_cash_burn_survival_alert_and_risk_tier():
         ticker="ASTS",
         smi=85.0,
         social_score=85.0,
-        fundamentals=exhausted_fund
+        fundamentals=exhausted_fund,
+        indicators={"price": 25.0, "status": "AVAILABLE"}
     )
     assert "DILUTION RISK" in res["signal"]
     assert res["signal_modifier"] == "DILUTION RISK"

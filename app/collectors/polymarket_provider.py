@@ -375,22 +375,27 @@ class PolymarketGammaProvider(PredictionMarketProvider):
 
             condition_id = str(m.get("conditionId") or m.get("condition_id") or "").strip() or None
 
-            volume = float(m.get("volumeNum") or m.get("volume") or event.get("volume") or 0.0)
-            liquidity = float(m.get("liquidityNum") or m.get("liquidity") or event.get("liquidity") or 0.0)
+            vol_raw = m.get("volumeNum") if m.get("volumeNum") is not None else m.get("volume")
+            volume = float(vol_raw) if vol_raw is not None else 0.0
+
+            liq_raw = m.get("liquidityNum") if m.get("liquidityNum") is not None else m.get("liquidity")
+            liquidity = float(liq_raw) if liq_raw is not None else 0.0
+
             spread = float(m.get("spread") or 0.02)
             
-            # Extract 24h price/probability delta from Gamma API if present
+            # Extract 24h price/probability delta from Gamma API if present (do not inherit event delta)
             raw_delta_24h = (
                 m.get("oneDayPriceChange")
-                or m.get("priceChange24h")
-                or m.get("priceChange")
-                or event.get("oneDayPriceChange")
-                or 0.0
+                if m.get("oneDayPriceChange") is not None
+                else (m.get("priceChange24h") if m.get("priceChange24h") is not None else m.get("priceChange"))
             )
-            try:
-                prob_delta_24h = float(raw_delta_24h) * 100.0 if abs(float(raw_delta_24h)) <= 1.0 else float(raw_delta_24h)
-            except Exception:
-                prob_delta_24h = 0.0
+            prob_delta_24h = None
+            if raw_delta_24h is not None:
+                try:
+                    delta_val = float(raw_delta_24h)
+                    prob_delta_24h = delta_val * 100.0 if abs(delta_val) <= 1.0 else delta_val
+                except Exception:
+                    prob_delta_24h = None
 
             end_date_str = m.get("endDate") or event.get("endDate") or m.get("end_date")
             end_date = None
@@ -471,7 +476,7 @@ class PolymarketGammaProvider(PredictionMarketProvider):
                 quality_score=qual,
                 probability_change_1h=0.0,
                 probability_change_6h=0.0,
-                probability_change_24h=round(prob_delta_24h, 2),
+                probability_change_24h=round(prob_delta_24h, 2) if prob_delta_24h is not None else None,
                 url=f"https://polymarket.com/event/{event.get('slug', '')}" if event.get("slug") else None,
                 polarity=polarity,
                 source="LIVE"

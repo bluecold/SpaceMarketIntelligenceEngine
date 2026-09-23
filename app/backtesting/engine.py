@@ -251,11 +251,19 @@ def simulate_portfolio_execution(
         equity_points.append(ending_capital)
         invested_fractions.append(0.0)
 
-    # Calculate portfolio max drawdown from equity points
+    # Calculate portfolio max drawdown and periodic portfolio Sharpe from non-overlapping equity points
     eq_arr = np.array(equity_points, dtype=float)
     peak = np.maximum.accumulate(eq_arr)
     drawdowns = (eq_arr - peak) / peak
     port_max_dd = abs(float(np.min(drawdowns))) * 100.0 if len(drawdowns) > 0 else 0.0
+
+    eq_returns = np.diff(eq_arr) / eq_arr[:-1] if len(eq_arr) > 1 else np.array([])
+    rf_daily = (0.04 / 252.0)  # Standard 4% annual risk-free rate
+    if len(eq_returns) > 1 and np.std(eq_returns) > 0:
+        excess_daily = eq_returns - rf_daily
+        port_sharpe = float(np.mean(excess_daily) / np.std(eq_returns) * math.sqrt(252.0))
+    else:
+        port_sharpe = 0.0
 
     total_net_return = ((ending_capital - initial_capital) / initial_capital) * 100.0
     avg_invested = float(np.mean(invested_fractions)) * 100.0
@@ -265,6 +273,7 @@ def simulate_portfolio_execution(
         "ending_capital": round(ending_capital, 2),
         "total_net_return_pct": round(total_net_return, 2),
         "portfolio_max_drawdown_pct": round(port_max_dd, 2),
+        "portfolio_sharpe_ratio": round(port_sharpe, 2),
         "max_concurrent_positions": max_concurrent_seen,
         "avg_capital_invested_pct": round(avg_invested, 1),
         "total_transaction_costs": round(total_costs, 2),
@@ -304,6 +313,90 @@ def compute_hypothesis_significance(
 
     mean_delta = float(np.mean(returns_b) - np.mean(returns_a)) if (n_a > 0 and n_b > 0) else 0.0
 
+    # Check calendar date synchrony when timestamps are present (R2-01 audit fix)
+    has_dates_a = any(t.get("entry_time") is not None for t in model_a_trades)
+    has_dates_b = any(t.get("entry_time") is not None for t in model_b_trades)
+    is_date_paired = False
+    paired_diffs = []
+    common_dates_count = 0
+
+    if has_dates_a and has_dates_b:
+        def _get_trade_date(t):
+            dt = _parse_timestamp(t.get("entry_time"))
+            return dt.date().isoformat() if dt else None
+
+        dates_a = {_get_trade_date(t) for t in model_a_trades if _get_trade_date(t)}
+        dates_b = {_get_trade_date(t) for t in model_b_trades if _get_trade_date(t)}
+        common_dates = dates_a.intersection(dates_b)
+        common_dates_count = len(common_dates)
+
+        if not common_dates or (common_dates_count / max(len(dates_a), len(dates_b)) < 0.5):
+            return {
+                "min_sample_size": min_sample,
+                "min_sample_reached": False,
+                "is_statistically_significant": False,
+                "positive_edge_significant": False,
+                "negative_edge_significant": False,
+                "difference_significant": False,
+                "p_value": 1.0,
+                "confidence_interval_95": {"lower": 0.0, "upper": 0.0},
+                "mean_return_delta_pct": round(mean_delta, 2),
+                "date_overlap_count": common_dates_count,
+                "test_method": f"Block Bootstrap (Insufficient calendar alignment: {common_dates_count} common dates < 50% overlap required)"
+            }
+
+        # Build date-and-ticker aligned pairs across the synchronized calendar timeline
+        trade_key_a = {}
+        for t in model_a_trades:
+            d = _get_trade_date(t)
+            sym = str(t.get("ticker", "")).upper()
+            if d:
+                trade_key_a[(d, sym)] = float(t.get("return", 0.0))
+
+        trade_key_b = {}
+        for t in model_b_trades:
+            d = _get_trade_date(t)
+            sym = str(t.get("ticker", "")).upper()
+            if d:
+                trade_key_b[(d, sym)] = float(t.get("return", 0.0))
+
+        min_common_date = min(common_dates)
+        max_common_date = max(common_dates)
+        all_keys = sorted([
+            k for k in (set(trade_key_a.keys()) | set(trade_key_b.keys()))
+            if min_common_date <= k[0] <= max_common_date
+        ])
+        aligned_a = []
+        aligned_b = []
+        for key in all_keys:
+            # If Model B took a trade that Model A did not, alternative return is 0.0% (cash / no trade)
+            ret_a = trade_key_a.get(key, 0.0)
+            ret_b = trade_key_b.get(key, 0.0)
+            aligned_a.append(ret_a)
+            aligned_b.append(ret_b)
+
+        n_pairs = len(aligned_a)
+        if n_pairs < min_required_trades:
+            return {
+                "min_sample_size": min_sample,
+                "min_sample_reached": False,
+                "is_statistically_significant": False,
+                "positive_edge_significant": False,
+                "negative_edge_significant": False,
+                "difference_significant": False,
+                "p_value": 1.0,
+                "confidence_interval_95": {"lower": 0.0, "upper": 0.0},
+                "mean_return_delta_pct": round(mean_delta, 2),
+                "date_overlap_count": common_dates_count,
+                "test_method": f"Block Bootstrap (Insufficient trade observations: {n_pairs} < {min_required_trades} required)"
+            }
+
+        paired_diffs = np.array(aligned_b, dtype=float) - np.array(aligned_a, dtype=float)
+        is_date_paired = True
+        min_sample = n_pairs
+        min_sample_reached = (min_sample >= min_required_trades)
+        mean_delta = float(np.mean(paired_diffs))
+
     if not min_sample_reached or n_a == 0 or n_b == 0:
         return {
             "min_sample_size": min_sample,
@@ -315,6 +408,7 @@ def compute_hypothesis_significance(
             "p_value": 1.0,
             "confidence_interval_95": {"lower": 0.0, "upper": 0.0},
             "mean_return_delta_pct": round(mean_delta, 2),
+            "date_overlap_count": common_dates_count if (has_dates_a and has_dates_b) else None,
             "test_method": "Block Bootstrap (N < 30 insufficient sample)"
         }
 
@@ -327,7 +421,12 @@ def compute_hypothesis_significance(
     delta_means = np.empty(n_bootstrap, dtype=float)
 
     for b in range(n_bootstrap):
-        if n_a == n_b:
+        if is_date_paired:
+            # Resample paired differences directly across synchronized timeline
+            idx = rng.integers(0, max(1, min_sample - block_size + 1), size=n_blocks)
+            resampled_diffs = np.concatenate([paired_diffs[i : i + block_size] for i in idx])
+            delta_means[b] = float(np.mean(resampled_diffs))
+        elif n_a == n_b:
             # Fully synchronized paired block resampling
             idx = rng.integers(0, max(1, min_sample - block_size + 1), size=n_blocks)
             resampled_a = np.concatenate([returns_a[i : i + block_size] for i in idx])
@@ -377,6 +476,7 @@ def compute_hypothesis_significance(
             "upper": round(ci_upper, 2)
         },
         "mean_return_delta_pct": round(mean_delta, 2),
+        "date_overlap_count": common_dates_count if (has_dates_a and has_dates_b) else None,
         "test_method": f"Paired Block Bootstrap (B={n_bootstrap}, block_size={block_size}, 95% CI)"
     }
 
@@ -384,7 +484,7 @@ def compute_hypothesis_significance(
 def evaluate_backtest_dataset(
     snapshots: List[Dict[str, Any]],
     holding_period_days: int = 3,
-    buy_threshold: float = 75.0
+    buy_threshold: Optional[float] = None
 ) -> Dict[str, Any]:
     """
     Evaluates signal efficacy by comparing signals (STRONG BUY / BUY)
@@ -400,6 +500,9 @@ def evaluate_backtest_dataset(
       to avoid confusing N snapshots (e.g. 3 hours) with N real days.
     - Falls back to step-based index matching only for synthetic untimestamped tests.
     """
+    if buy_threshold is None:
+        buy_threshold = getattr(settings, "THRESHOLD_BUY", 65.0)
+
     model_a_trades: List[Dict[str, Any]] = [] # Model A: Without Polymarket
     model_b_trades: List[Dict[str, Any]] = [] # Model B: With Polymarket
 
@@ -467,6 +570,7 @@ def evaluate_backtest_dataset(
             # Model A: SMI computed WITHOUT Polymarket (prediction_score=None, weight redistributed)
             signal_a = False
             smi_a = None
+            weights_a = current.get("effective_weights") or static_weights
             if can_enter_a:
                 smi_a_res = calculate_smi(
                     social_score=soc,
@@ -479,7 +583,7 @@ def evaluate_backtest_dataset(
                     post_count=post_cnt,
                     news_count=news_cnt,
                     prediction_count=0,
-                    custom_weights=static_weights
+                    custom_weights=weights_a
                 )
                 smi_a = smi_a_res["smi"]
                 sig_a_res = generate_signal_and_explanation(
@@ -488,6 +592,7 @@ def evaluate_backtest_dataset(
                     social_score=soc,
                     prediction_score=None,
                     news_score=news,
+                    momentum_score=mom,
                     technical_score_raw=tech,
                     source_agreement=smi_a_res.get("source_agreement"),
                     data_quality=smi_a_res.get("data_quality"),
@@ -499,13 +604,18 @@ def evaluate_backtest_dataset(
                     fundamentals=current.get("fundamentals"),
                     social_stats={"total_posts": post_cnt} if post_cnt is not None else None
                 )
-                if smi_a >= buy_threshold and sig_a_res.get("base_signal") in ["BUY", "STRONG BUY"]:
+                if smi_a is not None and smi_a >= buy_threshold and sig_a_res.get("base_signal") in ["BUY", "STRONG BUY"]:
                     signal_a = True
 
             # Model B: SMI computed WITH Polymarket (incorporating prediction markets)
             signal_b = False
+            smi_b = None
             if can_enter_b:
-                if pred is not None:
+                if pred is None:
+                    smi_b = smi_a
+                    signal_b = signal_a
+                else:
+                    weights_b = current.get("effective_weights") or static_weights
                     smi_b_res = calculate_smi(
                         social_score=soc,
                         prediction_score=pred,
@@ -518,48 +628,29 @@ def evaluate_backtest_dataset(
                         post_count=post_cnt,
                         news_count=news_cnt,
                         prediction_count=pred_cnt,
-                        custom_weights=static_weights
+                        custom_weights=weights_b
                     )
                     smi_b = smi_b_res["smi"]
-                else:
-                    if smi_a is not None:
-                        smi_b = smi_a
-                        smi_b_res = smi_a_res
-                    else:
-                        smi_b_res = calculate_smi(
-                            social_score=soc,
-                            prediction_score=None,
-                            news_score=news,
-                            momentum_score=mom,
-                            risk_score=risk,
-                            technical_score_raw=tech,
-                            fundamental_score=fund,
-                            post_count=post_cnt,
-                            news_count=news_cnt,
-                            prediction_count=0,
-                            custom_weights=static_weights
-                        )
-                        smi_b = smi_b_res["smi"]
-
-                sig_b_res = generate_signal_and_explanation(
-                    ticker=sym,
-                    smi=smi_b,
-                    social_score=soc,
-                    prediction_score=pred,
-                    news_score=news,
-                    technical_score_raw=tech,
-                    source_agreement=smi_b_res.get("source_agreement"),
-                    data_quality=smi_b_res.get("data_quality"),
-                    indicators=current.get("indicators") or {
-                        "price": curr_price,
-                        "rsi14": current.get("rsi14", current.get("rsi")),
-                        "status": current.get("market_status", "AVAILABLE")
-                    },
-                    fundamentals=current.get("fundamentals"),
-                    social_stats={"total_posts": post_cnt} if post_cnt is not None else None
-                )
-                if smi_b >= buy_threshold and sig_b_res.get("base_signal") in ["BUY", "STRONG BUY"]:
-                    signal_b = True
+                    sig_b_res = generate_signal_and_explanation(
+                        ticker=sym,
+                        smi=smi_b,
+                        social_score=soc,
+                        prediction_score=pred,
+                        news_score=news,
+                        momentum_score=mom,
+                        technical_score_raw=tech,
+                        source_agreement=smi_b_res.get("source_agreement"),
+                        data_quality=smi_b_res.get("data_quality"),
+                        indicators=current.get("indicators") or {
+                            "price": curr_price,
+                            "rsi14": current.get("rsi14", current.get("rsi")),
+                            "status": current.get("market_status", "AVAILABLE")
+                        },
+                        fundamentals=current.get("fundamentals"),
+                        social_stats={"total_posts": post_cnt} if post_cnt is not None else None
+                    )
+                    if smi_b is not None and smi_b >= buy_threshold and sig_b_res.get("base_signal") in ["BUY", "STRONG BUY"]:
+                        signal_b = True
 
             if not signal_a and not signal_b:
                 continue
@@ -733,9 +824,9 @@ def calculate_calibrated_prediction_weight(
         "social": getattr(settings, "WEIGHT_SOCIAL", 0.30),
         "prediction": base_pred_weight,
         "news": getattr(settings, "WEIGHT_NEWS", 0.20),
-        "momentum": getattr(settings, "WEIGHT_MOMENTUM", 0.15),
+        "momentum": getattr(settings, "WEIGHT_MOMENTUM", 0.25),
         "fundamental": getattr(settings, "WEIGHT_FUNDAMENTALS", 0.10),
-        "risk": getattr(settings, "WEIGHT_RISK", 0.10)
+        "risk": getattr(settings, "WEIGHT_RISK", 0.0)
     }
 
     if sample_size < min_sample:

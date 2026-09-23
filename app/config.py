@@ -171,9 +171,9 @@ class Settings(BaseSettings):
     WEIGHT_SOCIAL: float = 0.30        # SSI (Social Sentiment)
     WEIGHT_PREDICTION: float = 0.15    # PMS (Prediction Market Score)
     WEIGHT_NEWS: float = 0.20          # News & Catalysts
-    WEIGHT_MOMENTUM: float = 0.20      # Technical Market Momentum
+    WEIGHT_MOMENTUM: float = 0.25      # Technical Market Momentum (0.20 + 0.05 reallocated from decoupled risk)
     WEIGHT_FUNDAMENTALS: float = 0.10  # Fundamentals
-    WEIGHT_RISK: float = 0.05          # Risk / Safety
+    WEIGHT_RISK: float = 0.0           # Decoupled from directional SMI (used as Capital Preservation Gate)
     
     # Dynamic Backtesting Weight Feedback (Closed-Loop Optimization)
     ENABLE_DYNAMIC_WEIGHT_FEEDBACK: bool = False
@@ -181,15 +181,21 @@ class Settings(BaseSettings):
     DYNAMIC_WEIGHT_PRED_MIN: float = 0.05
     DYNAMIC_WEIGHT_PRED_MAX: float = 0.25
     
-    # Signal thresholds
-    THRESHOLD_STRONG_BUY: float = 85.0
-    THRESHOLD_BUY: float = 75.0
-    THRESHOLD_WATCH: float = 65.0
-    THRESHOLD_HOLD: float = 50.0
-    THRESHOLD_AVOID: float = 35.0
+    # Signal thresholds (Symmetric Calibrated Bands around 50.0)
+    THRESHOLD_STRONG_BUY: float = 85.0    # SMI >= 85.0 (+35 over 50.0)
+    THRESHOLD_BUY: float = 70.0           # SMI >= 70.0 (+20 over 50.0)
+    THRESHOLD_WATCH: float = 55.0         # SMI >= 55.0 (+5 over 50.0)
+    THRESHOLD_HOLD: float = 45.0          # SMI >= 45.0 (-5 over 50.0, neutral band [45.0, 55.0))
+    THRESHOLD_AVOID: float = 20.0         # SMI >= 20.0 (bearish band [20.0, 45.0))
+    THRESHOLD_STRONG_AVOID: float = 20.0  # SMI < 20.0 (-30 over 50.0, critical risk band [0.0, 20.0))
     
     # Divergence Engine thresholds
     DIVERGENCE_EARLY_REVERSAL_DELTA: float = 15.0  # 24h probability change threshold (+/- 15 pp)
+    
+    # Prediction Market Score (PMS) Calibration
+    PMS_WEIGHT_MOMENTUM: float = 0.60       # Probability Momentum (24h) weight (real-time smart money alpha)
+    PMS_WEIGHT_LEVEL: float = 0.40          # Calibrated probability level weight
+    PMS_DEFAULT_BASE_RATE: float = 0.20     # Calibrated base-rate anchor for aerospace innovation milestones
     
     # Strategy & Volume Thresholds (Option A - Institutional Quality)
     VOLUME_RATIO_INSTITUTIONAL_BUY: float = 1.2  # +20% volume threshold for institutional confirmation
@@ -201,6 +207,9 @@ class Settings(BaseSettings):
     # Scheduler
     ENABLE_SCHEDULER: bool = False
     JOB_INTERVAL_MINUTES: int = 60
+
+    # API Security
+    API_SECRET_KEY: Optional[str] = None  # Optional API Key for protected endpoints (POST /api/jobs/run)
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

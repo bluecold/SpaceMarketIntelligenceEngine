@@ -124,9 +124,12 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
     ]
 
     # Technical breakdown
+    mod_sig = ssi_snap.signal_modifier if ssi_snap else None
     tech_payload = {
         "price": mkt_snap.price if mkt_snap else None,
-        "market_status": mkt_snap.market_status if mkt_snap else "DATA_UNAVAILABLE",
+        "market_status": "DATA_UNAVAILABLE" if (mod_sig and "NO MKT DATA" in mod_sig) else (
+            getattr(ssi_snap, "market_status", None) or (mkt_snap.market_status if mkt_snap else "DATA_UNAVAILABLE")
+        ),
         "ema200": mkt_snap.ema200 if mkt_snap else None,
         "rsi14": mkt_snap.rsi14 if mkt_snap else None,
         "bollinger_upper": mkt_snap.bollinger_upper if mkt_snap else None,
@@ -180,7 +183,7 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
             "price": ssi_snap.price if ssi_snap else None,
             "data_source": getattr(ssi_snap, "data_source", "LIVE") if ssi_snap else "LIVE",
             "social_source": getattr(ssi_snap, "social_source", "LIVE") if ssi_snap else "LIVE",
-            "prediction_source": getattr(ssi_snap, "prediction_source", "LIVE") if ssi_snap else "LIVE",
+            "prediction_source": "EXCLUDED" if (ssi_snap and ssi_snap.prediction_score is None) else (getattr(ssi_snap, "prediction_source", "LIVE") if ssi_snap else "LIVE"),
             "news_source": getattr(ssi_snap, "news_source", "LIVE") if ssi_snap else "LIVE",
             "market_source": getattr(ssi_snap, "market_source", "LIVE") if ssi_snap else "LIVE",
             "timestamp": ssi_snap.timestamp.isoformat() + "Z" if ssi_snap and ssi_snap.timestamp else None,
@@ -200,7 +203,7 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
         "sample_counts": {
             "post_count": ssi_snap.post_count if ssi_snap and ssi_snap.post_count is not None else 0,
             "news_count": ssi_snap.news_count if ssi_snap and ssi_snap.news_count is not None else 0,
-            "prediction_count": ssi_snap.prediction_count if ssi_snap and ssi_snap.prediction_count is not None else 0
+            "prediction_count": 0 if (ssi_snap and ssi_snap.prediction_score is None) else (ssi_snap.prediction_count if ssi_snap and ssi_snap.prediction_count is not None else 0)
         },
         "social_stats": social_stats,
         "technical_data": tech_payload,

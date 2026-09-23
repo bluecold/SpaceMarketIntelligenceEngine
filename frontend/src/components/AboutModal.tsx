@@ -271,11 +271,11 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                     </span>
                   </div>
                   <p style={{ margin: '8px 0 0 0', color: 'var(--text-main)', fontSize: '0.85rem' }}>
-                    Combina todas las fuentes disponibles mediante <strong>pesos adaptativos normalizados</strong> (Social 30%, Polymarket 15%, News 20%, Momentum 20%, Fundamentales 10%, Risk 5%).
+                    Combina todas las fuentes disponibles mediante <strong>pesos adaptativos normalizados</strong> (Social 30%, Polymarket 15%, News 20%, Momentum 25%, Fundamentales 10%). El <em>Risk Score</em> actúa como compuerta de preservación de capital para no penalizar el alpha direccional.
                     <br />
-                    • <strong>Escala Cuantitativa:</strong> <code>≥ 85</code> STRONG BUY | <code>75–84</code> BUY | <code>65–74</code> WATCH | <code>50–64</code> HOLD | <code>35–49</code> AVOID | <code>&lt; 35</code> STRONG AVOID.
+                    • <strong>Escala Cuantitativa Simétrica:</strong> <code>≥ 85</code> STRONG BUY | <code>70–84</code> BUY | <code>55–69</code> WATCH | <code>45–54</code> HOLD | <code>20–44</code> AVOID | <code>&lt; 20</code> STRONG AVOID.
                     <br />
-                    • <strong>Señales Canónicas Desacopladas:</strong> Separa la señal base (<code>base_signal</code>) de modificadores de riesgo (<code>signal_modifier: OVEREXTENDED / NO MKT DATA</code>).
+                    • <strong>Señales Canónicas Desacopladas & Bloqueo Operativo:</strong> Separa la señal base (<code>base_signal</code>) de modificadores de riesgo (<code>OVEREXTENDED / DILUTION RISK / HIGH RISK / NO MKT DATA</code>). Ante ausencia de precio cotizado en vivo, restringe compras a <code>WATCH (NO MKT DATA)</code> para impedir órdenes no operables.
                   </p>
                 </div>
 
@@ -309,7 +309,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                     </span>
                   </div>
                   <p style={{ margin: '8px 0 0 0', color: 'var(--text-main)', fontSize: '0.85rem' }}>
-                    Calcula la probabilidad agregada de éxito de eventos espaciales directos y sectoriales en Polymarket con tracking de Δ24h.
+                    Calcula la expectativa cuantitativa en Polymarket combinando un <strong>60% de Momentum (Δ24h)</strong> con un <strong>40% de Nivel Anclado a Tasa Base (P₀ = 20%)</strong>, eliminando paradojas de formulación en hitos aeroespaciales.
                     <br />
                     <em>Regla de Oro:</em> Si la calidad del mercado (liquidez, volumen, spread) es &lt; 30, su peso efectivo en SMI se anula (0%) para evitar manipulación.
                   </p>
@@ -328,7 +328,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                   <p style={{ margin: '8px 0 0 0', color: 'var(--text-main)', fontSize: '0.85rem' }}>
                     Evalúa si la tendencia del precio acompaña la narrativa mediante EMA200, RSI(14) con suavizado Wilder RMA y ratio de volumen.
                     <br />
-                    • <strong>Gestión de Sobrecompra:</strong> Si RSI &gt; 75, restringe preventivamente <code>STRONG BUY</code> a <code>WATCH (OVEREXTENDED)</code> y añade advertencia cualitativa a <code>BUY (OVEREXTENDED)</code>.
+                    • <strong>Gestión de Sobrecompra Monótona:</strong> Si RSI &gt; 75, restringe preventivamente tanto <code>STRONG BUY</code> como <code>BUY</code> a <code>WATCH (OVEREXTENDED)</code>.
                   </p>
                 </div>
 

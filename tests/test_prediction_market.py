@@ -235,8 +235,33 @@ def test_save_prediction_markets_derives_24h_delta_from_history():
             snap.timestamp = now - timedelta(hours=24)
             db.commit()
 
-        # Step 2: Next ingestion (now) where yes_probability jumped to 70% and provider delta is 0.0
+        # Step 2: Next ingestion (now) where yes_probability jumped to 70% and provider delta is None (missing)
         updated_market = PredictionMarketData(
+            external_id="poly-test-delta",
+            ticker="ASTS",
+            title="ASTS Test Market",
+            description="",
+            category="SPACE",
+            status="ACTIVE",
+            created_at=now,
+            end_date=None,
+            yes_probability=0.70,
+            no_probability=0.30,
+            volume=60000.0,
+            liquidity=30000.0,
+            spread=0.02,
+            quality_score=75.0,
+            probability_change_1h=0.0,
+            probability_change_6h=0.0,
+            probability_change_24h=None
+        )
+        save_prediction_markets(db, [updated_market])
+
+        # Verify that save_prediction_markets calculated the +20.0 percentage point 24h delta when delta was None
+        assert updated_market.probability_change_24h == pytest.approx(20.0, 0.1)
+
+        # Step 3: Explicit 0.0 delta must be preserved and NOT overwritten by history (R2-06 contract)
+        flat_market = PredictionMarketData(
             external_id="poly-test-delta",
             ticker="ASTS",
             title="ASTS Test Market",
@@ -255,10 +280,8 @@ def test_save_prediction_markets_derives_24h_delta_from_history():
             probability_change_6h=0.0,
             probability_change_24h=0.0
         )
-        save_prediction_markets(db, [updated_market])
-
-        # Verify that save_prediction_markets calculated the +20.0 percentage point 24h delta
-        assert updated_market.probability_change_24h == pytest.approx(20.0, 0.1)
+        save_prediction_markets(db, [flat_market])
+        assert flat_market.probability_change_24h == 0.0
     finally:
         db.close()
 
@@ -497,11 +520,12 @@ def test_gamma_provider_ticker_and_event_resolution():
 def test_pms_directional_calibration_and_zero_bias():
     """
     Test that PMS is strictly directional and does not suffer from non-directional quality bias:
-      - 50% probability with 0 delta yields exactly 50.0 (neutral).
-      - 0% probability with 0 delta yields 20.0 (deep bearish, unlocks dir_pred <= -0.25).
-      - 100% probability with 0 delta yields 80.0 (strong bullish).
+      - 50% probability with 0 delta yields exactly 50.0 (neutral) when baseline is 0.50.
+      - 20% aerospace milestone with 0 delta yields exactly 50.0 (neutral) with default base rate 0.20.
+      - 0% probability with 0 delta yields 30.0 (bearish, unlocks dir_pred <= -0.25).
+      - 100% probability with 0 delta yields 70.0 (strong bullish, dir_pred >= +0.25).
     """
-    # 1. Neutral market
+    # 1. Neutral 50/50 market
     neutral_m = PredictionMarketData(
         external_id="poly-neutral",
         ticker="ASTS",
@@ -510,6 +534,7 @@ def test_pms_directional_calibration_and_zero_bias():
         created_at=datetime.now(timezone.utc),
         yes_probability=0.50,
         no_probability=0.50,
+        baseline_probability=0.50,
         volume=500000.0,
         liquidity=200000.0,
         spread=0.01,
@@ -518,6 +543,25 @@ def test_pms_directional_calibration_and_zero_bias():
     )
     pms_neutral, conf_n, _, _ = calculate_prediction_market_score("ASTS", [neutral_m])
     assert pms_neutral == 50.0, f"Expected 50.0 neutral PMS, got {pms_neutral}"
+
+    # 1b. Neutral 20% aerospace milestone market (default base rate 0.20)
+    milestone_20 = PredictionMarketData(
+        external_id="poly-milestone-20",
+        ticker="RKLB",
+        title="Will Rocket Lab launch Neutron in 2026?",
+        status="ACTIVE",
+        created_at=datetime.now(timezone.utc),
+        yes_probability=0.20,
+        no_probability=0.80,
+        volume=500000.0,
+        liquidity=200000.0,
+        spread=0.01,
+        quality_score=90.0,
+        probability_change_24h=0.0,
+        polarity=1
+    )
+    pms_m20, _, _, _ = calculate_prediction_market_score("RKLB", [milestone_20])
+    assert pms_m20 == 50.0, f"Expected 50.0 neutral PMS for 20% milestone, got {pms_m20}"
 
     # 2. Impossible event (0% probability) - must yield bearish PMS without artificial quality bump
     bearish_m = PredictionMarketData(
@@ -535,7 +579,7 @@ def test_pms_directional_calibration_and_zero_bias():
         probability_change_24h=0.0
     )
     pms_bearish, conf_b, _, _ = calculate_prediction_market_score("ASTS", [bearish_m])
-    assert pms_bearish == 20.0, f"Expected 20.0 for 0% prob, got {pms_bearish}"
+    assert pms_bearish == 30.0, f"Expected 30.0 for 0% prob, got {pms_bearish}"
     dir_pred = (pms_bearish - 50.0) / 50.0
     assert dir_pred <= -0.25, f"Expected dir_pred <= -0.25, got {dir_pred}"
 
@@ -555,7 +599,74 @@ def test_pms_directional_calibration_and_zero_bias():
         probability_change_24h=0.0
     )
     pms_bullish, conf_bu, _, _ = calculate_prediction_market_score("ASTS", [bullish_m])
-    assert pms_bullish == 80.0, f"Expected 80.0 for 100% prob, got {pms_bullish}"
+    assert pms_bullish == 70.0, f"Expected 70.0 for 100% prob, got {pms_bullish}"
+
+
+def test_framing_paradox_resolution_and_milestone_calibration():
+    """
+    Validates complete resolution of framing paradox:
+    - Positive framing: 'Will Rocket Lab launch Neutron in 2026?' (P=0.20, delta=0) -> PMS = 50.0
+    - Negative framing: 'Will Rocket Lab Neutron launch be delayed?' (P=0.20, delta=0) -> PMS = 50.0
+    - Symmetry: Both framings of the exact same 20% event yield identical neutral PMS (50.0).
+    - Dynamic delta response: +5pp surge in positive milestone raises PMS to bullish lean (56.0).
+    """
+    now = datetime.now(timezone.utc)
+    market_pos = PredictionMarketData(
+        external_id="poly-frame-pos",
+        ticker="RKLB",
+        title="Will Rocket Lab launch Neutron in 2026?",
+        status="ACTIVE",
+        created_at=now,
+        yes_probability=0.20,
+        no_probability=0.80,
+        volume=500000.0,
+        liquidity=200000.0,
+        spread=0.01,
+        quality_score=90.0,
+        probability_change_24h=0.0,
+        polarity=1
+    )
+    market_neg = PredictionMarketData(
+        external_id="poly-frame-neg",
+        ticker="RKLB",
+        title="Will Rocket Lab Neutron launch be delayed?",
+        status="ACTIVE",
+        created_at=now,
+        yes_probability=0.20,
+        no_probability=0.80,
+        volume=500000.0,
+        liquidity=200000.0,
+        spread=0.01,
+        quality_score=90.0,
+        probability_change_24h=0.0,
+        polarity=-1
+    )
+
+    pms_pos, _, _, _ = calculate_prediction_market_score("RKLB", [market_pos])
+    pms_neg, _, _, _ = calculate_prediction_market_score("RKLB", [market_neg])
+
+    assert pms_pos == 50.0, f"Expected 50.0 for 20% milestone, got {pms_pos}"
+    assert pms_neg == 50.0, f"Expected 50.0 for 20% delay risk, got {pms_neg}"
+    assert pms_pos == pms_neg, "Framing paradox violation: positive and negative framings must evaluate identically at baseline!"
+
+    # Test momentum response: +5pp surge from 20% to 25% (delta = +5.0)
+    market_surge = PredictionMarketData(
+        external_id="poly-frame-surge",
+        ticker="RKLB",
+        title="Will Rocket Lab launch Neutron in 2026?",
+        status="ACTIVE",
+        created_at=now,
+        yes_probability=0.25,
+        no_probability=0.75,
+        volume=500000.0,
+        liquidity=200000.0,
+        spread=0.01,
+        quality_score=90.0,
+        probability_change_24h=5.0,
+        polarity=1
+    )
+    pms_surge, _, _, _ = calculate_prediction_market_score("RKLB", [market_surge])
+    assert pms_surge > 55.0, f"Expected bullish lean > 55.0 on +5pp surge, got {pms_surge}"
 
 
 def test_sector_event_negative_impact_delta_sign_preservation():

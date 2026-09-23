@@ -101,6 +101,7 @@ def init_db(target_engine=None):
             ("prediction_markets", "clob_token_id", "VARCHAR(128)"),
             ("prediction_markets", "condition_id", "VARCHAR(128)"),
             ("prediction_markets", "polarity", "INTEGER DEFAULT 1"),
+            ("prediction_markets", "baseline_probability", "FLOAT"),
             ("prediction_markets", "url", "VARCHAR(500)"),
             ("prediction_markets", "source", "VARCHAR(20) DEFAULT 'LIVE'"),
             ("market_snapshots", "technical_score", "FLOAT"),
@@ -142,6 +143,8 @@ def init_db(target_engine=None):
             ("ssi_snapshots", "rules_version", "VARCHAR(20) DEFAULT '2.0.0'"),
             ("divergences", "last_seen", "DATETIME"),
             ("alerts", "data_source", "VARCHAR(20) DEFAULT 'LIVE'"),
+            ("job_runs", "heartbeat_at", "DATETIME"),
+            ("job_runs", "source", "VARCHAR(50) DEFAULT 'API'"),
         ]
 
         # Clean up or recover orphaned _old tables from previous interrupted migrations

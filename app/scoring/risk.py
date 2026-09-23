@@ -25,12 +25,12 @@ def calculate_risk_score(
     # 1. Normalized ATR (ATR / Price)
     if price > 0 and atr is not None:
         atr_pct = (atr / price) * 100.0
-        # If ATR% is high (> 6% daily move), safety drops
-        if atr_pct > 8.0:
-            safety_score -= 25.0
-        elif atr_pct > 5.0:
-            safety_score -= 15.0
-        elif atr_pct < 2.5:
+        # Calibrated for high-beta aerospace growth stocks (normal space daily range: 3.0% - 7.0%)
+        if atr_pct > 10.0:
+            safety_score -= 20.0
+        elif atr_pct > 7.0:
+            safety_score -= 10.0
+        elif atr_pct < 3.0:
             safety_score += 15.0
 
     # 2. Historical 30-day Volatility & Drawdown
@@ -41,19 +41,19 @@ def calculate_risk_score(
             daily_returns = close.pct_change().dropna()
             ann_vol = daily_returns.std() * np.sqrt(252) * 100.0
             
-            # Volatility assessment
-            if ann_vol > 80.0:
+            # Volatility assessment (calibrated for space tech beta: normal regime 40% - 75%)
+            if ann_vol > 105.0:
                 safety_score -= 20.0
-            elif ann_vol > 50.0:
+            elif ann_vol > 75.0:
                 safety_score -= 10.0
-            elif ann_vol < 30.0:
+            elif ann_vol < 40.0:
                 safety_score += 15.0
 
-            # Drawdown assessment from 30d high
+            # Drawdown assessment from 30d high (calibrated for space tech pullbacks: severe crash > 35%)
             max_30d = close.max()
             current = close.iloc[-1]
             drawdown_pct = ((max_30d - current) / max_30d) * 100.0
-            if drawdown_pct > 25.0:
+            if drawdown_pct > 35.0:
                 safety_score -= 15.0
 
     return round(float(np.clip(safety_score, 0.0, 100.0)), 1)

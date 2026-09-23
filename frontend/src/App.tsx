@@ -72,7 +72,36 @@ export const App: React.FC = () => {
     }
 
     try {
-      const resp = await fetch('/api/jobs/run', { method: 'POST' });
+      const storedApiKey = localStorage.getItem('smie_api_key');
+      const headers: Record<string, string> = {};
+      if (storedApiKey) {
+        headers['X-API-KEY'] = storedApiKey;
+      }
+
+      let resp = await fetch('/api/jobs/run', { method: 'POST', headers });
+
+      // If unauthorized, prompt user to enter API key and store in localStorage
+      if (resp.status === 401) {
+        const inputKey = window.prompt(
+          'API_SECRET_KEY is required to trigger pipeline analysis on this server. Please enter your API Key:'
+        );
+        if (inputKey && inputKey.trim()) {
+          localStorage.setItem('smie_api_key', inputKey.trim());
+          headers['X-API-KEY'] = inputKey.trim();
+          resp = await fetch('/api/jobs/run', { method: 'POST', headers });
+        } else {
+          setIsAnalyzing(false);
+          return;
+        }
+      }
+
+      if (resp.status === 409) {
+        const conflictData = await resp.json().catch(() => ({}));
+        alert(conflictData.detail || 'A pipeline execution is already in progress. Please wait.');
+        setIsAnalyzing(false);
+        return;
+      }
+
       if (resp.status === 202) {
         const data = await resp.json();
         const jobId = data.job_id;
@@ -139,6 +168,7 @@ export const App: React.FC = () => {
         <TickerDetail
           ticker={selectedTicker}
           onClose={() => setSelectedTicker(null)}
+          lastUpdate={dashboard?.last_update || null}
         />
       )}
 

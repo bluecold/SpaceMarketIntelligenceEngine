@@ -11,7 +11,8 @@ def calculate_technical_score(indicators: Dict[str, Any]) -> Optional[float]:
 
     price = indicators.get("price")
     ema200 = indicators.get("ema200")
-    rsi14 = indicators.get("rsi14")
+    rsi14 = indicators.get("rsi14", indicators.get("rsi"))
+    rsi = rsi14
     b_upper = indicators.get("bollinger_upper")
     b_middle = indicators.get("bollinger_middle")
     b_lower = indicators.get("bollinger_lower")
@@ -81,17 +82,35 @@ def calculate_technical_score(indicators: Dict[str, Any]) -> Optional[float]:
             else:
                 total_score += 0.0
 
-    # 5. Volume Ratio (Max 5 points - Option A Institutional Alignment)
+    # 5. Volume Ratio (Max 5 points - Direction-aware institutional alignment)
     if vol_ratio is not None:
         available_max += 5.0
-        if vol_ratio >= 1.5:
-            total_score += 5.0
-        elif vol_ratio >= 1.2:
-            total_score += 3.0
-        elif vol_ratio >= 1.0:
-            total_score += 1.0
+        price_chg = indicators.get("price_change_1d")
+        # Check if price is breaking down / in bearish distribution
+        is_bearish = (
+            (price_chg is not None and price_chg < -1.0)
+            or (ema200 is not None and price is not None and price < ema200 and (rsi14 is not None and rsi14 < 45.0))
+            or (macd_hist is not None and macd_hist < 0 and price_chg is not None and price_chg < 0)
+        )
+
+        if is_bearish:
+            # In a falling market, heavy volume confirms institutional selling/distribution
+            if vol_ratio >= 1.5:
+                total_score += 0.0
+            elif vol_ratio >= 1.2:
+                total_score += 0.0
+            else:
+                total_score += 0.0
         else:
-            total_score += 0.0  # Sub-average volume (< 1.0x) provides no confirmation
+            # In an uptrend or constructive base, volume confirms accumulation
+            if vol_ratio >= 1.5:
+                total_score += 5.0
+            elif vol_ratio >= 1.2:
+                total_score += 3.0
+            elif vol_ratio >= 1.0:
+                total_score += 1.0
+            else:
+                total_score += 0.0
 
     if available_max <= 0.0:
         return None

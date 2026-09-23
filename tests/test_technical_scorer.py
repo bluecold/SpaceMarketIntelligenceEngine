@@ -159,4 +159,91 @@ def test_ema200_depth_gate_and_adaptive_normalization():
     assert res_long["ema200"] > 20.0
 
 
+def test_technical_scorer_price_below_ema200_no_name_error():
+    """
+    Validates that price < EMA200 (e.g. live RKLB at $72.14 vs EMA200 at $76.60)
+    executes cleanly without NameError: name 'rsi' is not defined.
+    """
+    indicators = {
+        "status": "AVAILABLE",
+        "price": 72.14,
+        "ema200": 76.60,
+        "rsi14": 42.0,  # Below 45.0 with price < EMA200 triggers bearish distribution check
+        "bollinger_upper": 85.0,
+        "bollinger_middle": 75.0,
+        "bollinger_lower": 65.0,
+        "macd_histogram": -0.25,
+        "volume_ratio": 1.4,  # High volume in bearish setup -> distribution (0 volume pts)
+        "price_change_1d": -1.8
+    }
+    # Must NOT raise NameError
+    score = calculate_technical_score(indicators)
+    assert score is not None
+    assert isinstance(score, float)
+    assert 0.0 <= score <= 40.0
+
+
+def test_price_change_1d_in_calculate_technical_indicators():
+    """Validates that calculate_technical_indicators correctly calculates price_change_1d."""
+    df = pd.DataFrame({
+        'Close': [100.0, 105.0, 102.0, 107.1],
+        'High': [101.0, 106.0, 103.0, 108.0],
+        'Low': [99.0, 104.0, 101.0, 106.0],
+        'Volume': [1000] * 4
+    })
+    # Fewer than 5 candles -> DATA_UNAVAILABLE with price_change_1d = None
+    res_short = calculate_technical_indicators(df)
+    assert res_short["price_change_1d"] is None
+
+    # 6 candles -> AVAILABLE with price_change_1d = +5.0%
+    df_valid = pd.DataFrame({
+        'Close': [90.0, 92.0, 95.0, 98.0, 100.0, 105.0],
+        'High': [91.0, 93.0, 96.0, 99.0, 101.0, 106.0],
+        'Low': [89.0, 91.0, 94.0, 97.0, 99.0, 104.0],
+        'Volume': [1000] * 6
+    })
+    res_valid = calculate_technical_indicators(df_valid)
+    assert res_valid["status"] == "AVAILABLE"
+    assert res_valid["price_change_1d"] == 5.0
+
+
+def test_all_bearish_conditions_in_technical_scorer():
+    """
+    Validates each of the three bearish distribution branches:
+    1. price_change_1d < -1.0
+    2. price < ema200 and rsi14 < 45.0
+    3. macd_hist < 0 and price_change_1d < 0
+    In all cases, high volume (>= 1.2x) is penalized (0 volume pts awarded).
+    """
+    base_ind = {
+        "status": "AVAILABLE",
+        "price": 50.0,
+        "ema200": 45.0,
+        "rsi14": 55.0,
+        "bollinger_upper": 55.0,
+        "bollinger_middle": 50.0,
+        "bollinger_lower": 45.0,
+        "macd_histogram": 0.1,
+        "volume_ratio": 1.5,
+        "price_change_1d": 0.5
+    }
+    # In neutral/bullish, volume_ratio 1.5 gets 5 points
+    score_bullish = calculate_technical_score(base_ind)
+
+    # Branch 1: price_change_1d < -1.0
+    ind_b1 = {**base_ind, "price_change_1d": -2.5}
+    score_b1 = calculate_technical_score(ind_b1)
+    assert score_b1 < score_bullish
+
+    # Branch 2: price < ema200 and rsi14 < 45.0
+    ind_b2 = {**base_ind, "price": 40.0, "ema200": 45.0, "rsi14": 40.0, "price_change_1d": 0.0}
+    score_b2 = calculate_technical_score(ind_b2)
+    assert score_b2 < score_bullish
+
+    # Branch 3: macd_histogram < 0 and price_change_1d < 0
+    ind_b3 = {**base_ind, "macd_histogram": -0.5, "price_change_1d": -0.2}
+    score_b3 = calculate_technical_score(ind_b3)
+    assert score_b3 < score_bullish
+
+
 

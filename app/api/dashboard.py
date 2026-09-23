@@ -35,7 +35,7 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
         divs = divs_by_ticker.get(symbol, [])
 
         if ssi_snap:
-            # Stale Data Calculation
+            # Stale Data Calculation (evaluates both analysis pipeline age and market quote age)
             age_hours = None
             is_stale = False
             if ssi_snap.timestamp:
@@ -44,6 +44,17 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                     snap_dt = snap_dt.replace(tzinfo=None)
                 age_hours = round(max(0.0, (now_dt - snap_dt).total_seconds() / 3600.0), 1)
                 is_stale = age_hours >= 6.0
+
+            if mkt_snap:
+                mkt_obs_dt = getattr(mkt_snap, "observed_at", None) or getattr(mkt_snap, "timestamp", None)
+                if mkt_obs_dt:
+                    if mkt_obs_dt.tzinfo is not None:
+                        mkt_obs_dt = mkt_obs_dt.replace(tzinfo=None)
+                    mkt_age_h = round(max(0.0, (now_dt - mkt_obs_dt).total_seconds() / 3600.0), 1)
+                    if getattr(mkt_snap, "market_status", "AVAILABLE") in ["STALE", "DATA_UNAVAILABLE"] or mkt_age_h > 120.0:
+                        is_stale = True
+                    if age_hours is None or mkt_age_h > age_hours:
+                        age_hours = mkt_age_h
 
             # Check active divergences for this ticker
             primary_div = divs[0].type if divs else "NONE"
@@ -78,14 +89,16 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                 "data_completeness": round(ssi_snap.data_completeness, 1) if ssi_snap.data_completeness is not None else 0.0,
                 "post_count": ssi_snap.post_count,
                 "news_count": ssi_snap.news_count,
-                "prediction_count": ssi_snap.prediction_count,
+                "prediction_count": 0 if ssi_snap.prediction_score is None else ssi_snap.prediction_count,
                 "data_source": getattr(ssi_snap, "data_source", "LIVE") or "LIVE",
                 "social_source": getattr(ssi_snap, "social_source", "LIVE") or "LIVE",
-                "prediction_source": getattr(ssi_snap, "prediction_source", "LIVE") or "LIVE",
+                "prediction_source": "EXCLUDED" if ssi_snap.prediction_score is None else (getattr(ssi_snap, "prediction_source", "LIVE") or "LIVE"),
                 "news_source": getattr(ssi_snap, "news_source", "LIVE") or "LIVE",
                 "market_source": getattr(ssi_snap, "market_source", "LIVE") or "LIVE",
                 "price": ssi_snap.price,
-                "market_status": mkt_snap.market_status if mkt_snap else "AVAILABLE",
+                "market_status": "DATA_UNAVAILABLE" if (mod_sig and "NO MKT DATA" in mod_sig) else (
+                    getattr(ssi_snap, "market_status", None) or (mkt_snap.market_status if mkt_snap else "AVAILABLE")
+                ),
                 "observed_at": mkt_snap.observed_at.isoformat() + "Z" if (mkt_snap and mkt_snap.observed_at) else None,
                 "candle_date": mkt_snap.candle_date if mkt_snap else None,
                 "market_session": mkt_snap.market_session if mkt_snap else None,

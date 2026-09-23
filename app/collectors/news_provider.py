@@ -42,8 +42,9 @@ class GoogleRSSNewsProvider(BaseNewsProvider):
                 headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
                 resp = await client.get(rss_url, headers=headers)
                 if resp.status_code != 200:
-                    logger.warning(f"Google RSS news fetch returned status {resp.status_code} for query {query}")
-                    return []
+                    err_msg = f"Google RSS news fetch returned status {resp.status_code} for query {query}"
+                    logger.warning(err_msg)
+                    raise RuntimeError(err_msg)
 
                 root = ET.fromstring(resp.text)
                 channel = root.find("channel")
@@ -83,6 +84,7 @@ class GoogleRSSNewsProvider(BaseNewsProvider):
             logger.info(f"Google RSS collected {len(news_items)} news items for {ticker}.")
         except Exception as e:
             logger.error(f"Error fetching Google RSS news for {ticker}: {e}")
+            raise
 
         return news_items
 

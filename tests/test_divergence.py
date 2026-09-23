@@ -130,9 +130,9 @@ def test_bearish_confirmation_critical_alert():
 
     res = generate_signal_and_explanation(
         ticker="SPCE",
-        smi=25.0,
-        social_score=25.0,
-        prediction_score=20.0,
+        smi=15.0,
+        social_score=15.0,
+        prediction_score=15.0,
         price_change_1d=-5.0,
         indicators={"status": "AVAILABLE", "price": 1.1, "ema200": 2.5, "rsi14": 28.0, "volume_ratio": 1.8}
     )

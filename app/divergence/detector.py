@@ -16,24 +16,6 @@ class DivergenceResult(BaseModel):
     source_b: str
     source_c: Optional[str] = None
     direction: str  # "BULLISH", "BEARISH", "NEUTRAL"
-from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
-from datetime import datetime, timezone
-from app.config import settings
-from app.scoring.social import apply_bayesian_shrinkage
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-class DivergenceResult(BaseModel):
-    ticker: str
-    type: str  # BULLISH_DIVERGENCE, BEARISH_DIVERGENCE, BULLISH_CONFIRMATION, BEARISH_CONFIRMATION, EARLY_REVERSAL
-    source_a: str
-    source_b: str
-    source_c: Optional[str] = None
-    direction: str  # "BULLISH", "BEARISH", "NEUTRAL"
     strength: float  # 0.0 to 1.0
     confidence: float  # 0.0 to 1.0
     description: str
@@ -77,7 +59,21 @@ def detect_divergences(
     dir_pred = (prediction_score - 50.0) / 50.0 if prediction_score is not None else None
     dir_price = 0.0
     if price_return_1d is not None:
-        dir_price = max(-1.0, min(1.0, price_return_1d / 5.0))
+        # Micro-noise dampening: if |price_return_1d| < 1.0%, smoothly shrink towards 0 to eliminate whipsawing false divergences
+        abs_ret = abs(price_return_1d)
+        if abs_ret < 1.0:
+            dampened_ret = price_return_1d * abs_ret  # Quadratic dampening on sub-1% daily noise
+        else:
+            dampened_ret = price_return_1d
+
+        scaled_return = max(-1.0, min(1.0, dampened_ret / 5.0))
+
+        # If momentum_score is available, blend 50% short-term daily return with 50% structural trend momentum
+        if momentum_score is not None:
+            dir_mom = (momentum_score - 50.0) / 50.0
+            dir_price = 0.50 * scaled_return + 0.50 * dir_mom
+        else:
+            dir_price = scaled_return
     elif momentum_score is not None:
         dir_price = (momentum_score - 50.0) / 50.0
     elif technical_score is not None:

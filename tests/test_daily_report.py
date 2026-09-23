@@ -436,6 +436,18 @@ def test_jobs_async_execution_and_status_endpoints():
             db.close()
         return {"status": "SUCCESS", "records_processed": 5}
 
+    # Ensure clean state before testing
+    db_clean = SessionLocal()
+    try:
+        from app.database.models import JobRunModel
+        from app.jobs.runner import PIPELINE_LOCK
+        db_clean.query(JobRunModel).filter(JobRunModel.status == "RUNNING").update({"status": "CANCELED"})
+        db_clean.commit()
+        if PIPELINE_LOCK.locked():
+            PIPELINE_LOCK.release()
+    finally:
+        db_clean.close()
+
     client = TestClient(app)
 
     with patch("app.api.jobs.run_full_pipeline", side_effect=mock_fast_pipeline_runner):

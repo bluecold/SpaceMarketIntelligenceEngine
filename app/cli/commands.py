@@ -28,7 +28,7 @@ def cli():
 def run_all():
     """Execute full pipeline for all space tickers."""
     click.echo(click.style("[SMIE] Starting full pipeline...", fg="cyan"))
-    res = asyncio.run(run_full_pipeline())
+    res = asyncio.run(run_full_pipeline(source="CLI"))
     if res.get("status") == "SUCCESS":
         click.echo(click.style("[SUCCESS] SMIE pipeline executed successfully!", fg="green"))
         for ticker, data in res.get("results", {}).items():
@@ -144,7 +144,7 @@ def calculate_smi_cmd():
     """Calculate SMI, SSI, and PMS scores for all tickers."""
     click.echo("[SMIE] Calculating Space Market Intelligence scores...")
     init_db()
-    res = asyncio.run(run_full_pipeline())
+    res = asyncio.run(run_full_pipeline(source="CLI"))
     if res.get("status") == "SUCCESS":
         click.echo(click.style("[DONE] Scores & snapshots updated.", fg="green"))
     else:
@@ -224,7 +224,7 @@ def analyze(ticker):
 
     # Run pipeline to ensure fresh data
     init_db()
-    res = asyncio.run(run_full_pipeline())
+    res = asyncio.run(run_full_pipeline(source="CLI"))
     if res.get("status") != "SUCCESS":
         click.echo(click.style(f"[WARNING] Pipeline returned status {res.get('status')}: {res.get('error')}", fg="yellow"))
 

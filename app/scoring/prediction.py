@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import List, Optional, Dict, Tuple, Any
 from app.config import settings, DEFAULT_EVENT_COMPANY_MAPPINGS
 from app.collectors.base import PredictionMarketData
@@ -14,10 +15,11 @@ def calculate_prediction_market_score(
     Calculate Prediction Market Score (PMS, 0-100) for a specific ticker.
     
     Formula (Strictly Directional, Centered at 50):
-      - Probability Level: 60%
-      - Probability Momentum (24h): 40%
+      - Probability Momentum (24h): 60% (real-time smart money alpha)
+      - Probability Level: 40% (calibrated against milestone base rate P0=0.20 or custom baseline)
       
     Rules:
+      - Only active, unresolved, unexpired markets contribute to prospective PMS.
       - If Market Quality < 30.0, the market's effective weight is 0.
       - If no valid markets exceed quality threshold, returns (None, 0.0, avg_quality, breakdown).
       - Quality and liquidity determine market weighting and confidence without biasing directional PMS.
@@ -28,6 +30,7 @@ def calculate_prediction_market_score(
     """
     mappings = event_mappings or DEFAULT_EVENT_COMPANY_MAPPINGS
     sector_events = sector_events or []
+    now_utc = datetime.now(timezone.utc)
     
     valid_market_scores: List[Dict[str, Any]] = []
     seen_market_ids: set = set()
@@ -37,28 +40,65 @@ def calculate_prediction_market_score(
         if m.ticker and m.ticker.upper() == ticker.upper():
             if m.external_id in seen_market_ids:
                 continue
+
+            # Check market status and expiration (P1.2 audit fix)
+            if getattr(m, "status", "ACTIVE") != "ACTIVE":
+                continue
+            if getattr(m, "closed", False) or getattr(m, "resolved", False):
+                continue
+            if getattr(m, "resolution_date", None) is not None:
+                continue
+            if getattr(m, "end_date", None) is not None:
+                end_dt = m.end_date
+                if end_dt.tzinfo is None:
+                    end_dt = end_dt.replace(tzinfo=timezone.utc)
+                if end_dt < now_utc:
+                    continue
+
             # Check Quality Rule
             if m.quality_score < settings.POLYMARKET_MIN_QUALITY:
                 continue  # Excluded by quality threshold
                 
             seen_market_ids.add(m.external_id)
-            # Base probability level (0 - 100) and effective delta adjusted by semantic polarity
+            # Base probability level (0 - 100) and effective delta adjusted by semantic polarity & base-rate anchor
             pol = getattr(m, "polarity", 1)
+            delta_24h = m.probability_change_24h if m.probability_change_24h is not None else 0.0
+            
+            # Base-rate anchor (P0): default from settings (0.20 for aerospace milestones) or explicit market baseline
+            base_rate = getattr(m, "baseline_probability", None)
+            if base_rate is None or not (0.0 < base_rate < 1.0):
+                base_rate = getattr(settings, "PMS_DEFAULT_BASE_RATE", 0.20)
+
             if pol < 0:
                 # Negative event (e.g. failure, delay): high YES probability is bearish for stock
-                prob_level = (1.0 - m.yes_probability) * 100.0
-                effective_delta = -m.probability_change_24h
+                # If risk of failure/delay <= base_rate, risk is at or below expected baseline (neutral to bullish)
+                p_risk = m.yes_probability
+                if p_risk <= base_rate:
+                    prob_level = 50.0 + ((base_rate - p_risk) / base_rate) * 50.0
+                else:
+                    prob_level = 50.0 - ((p_risk - base_rate) / (1.0 - base_rate)) * 50.0
+                prob_level = min(100.0, max(0.0, prob_level))
+                effective_delta = -delta_24h
             else:
-                prob_level = m.yes_probability * 100.0
-                effective_delta = m.probability_change_24h
+                # Positive event (e.g. launch milestone, contract):
+                # If YES probability >= base_rate, milestone is meeting or exceeding baseline expectations
+                p_milestone = m.yes_probability
+                if p_milestone >= base_rate:
+                    prob_level = 50.0 + ((p_milestone - base_rate) / (1.0 - base_rate)) * 50.0
+                else:
+                    prob_level = (p_milestone / base_rate) * 50.0
+                prob_level = min(100.0, max(0.0, prob_level))
+                effective_delta = delta_24h
             
             # Momentum (0 - 100)
             mom_score = calculate_prediction_momentum(effective_delta)
             
             # Pure directional PMS (0 - 100, neutral = 50.0)
+            w_mom = getattr(settings, "PMS_WEIGHT_MOMENTUM", 0.60)
+            w_level = getattr(settings, "PMS_WEIGHT_LEVEL", 0.40)
             market_pms = (
-                0.60 * prob_level +
-                0.40 * mom_score
+                w_level * prob_level +
+                w_mom * mom_score
             )
             
             valid_market_scores.append({
@@ -80,6 +120,20 @@ def calculate_prediction_market_score(
         if ev.external_id in seen_market_ids:
             continue  # Prevent double-counting if market was already evaluated directly
 
+        # Check market status and expiration
+        if getattr(ev, "status", "ACTIVE") != "ACTIVE":
+            continue
+        if getattr(ev, "closed", False) or getattr(ev, "resolved", False):
+            continue
+        if getattr(ev, "resolution_date", None) is not None:
+            continue
+        if getattr(ev, "end_date", None) is not None:
+            end_dt = ev.end_date
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=timezone.utc)
+            if end_dt < now_utc:
+                continue
+
         if ev.quality_score < settings.POLYMARKET_MIN_QUALITY:
             continue
             
@@ -90,23 +144,26 @@ def calculate_prediction_market_score(
             
             # Combine declared ticker impact with question polarity
             effective_impact = impact_factor * getattr(ev, "polarity", 1)
+            ev_delta = ev.probability_change_24h if ev.probability_change_24h is not None else 0.0
             
             # If event is favorable (effective_impact > 0), high probability is bullish.
             # If event is unfavorable (effective_impact < 0), high probability is bearish for this stock.
             if effective_impact >= 0:
                 adjusted_prob = 50.0 + (ev.yes_probability - 0.50) * 100.0 * abs(effective_impact)
-                adjusted_delta = ev.probability_change_24h * abs(effective_impact)
+                adjusted_delta = ev_delta * abs(effective_impact)
             else:
                 adjusted_prob = 50.0 - (ev.yes_probability - 0.50) * 100.0 * abs(effective_impact)
-                adjusted_delta = -ev.probability_change_24h * abs(effective_impact)
+                adjusted_delta = -ev_delta * abs(effective_impact)
                 
             adjusted_prob = min(100.0, max(0.0, adjusted_prob))
             mom_score = calculate_prediction_momentum(adjusted_delta)
             
             # Pure directional PMS for sector event
+            w_mom = getattr(settings, "PMS_WEIGHT_MOMENTUM", 0.60)
+            w_level = getattr(settings, "PMS_WEIGHT_LEVEL", 0.40)
             event_pms = (
-                0.60 * adjusted_prob +
-                0.40 * mom_score
+                w_level * adjusted_prob +
+                w_mom * mom_score
             )
             
             valid_market_scores.append({
@@ -130,7 +187,8 @@ def calculate_prediction_market_score(
         avg_qual = sum(m.quality_score for m in all_markets) / len(all_markets) if all_markets else 0.0
         return None, 0.0, round(avg_qual, 1), {
             "status": "UNAVAILABLE_OR_LOW_QUALITY",
-            "market_count": len(all_markets),
+            "market_count": 0,
+            "raw_market_count": len(all_markets),
             "valid_count": 0,
             "avg_quality": round(avg_qual, 1),
             "pms_delta_24h": None,

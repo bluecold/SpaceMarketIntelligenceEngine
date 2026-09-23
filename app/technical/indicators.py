@@ -3,7 +3,47 @@ import pandas as pd
 import numpy as np
 
 
-def calculate_technical_indicators(df: pd.DataFrame, at_index: Optional[int] = None) -> Dict[str, Any]:
+# Cumulative intraday volume profile (empirical knots for NYSE/NASDAQ regular session 09:30 - 16:00 ET)
+# Representing minutes elapsed from 09:30 and expected fraction of full-day volume.
+CUMULATIVE_VOLUME_KNOTS = [
+    (0, 0.0),
+    (20, 0.15),
+    (30, 0.20),
+    (60, 0.30),
+    (120, 0.42),
+    (210, 0.55),
+    (300, 0.72),
+    (360, 0.88),
+    (390, 1.00),
+]
+
+
+def get_intraday_volume_fraction(elapsed_minutes: float) -> float:
+    """
+    Computes expected cumulative volume fraction based on empirical U-shaped curve.
+    Piecewise linear interpolation between standard session knots.
+    """
+    if elapsed_minutes <= 0:
+        return 0.0
+    if elapsed_minutes >= 390.0:
+        return 1.0
+    for i in range(len(CUMULATIVE_VOLUME_KNOTS) - 1):
+        t0, f0 = CUMULATIVE_VOLUME_KNOTS[i]
+        t1, f1 = CUMULATIVE_VOLUME_KNOTS[i + 1]
+        if t0 <= elapsed_minutes <= t1:
+            if t1 == t0:
+                return float(f0)
+            frac = (elapsed_minutes - t0) / (t1 - t0)
+            return float(f0 + frac * (f1 - f0))
+    return 1.0
+
+
+def calculate_technical_indicators(
+    df: pd.DataFrame,
+    at_index: Optional[int] = None,
+    market_session: Optional[str] = None,
+    as_of: Optional[Any] = None
+) -> Dict[str, Any]:
     """
     Computes technical indicators on daily OHLCV DataFrame:
     EMA200, RSI14, Bollinger Bands 20/2, MACD, Volume MA20, ATR14.
@@ -17,7 +57,8 @@ def calculate_technical_indicators(df: pd.DataFrame, at_index: Optional[int] = N
             "price": None, "volume": None, "ema200": None, "rsi14": None,
             "bollinger_upper": None, "bollinger_middle": None, "bollinger_lower": None,
             "macd_line": None, "macd_signal": None, "macd_histogram": None,
-            "volume_ma20": None, "volume_ratio": None, "atr": None, "status": "DATA_UNAVAILABLE"
+            "volume_ma20": None, "volume_ratio": None, "atr": None,
+            "price_change_1d": None, "status": "DATA_UNAVAILABLE"
         }
 
     # Slice DataFrame up to at_index (inclusive) to prevent lookahead bias
@@ -29,7 +70,8 @@ def calculate_technical_indicators(df: pd.DataFrame, at_index: Optional[int] = N
                 "price": None, "volume": None, "ema200": None, "rsi14": None,
                 "bollinger_upper": None, "bollinger_middle": None, "bollinger_lower": None,
                 "macd_line": None, "macd_signal": None, "macd_histogram": None,
-                "volume_ma20": None, "volume_ratio": None, "atr": None, "status": "DATA_UNAVAILABLE"
+                "volume_ma20": None, "volume_ratio": None, "atr": None,
+                "price_change_1d": None, "status": "DATA_UNAVAILABLE"
             }
         df_eval = df.iloc[: at_index + 1]
     else:
@@ -40,13 +82,19 @@ def calculate_technical_indicators(df: pd.DataFrame, at_index: Optional[int] = N
             "price": None, "volume": None, "ema200": None, "rsi14": None,
             "bollinger_upper": None, "bollinger_middle": None, "bollinger_lower": None,
             "macd_line": None, "macd_signal": None, "macd_histogram": None,
-            "volume_ma20": None, "volume_ratio": None, "atr": None, "status": "DATA_UNAVAILABLE"
+            "volume_ma20": None, "volume_ratio": None, "atr": None,
+            "price_change_1d": None, "status": "DATA_UNAVAILABLE"
         }
 
     close = df_eval['Close']
     volume = df_eval['Volume']
     latest_price = float(close.iloc[-1])
     latest_volume = float(volume.iloc[-1])
+    price_change_1d = (
+        round(((float(close.iloc[-1]) - float(close.iloc[-2])) / float(close.iloc[-2])) * 100.0, 2)
+        if len(close) >= 2 and float(close.iloc[-2]) > 0
+        else 0.0
+    )
 
     # 1. EMA200 (strictly requires at least 200 daily periods for statistical validity)
     if len(df_eval) >= 200:
@@ -94,10 +142,61 @@ def calculate_technical_indicators(df: pd.DataFrame, at_index: Optional[int] = N
     latest_macd_signal = float(macd_signal.iloc[-1])
     latest_macd_hist = float(macd_histogram.iloc[-1])
 
-    # 5. Volume MA20 & Ratio
-    vol_window = min(20, len(df_eval))
-    volume_ma20 = float(volume.rolling(window=vol_window).mean().iloc[-1])
-    volume_ratio = latest_volume / volume_ma20 if volume_ma20 > 0 else 1.0
+    # 5. Volume MA20 & Ratio (Pace-adjusted during active REGULAR sessions to prevent false weak-volume penalties)
+    if market_session == "REGULAR" and len(df_eval) >= 2:
+        # Exclude today's partial intraday bar to avoid diluting the historical 20-day baseline
+        vol_window = min(20, len(df_eval) - 1)
+        volume_ma20 = float(volume.iloc[:-1].rolling(window=vol_window).mean().iloc[-1])
+    else:
+        vol_window = min(20, len(df_eval))
+        volume_ma20 = float(volume.rolling(window=vol_window).mean().iloc[-1])
+    
+    session_fraction = 1.0
+    volume_ratio = 1.0
+
+    if market_session == "REGULAR":
+        try:
+            from zoneinfo import ZoneInfo
+            from datetime import datetime, timezone
+            ref_dt = as_of if isinstance(as_of, datetime) else datetime.now(timezone.utc)
+            if ref_dt.tzinfo is None:
+                ref_dt = ref_dt.replace(tzinfo=timezone.utc)
+            eastern_dt = ref_dt.astimezone(ZoneInfo("America/New_York"))
+            curr_mins = eastern_dt.hour * 60 + eastern_dt.minute
+            open_mins = 9 * 60 + 30  # 09:30 ET
+
+            # Support official early close days (e.g., 13:00 ET on Black Friday / Christmas Eve)
+            try:
+                from app.collectors.market_provider import get_us_market_early_closes
+                early_closes = get_us_market_early_closes(eastern_dt.year)
+                is_early_close = eastern_dt.date() in early_closes
+            except Exception:
+                is_early_close = False
+
+            total_session_mins = 210.0 if is_early_close else 390.0
+            close_mins = open_mins + total_session_mins
+
+            if open_mins <= curr_mins <= close_mins:
+                elapsed = float(curr_mins - open_mins)
+                if elapsed < 20.0:
+                    # Opening window gate (09:30 - 09:50 ET):
+                    # Neutralize ratio to 1.0 during erratic opening auctions, unless raw volume
+                    # already exceeds 100% of MA20 (genuine breakout accumulation).
+                    if volume_ma20 > 0 and latest_volume >= volume_ma20:
+                        volume_ratio = latest_volume / volume_ma20
+                    else:
+                        volume_ratio = 1.0
+                else:
+                    standard_elapsed = (elapsed / total_session_mins) * 390.0
+                    session_fraction = get_intraday_volume_fraction(standard_elapsed)
+                    expected_vol = volume_ma20 * session_fraction
+                    volume_ratio = latest_volume / expected_vol if expected_vol > 0 else 1.0
+            else:
+                volume_ratio = latest_volume / volume_ma20 if volume_ma20 > 0 else 1.0
+        except Exception:
+            volume_ratio = latest_volume / volume_ma20 if volume_ma20 > 0 else 1.0
+    else:
+        volume_ratio = latest_volume / volume_ma20 if volume_ma20 > 0 else 1.0
 
     # 6. ATR 14 (Wilder's Smoothing)
     high = df_eval['High'] if 'High' in df_eval.columns else close
@@ -171,5 +270,6 @@ def calculate_technical_indicators(df: pd.DataFrame, at_index: Optional[int] = N
         "candle_score": candle_score,
         "candle_label": candle_label,
         "passes_rr_gate": passes_rr_gate,
+        "price_change_1d": price_change_1d,
         "status": "AVAILABLE"
     }

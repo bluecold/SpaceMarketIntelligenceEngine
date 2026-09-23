@@ -83,9 +83,11 @@ def calculate_smi(
     fundamental_score: Optional[float] = None,
     risk_score: Optional[float] = None,
     technical_score_raw: Optional[float] = None,
-    previous_smi_1d: Optional[float] = None,
-    previous_smi_3d: Optional[float] = None,
-    previous_smi_5d: Optional[float] = None,
+    previous_smi_1d: Optional[Any] = None,
+    previous_smi_3d: Optional[Any] = None,
+    previous_smi_5d: Optional[Any] = None,
+    previous_active_pillars: Optional[List[str]] = None,
+    previous_scores: Optional[Dict[str, float]] = None,
     post_count: Optional[int] = None,
     news_count: Optional[int] = None,
     prediction_count: Optional[int] = None,
@@ -110,7 +112,14 @@ def calculate_smi(
       - Source Agreement (-1.0 to +1.0)
     """
     # 1. Base weights from configuration or dynamic calibration
-    BASE_WEIGHTS = dict(custom_weights) if custom_weights else get_active_weights()
+    active_base = get_active_weights()
+    if custom_weights:
+        BASE_WEIGHTS = {k: custom_weights.get(k, active_base.get(k, 0.0)) for k in ["social", "prediction", "news", "momentum", "fundamental", "risk"]}
+        for k, v in custom_weights.items():
+            if k not in BASE_WEIGHTS:
+                BASE_WEIGHTS[k] = v
+    else:
+        BASE_WEIGHTS = active_base
 
     active_scores: Dict[str, float] = {}
     effective_weights: Dict[str, float] = {}
@@ -132,25 +141,34 @@ def calculate_smi(
             effective_social = apply_bayesian_shrinkage(social_score, post_count)
 
         if is_social_available:
-            active_scores["social"] = effective_social
-            effective_weights["social"] = BASE_WEIGHTS["social"]
-            active_directions.append((effective_social - 50.0) / 50.0)
+            w = BASE_WEIGHTS.get("social", 0.0)
+            if w > 0:
+                active_scores["social"] = effective_social
+                effective_weights["social"] = w
+                active_directions.append((effective_social - 50.0) / 50.0)
 
     # B. Prediction Market Score (PMS)
     if prediction_score is not None and prediction_quality >= settings.POLYMARKET_MIN_QUALITY:
         if prediction_count is None or prediction_count > 0:
-            active_scores["prediction"] = prediction_score
-            # Modulate prediction weight by quality score
-            quality_factor = min(1.0, max(0.3, prediction_quality / 100.0))
-            effective_weights["prediction"] = BASE_WEIGHTS["prediction"] * quality_factor
-            active_directions.append((prediction_score - 50.0) / 50.0)
+            w = BASE_WEIGHTS.get("prediction", 0.0)
+            if w > 0:
+                active_scores["prediction"] = prediction_score
+                # If custom_weights is provided, caller supplied exact target/effective weights; do not re-multiply quality (R2-03)
+                if custom_weights:
+                    effective_weights["prediction"] = w
+                else:
+                    quality_factor = min(1.0, max(0.3, prediction_quality / 100.0))
+                    effective_weights["prediction"] = w * quality_factor
+                active_directions.append((prediction_score - 50.0) / 50.0)
 
     # C. News & Catalysts
     if news_score is not None:
         if news_count is None or news_count > 0:
-            active_scores["news"] = news_score
-            effective_weights["news"] = BASE_WEIGHTS["news"]
-            active_directions.append((news_score - 50.0) / 50.0)
+            w = BASE_WEIGHTS.get("news", 0.0)
+            if w > 0:
+                active_scores["news"] = news_score
+                effective_weights["news"] = w
+                active_directions.append((news_score - 50.0) / 50.0)
 
     # D. Market Momentum (falls back to scaled technical score if raw momentum score is None)
     effective_mom = momentum_score
@@ -158,27 +176,33 @@ def calculate_smi(
         effective_mom = (technical_score_raw / 40.0) * 100.0
 
     if effective_mom is not None:
-        active_scores["momentum"] = effective_mom
-        effective_weights["momentum"] = BASE_WEIGHTS["momentum"]
-        active_directions.append((effective_mom - 50.0) / 50.0)
+        w = BASE_WEIGHTS.get("momentum", 0.0)
+        if w > 0:
+            active_scores["momentum"] = effective_mom
+            effective_weights["momentum"] = w
+            active_directions.append((effective_mom - 50.0) / 50.0)
 
     # E. Fundamentals
     if fundamental_score is not None:
-        active_scores["fundamental"] = fundamental_score
-        effective_weights["fundamental"] = BASE_WEIGHTS["fundamental"]
-        active_directions.append((fundamental_score - 50.0) / 50.0)
+        w = BASE_WEIGHTS.get("fundamental", 0.0)
+        if w > 0:
+            active_scores["fundamental"] = fundamental_score
+            effective_weights["fundamental"] = w
+            active_directions.append((fundamental_score - 50.0) / 50.0)
 
     # F. Risk / Safety (calculate_risk_score already yields 0-100 where higher = safer/lower risk)
     if risk_score is not None:
-        active_scores["risk"] = risk_score
-        effective_weights["risk"] = BASE_WEIGHTS["risk"]
+        w = BASE_WEIGHTS.get("risk", 0.0)
+        if w > 0:
+            active_scores["risk"] = risk_score
+            effective_weights["risk"] = w
         # Note: risk_score is a non-directional stability/safety metric and does not participate in active_directions
 
     # 2. Adaptive Weight Normalization
     total_effective_weight = sum(effective_weights.values())
     if total_effective_weight > 0:
         normalized_weights = {k: v / total_effective_weight for k, v in effective_weights.items()}
-        weighted_smi = sum(active_scores[k] * normalized_weights[k] for k in active_scores.keys())
+        weighted_smi = sum(active_scores[k] * normalized_weights[k] for k in normalized_weights.keys())
         smi = max(0.0, min(100.0, round(weighted_smi, 1)))
     else:
         normalized_weights = {}
@@ -188,9 +212,14 @@ def calculate_smi(
     source_agreement = calculate_source_agreement(active_directions)
 
     # 4. Data Quality Score (0 to 100%)
-    total_pillars = len(BASE_WEIGHTS)
+    # Exclude non-directional zero-weight pillars (e.g. risk when decoupled) to reflect genuine source completeness
+    eval_pillars = [k for k, v in BASE_WEIGHTS.items() if v > 0]
+    total_pillars = len(eval_pillars) if eval_pillars else len(BASE_WEIGHTS)
+    active_eval_pillars = [k for k in active_scores.keys() if k in eval_pillars]
+    data_quality = round(100.0 * (len(active_eval_pillars) / float(total_pillars)), 1) if total_pillars > 0 else 0.0
     active_pillars = len(active_scores)
-    data_quality = round(100.0 * (active_pillars / float(total_pillars)), 1) if total_pillars > 0 else 0.0
+    total_data_sources = len(active_scores) + (1 if (risk_score is not None and "risk" not in active_scores) else 0)
+    data_completeness = round(100.0 * (total_data_sources / 6.0), 1)
 
     # 5. Confidence Score (0 to 100%)
     if active_pillars == 0 or smi is None:
@@ -225,15 +254,38 @@ def calculate_smi(
         raw_confidence = base_conf + agreement_bonus + depth_bonus
         confidence = max(10.0, min(99.0, round(raw_confidence, 1)))
 
-    # 6. Momentum del SMI
+    # 6. Momentum del SMI (R2-02 audit fix: decouple true evidence change from coverage changes across 1D, 3D, 5D)
+    def _compute_horizon_momentum(prev_input, default_pillars=None, default_scores=None):
+        if prev_input is None:
+            return 0.0, True
+        prev_val = prev_input.get("smi") if isinstance(prev_input, dict) else (prev_input.get("ssi") if isinstance(prev_input, dict) else prev_input)
+        if prev_val is None:
+            return 0.0, True
+        prev_pillars = prev_input.get("active_pillars") if isinstance(prev_input, dict) else default_pillars
+        prev_scores = prev_input.get("active_scores") if isinstance(prev_input, dict) else default_scores
+
+        if prev_pillars is not None and set(prev_pillars) != set(active_scores.keys()):
+            # Coverage changed: compute delta strictly on mutual intersection of pillars evaluated in both snapshots
+            common_pillars = [p for p in active_scores.keys() if prev_scores and p in prev_scores and p in prev_pillars]
+            if common_pillars:
+                cw = {k: BASE_WEIGHTS.get(k, 1.0) for k in common_pillars}
+                tot_cw = sum(cw.values())
+                if tot_cw > 0:
+                    curr_c = sum(active_scores[k] * cw[k] for k in common_pillars) / tot_cw
+                    prev_c = sum(prev_scores[k] * cw[k] for k in common_pillars) / tot_cw
+                    return round(curr_c - prev_c, 1), False
+            return 0.0, False
+        return round(smi - prev_val, 1), True
+
     if smi is not None:
-        smi_mom_1d = round(smi - previous_smi_1d, 1) if previous_smi_1d is not None else 0.0
-        smi_mom_3d = round(smi - previous_smi_3d, 1) if previous_smi_3d is not None else 0.0
-        smi_mom_5d = round(smi - previous_smi_5d, 1) if previous_smi_5d is not None else 0.0
+        smi_mom_1d, is_mom_comparable_1d = _compute_horizon_momentum(
+            previous_smi_1d, default_pillars=previous_active_pillars, default_scores=previous_scores
+        )
+        smi_mom_3d, is_mom_comparable_3d = _compute_horizon_momentum(previous_smi_3d)
+        smi_mom_5d, is_mom_comparable_5d = _compute_horizon_momentum(previous_smi_5d)
     else:
-        smi_mom_1d = None
-        smi_mom_3d = None
-        smi_mom_5d = None
+        smi_mom_1d = smi_mom_3d = smi_mom_5d = None
+        is_mom_comparable_1d = is_mom_comparable_3d = is_mom_comparable_5d = True
 
     scaled_tech = round((technical_score_raw / 40.0) * 100.0, 1) if technical_score_raw is not None else None
 
@@ -250,8 +302,13 @@ def calculate_smi(
         "risk_score": round(risk_score, 1) if risk_score is not None else None,
         "confidence": confidence,
         "data_quality": data_quality,
-        "data_completeness": data_quality,
+        "data_completeness": data_completeness,
         "source_agreement": source_agreement,
+        "active_pillars": list(active_scores.keys()),
+        "active_scores": {k: round(v, 1) for k, v in active_scores.items()},
+        "is_mom_comparable_1d": is_mom_comparable_1d,
+        "is_mom_comparable_3d": is_mom_comparable_3d,
+        "is_mom_comparable_5d": is_mom_comparable_5d,
         "smi_momentum_1d": smi_mom_1d,
         "smi_momentum_3d": smi_mom_3d,
         "smi_momentum_5d": smi_mom_5d,

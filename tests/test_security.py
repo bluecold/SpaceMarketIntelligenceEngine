@@ -137,3 +137,173 @@ def test_dto_source_provenance_explicit_propagation():
         assert market.source == "MOCK"
         assert market.external_id.startswith("mock_"), f"Mock ID {market.external_id} should start with 'mock_'"
 
+
+def test_verify_api_key_constant_time_and_timing_safe():
+    """Verify constant-time API key validation with valid, invalid, and Bearer formats."""
+    from app.config import settings
+    from app.api.jobs import verify_api_key
+    from fastapi import Request, HTTPException
+    from unittest.mock import MagicMock
+
+    orig_key = settings.API_SECRET_KEY
+    orig_env = settings.ENVIRONMENT
+    try:
+        settings.API_SECRET_KEY = "super-secret-smie-key-12345"
+        settings.ENVIRONMENT = "development"
+
+        # 1. External request with valid X-API-KEY header
+        req_ext = MagicMock(spec=Request)
+        req_ext.headers = {}
+        assert verify_api_key(req_ext, x_api_key="super-secret-smie-key-12345") is True
+
+        # 2. External request with valid Bearer token
+        assert verify_api_key(req_ext, authorization="Bearer super-secret-smie-key-12345") is True
+
+        # 3. External request with invalid key raises 401
+        with pytest.raises(HTTPException) as exc:
+            verify_api_key(req_ext, x_api_key="wrong-key")
+        assert exc.value.status_code == 401
+        assert "Invalid API key" in exc.value.detail
+
+        # 4. External request with missing key raises 401
+        with pytest.raises(HTTPException) as exc:
+            verify_api_key(req_ext, x_api_key=None, authorization=None)
+        assert exc.value.status_code == 401
+        assert "Missing API key" in exc.value.detail
+    finally:
+        settings.API_SECRET_KEY = orig_key
+        settings.ENVIRONMENT = orig_env
+
+
+def test_verify_api_key_same_origin_dashboard_authorization():
+    """Verify that browser same-origin dashboard requests pass safely without exposing key in bundle."""
+    from app.config import settings
+    from app.api.jobs import verify_api_key
+    from fastapi import Request
+    from unittest.mock import MagicMock
+
+    orig_key = settings.API_SECRET_KEY
+    try:
+        settings.API_SECRET_KEY = "production-secret-never-put-in-frontend-bundle"
+
+        # 1. Browser request with Sec-Fetch-Site: same-origin passes
+        req_same_origin = MagicMock(spec=Request)
+        req_same_origin.headers = {"sec-fetch-site": "same-origin"}
+        assert verify_api_key(req_same_origin, x_api_key=None) is True
+
+        # 2. Localhost Origin matching Host passes
+        req_local = MagicMock(spec=Request)
+        req_local.headers = {"origin": "http://localhost:8000", "host": "localhost:8000"}
+        assert verify_api_key(req_local, x_api_key=None) is True
+    finally:
+        settings.API_SECRET_KEY = orig_key
+
+
+def test_verify_api_key_production_fail_secure():
+    """Verify that if ENVIRONMENT=production and API_SECRET_KEY is None, external calls fail secure with 503."""
+    from app.config import settings
+    from app.api.jobs import verify_api_key
+    from fastapi import Request, HTTPException
+    from unittest.mock import MagicMock
+
+    orig_key = settings.API_SECRET_KEY
+    orig_env = settings.ENVIRONMENT
+    try:
+        settings.API_SECRET_KEY = None
+        settings.ENVIRONMENT = "production"
+
+        req_external = MagicMock(spec=Request)
+        req_external.headers = {}
+
+        # Unconfigured production environment must not be open by default
+        with pytest.raises(HTTPException) as exc:
+            verify_api_key(req_external, x_api_key=None)
+        assert exc.value.status_code == 503
+        assert "Server configuration error" in exc.value.detail
+    finally:
+        settings.API_SECRET_KEY = orig_key
+        settings.ENVIRONMENT = orig_env
+
+
+def test_atomic_pipeline_lock_concurrency_and_recovery():
+    """
+    Verify atomic database locking across workers and automatic recovery of crashed/stale jobs.
+    """
+    from datetime import datetime, timedelta, timezone
+    from app.database.connection import SessionLocal
+    from app.database.models import JobRunModel
+    from app.database.repository import acquire_pipeline_job_lock, finish_job_run, utc_now
+
+    with SessionLocal() as db1, SessionLocal() as db2:
+        # Clean any leftover running jobs in test db
+        db1.query(JobRunModel).filter(JobRunModel.status == "RUNNING").update({JobRunModel.status: "SUCCESS"})
+        db1.commit()
+
+        # 1. Worker 1 acquires lock
+        job1, err1 = acquire_pipeline_job_lock(db1, source="WORKER_1")
+        assert job1 is not None
+        assert err1 is None
+        assert job1.status == "RUNNING"
+        assert job1.source == "WORKER_1"
+
+        # 2. Worker 2 attempts to acquire lock concurrently -> rejected
+        job2, err2 = acquire_pipeline_job_lock(db2, source="WORKER_2")
+        assert job2 is None
+        assert err2 is not None
+        assert "currently in progress" in err2
+        assert "WORKER_1" in err2
+
+        # 3. Simulate process crash of Worker 1: heartbeat older than 120s
+        job1.heartbeat_at = utc_now() - timedelta(seconds=150)
+        db1.commit()
+
+        # 4. Worker 3 attempts to acquire lock -> detects stale crash, recovers and acquires cleanly
+        with SessionLocal() as db3:
+            job3, err3 = acquire_pipeline_job_lock(db3, source="WORKER_3")
+            assert job3 is not None
+            assert err3 is None
+            assert job3.source == "WORKER_3"
+
+            # Verify that crashed job1 was marked as ERROR
+            db1.refresh(job1)
+            assert job1.status == "ERROR"
+            assert "terminated abnormally" in job1.error_message
+
+            # Cleanup
+            finish_job_run(db3, job3.id, status="SUCCESS")
+
+
+def test_pipeline_lock_heartbeat_renewal_past_15_minutes():
+    """
+    Verify that an active long-running pipeline (e.g. 25 minutes) updating heartbeats
+    is NOT cut off by the old 15-minute heuristic and remains safely locked.
+    """
+    from datetime import datetime, timedelta, timezone
+    from app.database.connection import SessionLocal
+    from app.database.models import JobRunModel
+    from app.database.repository import acquire_pipeline_job_lock, update_job_heartbeat, finish_job_run, utc_now
+
+    with SessionLocal() as db:
+        # Clean any leftover running jobs
+        db.query(JobRunModel).filter(JobRunModel.status == "RUNNING").update({JobRunModel.status: "SUCCESS"})
+        db.commit()
+
+        # Start a job 25 minutes ago
+        job, err = acquire_pipeline_job_lock(db, source="LONG_RUNNER")
+        assert job is not None
+
+        # Simulate job running for 25 minutes, but with fresh heartbeat (10 seconds ago)
+        now = utc_now()
+        job.started_at = now - timedelta(minutes=25)
+        job.heartbeat_at = now - timedelta(seconds=10)
+        db.commit()
+
+        # Concurrent check from another worker must still see job as actively running!
+        with SessionLocal() as db_checker:
+            attempt, conflict = acquire_pipeline_job_lock(db_checker, source="ATTEMPT_RUNNER")
+            assert attempt is None
+            assert "currently in progress" in conflict
+
+        finish_job_run(db, job.id, status="SUCCESS")
+
+

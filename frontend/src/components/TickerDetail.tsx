@@ -10,9 +10,10 @@ import {
 interface TickerDetailProps {
   ticker: string;
   onClose: () => void;
+  lastUpdate?: string | null;
 }
 
-export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose }) => {
+export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose, lastUpdate }) => {
   const [detail, setDetail] = useState<TickerDetailResponse | null>(null);
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [loading, setLoading] = useState(true);
@@ -20,20 +21,41 @@ export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose }) =
   const [marketFilter, setMarketFilter] = useState<'ALL' | 'DIRECT' | 'SECTOR'>('ALL');
 
   useEffect(() => {
+    let isCancelled = false;
+    const controller = new AbortController();
+    setLoading(true);
+
     Promise.all([
-      fetch(`/api/tickers/${ticker}`).then((res) => res.json()),
-      fetch(`/api/tickers/${ticker}/history`).then((res) => res.json())
+      fetch(`/api/tickers/${ticker}`, { signal: controller.signal }).then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      }),
+      fetch(`/api/tickers/${ticker}/history`, { signal: controller.signal }).then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
     ])
       .then(([detailData, historyData]) => {
-        setDetail(detailData);
-        setHistory(historyData.history || []);
-        setLoading(false);
+        if (!isCancelled) {
+          setDetail(detailData);
+          setHistory(historyData.history || []);
+          setLoading(false);
+        }
       })
       .catch((err) => {
-        console.error('Failed to load ticker details', err);
-        setLoading(false);
+        if (!isCancelled) {
+          if (err.name !== 'AbortError') {
+            console.error('Failed to load ticker details', err);
+          }
+          setLoading(false);
+        }
       });
-  }, [ticker]);
+
+    return () => {
+      isCancelled = true;
+      controller.abort();
+    };
+  }, [ticker, lastUpdate]);
 
   if (loading) {
     return (

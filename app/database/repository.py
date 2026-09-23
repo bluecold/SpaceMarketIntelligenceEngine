@@ -1,6 +1,6 @@
 import json
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set, Tuple
 from collections import defaultdict
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func, or_
@@ -193,7 +193,7 @@ def get_recent_news_items(db: Session, ticker: str, days: int = 3) -> List[NewsI
     )
 
 
-def save_prediction_markets(db: Session, markets: List[PredictionMarketData]) -> int:
+def save_prediction_markets(db: Session, markets: List[PredictionMarketData], commit: bool = True) -> int:
     """Upsert prediction markets and append timestamped snapshot."""
     count = 0
     now = utc_now()
@@ -229,6 +229,7 @@ def save_prediction_markets(db: Session, markets: List[PredictionMarketData]) ->
                 clob_token_id=getattr(m, "clob_token_id", None),
                 condition_id=getattr(m, "condition_id", None),
                 polarity=getattr(m, "polarity", 1),
+                baseline_probability=getattr(m, "baseline_probability", None),
                 url=m.url,
                 source=getattr(m, "source", "MOCK" if str(m.external_id).startswith("mock_") or "mock" in str(m.external_id) else "LIVE"),
                 collected_at=now
@@ -256,18 +257,17 @@ def save_prediction_markets(db: Session, markets: List[PredictionMarketData]) ->
             existing.event_key = m.event_key
             if getattr(m, "clob_token_id", None):
                 existing.clob_token_id = m.clob_token_id
-            if getattr(m, "condition_id", None):
-                existing.condition_id = m.condition_id
-            existing.polarity = getattr(m, "polarity", 1)
-            if m.url:
-                existing.url = m.url
-            if hasattr(m, "source") and m.source:
+            existing.probability_change_24h = m.probability_change_24h
+            if m.event_key and not existing.event_key:
+                existing.event_key = m.event_key
+            if m.source and not existing.source:
                 existing.source = m.source
             existing.collected_at = now
             market_id = existing.id
 
-        # Compute 24h probability delta from SQLite snapshot history if not already set by provider
-        if (m.probability_change_24h == 0.0 or m.probability_change_24h is None) and existing:
+        # Compute 24h probability delta from SQLite snapshot history ONLY if missing (None)
+        # Explicit 0.0 delta from provider is preserved (R2-06 audit fix)
+        if m.probability_change_24h is None and existing:
             window_start = now - timedelta(hours=30)
             window_end = now - timedelta(hours=18)
             snap_24h = (
@@ -282,8 +282,6 @@ def save_prediction_markets(db: Session, markets: List[PredictionMarketData]) ->
             if snap_24h:
                 delta_24h = round((m.yes_probability - snap_24h.yes_probability) * 100.0, 2)
                 m.probability_change_24h = delta_24h
-            else:
-                m.probability_change_24h = 0.0
 
         # Append snapshot
         snap = PredictionMarketSnapshotModel(
@@ -300,7 +298,10 @@ def save_prediction_markets(db: Session, markets: List[PredictionMarketData]) ->
             probability_change_24h=m.probability_change_24h
         )
         db.add(snap)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return count
 
 
@@ -353,7 +354,7 @@ def get_recent_prediction_markets(
     return direct_markets + sector_markets
 
 
-def save_divergences(db: Session, ticker: str, divergences_data: List[Dict[str, Any]]) -> int:
+def save_divergences(db: Session, ticker: str, divergences_data: List[Dict[str, Any]], commit: bool = True) -> int:
     """
     Save or update active divergence episodes for a ticker.
     Maintains stateful divergence episodes:
@@ -416,7 +417,10 @@ def save_divergences(db: Session, ticker: str, divergences_data: List[Dict[str, 
         if key not in detected_keys:
             ep.resolved_at = now
 
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return count
 
 
@@ -428,7 +432,14 @@ def get_active_divergences(db: Session, ticker: Optional[str] = None, hours: int
     return query.order_by(desc(DivergenceModel.last_seen)).all()
 
 
-def save_alerts(db: Session, ticker: str, alerts_data: List[Dict[str, Any]]) -> int:
+def save_alerts(
+    db: Session,
+    ticker: str,
+    alerts_data: List[Dict[str, Any]],
+    resolve_missing: bool = True,
+    resolve_categories: Optional[Set[str]] = None,
+    commit: bool = True
+) -> int:
     """
     Stateful persistence for trading signals, catalysts, and divergences.
     Updates active episodes without creating duplicates, and resolves ceased alerts.
@@ -451,6 +462,8 @@ def save_alerts(db: Session, ticker: str, alerts_data: List[Dict[str, Any]]) -> 
                 al_category = "CATALYST"
             elif "DIVERGENCE" in al_type or "CONFIRMATION" in al_type or "REVERSAL" in al_type:
                 al_category = "DIVERGENCE"
+            elif "FUNDAMENTAL" in al_type or "DILUTION" in al_type or "CAPITAL_RAISE" in al_type or "RUNWAY" in al_type:
+                al_category = "FUNDAMENTAL"
             else:
                 al_category = "SIGNAL"
 
@@ -484,12 +497,30 @@ def save_alerts(db: Session, ticker: str, alerts_data: List[Dict[str, Any]]) -> 
             db.add(new_alert)
             alert_map[alert_id] = new_alert
 
-    # Resolve active alerts that ceased in this run
-    for al_id, existing in alert_map.items():
-        if al_id not in detected_ids and existing.resolved_at is None:
-            existing.resolved_at = now
+    # Resolve active alerts that ceased in this run only if collection was successful for that category (R2-05 audit fix)
+    if resolve_missing:
+        for al_id, existing in alert_map.items():
+            if al_id not in detected_ids and existing.resolved_at is None:
+                cat = existing.category
+                if not cat:
+                    al_type = existing.type or ""
+                    if "BUY" in al_type or "AVOID" in al_type:
+                        cat = "SIGNAL"
+                    elif "CATALYST" in al_type:
+                        cat = "CATALYST"
+                    elif "DIVERGENCE" in al_type or "CONFIRMATION" in al_type or "REVERSAL" in al_type:
+                        cat = "DIVERGENCE"
+                    elif "FUNDAMENTAL" in al_type or "DILUTION" in al_type or "CAPITAL_RAISE" in al_type or "RUNWAY" in al_type:
+                        cat = "FUNDAMENTAL"
+                    else:
+                        cat = "SIGNAL"
+                if resolve_categories is None or cat in resolve_categories:
+                    existing.resolved_at = now
 
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return len(detected_ids)
 
 
@@ -510,7 +541,7 @@ def save_market_snapshot(db: Session, data: Dict[str, Any]) -> MarketSnapshotMod
         market_session=data.get("market_session"),
         price=data.get("price"),
         volume=data.get("volume"),
-        market_status=data.get("status", "AVAILABLE"),
+        market_status=data.get("status") or data.get("market_status", "AVAILABLE"),
         ema200=data.get("ema200"),
         rsi14=data.get("rsi14"),
         bollinger_upper=data.get("bollinger_upper"),
@@ -539,7 +570,7 @@ def get_latest_market_snapshot(db: Session, ticker: str) -> Optional[MarketSnaps
     )
 
 
-def save_ssi_snapshot(db: Session, data: Dict[str, Any]) -> SSISnapshotModel:
+def save_ssi_snapshot(db: Session, data: Dict[str, Any], commit: bool = True) -> SSISnapshotModel:
     sig_val = data["signal"]
     base_sig = data.get("base_signal", sig_val)
     mod_sig = data.get("signal_modifier")
@@ -600,8 +631,11 @@ def save_ssi_snapshot(db: Session, data: Dict[str, Any]) -> SSISnapshotModel:
         explanation=data.get("explanation")
     )
     db.add(snapshot)
-    db.commit()
-    db.refresh(snapshot)
+    if commit:
+        db.commit()
+        db.refresh(snapshot)
+    else:
+        db.flush()
     return snapshot
 
 
@@ -634,7 +668,9 @@ def get_historical_ssi_snapshot(
     rather than computed against stale data from weeks ago.
     """
     now = utc_now()
-    min_time = now - timedelta(hours=tolerance_hours)
+    # Ensure min_time is strictly bounded around target horizon (e.g. at least 18h ago for a 24h/1D lookup)
+    min_hours = max(4.0, target_hours_ago - tolerance_hours)
+    min_time = now - timedelta(hours=min_hours)
     target_time = now - timedelta(hours=target_hours_ago)
     max_time = now - timedelta(hours=target_hours_ago * max_lookback_multiplier)
 
@@ -743,8 +779,90 @@ def get_history_series(db: Session, ticker: str, limit: int = 100) -> List[Dict[
     ]
 
 
-def create_job_run(db: Session, job_name: str) -> JobRunModel:
-    job = JobRunModel(job_name=job_name, started_at=utc_now(), status="RUNNING")
+def acquire_pipeline_job_lock(
+    db: Session,
+    source: str = "API",
+    job_name: str = "smie_full_pipeline",
+    heartbeat_timeout_seconds: int = 120
+) -> Tuple[Optional[JobRunModel], Optional[str]]:
+    """
+    Atomically acquires exclusive pipeline execution lock across all processes and workers.
+    Returns (job_run_model, None) on success, or (None, conflict_reason_message) if locked.
+    
+    1. Checks for active RUNNING jobs with heartbeat_at >= now - heartbeat_timeout_seconds.
+    2. If a RUNNING job is found with stale heartbeat (>120s), marks it as ERROR (stale crash recovery).
+    3. Atomically creates new JobRunModel(status='RUNNING', source=source, started_at=now, heartbeat_at=now).
+    """
+    now = utc_now()
+    stale_cutoff = now - timedelta(seconds=heartbeat_timeout_seconds)
+
+    try:
+        # Check running jobs
+        running_jobs = db.query(JobRunModel).filter(
+            JobRunModel.status == "RUNNING"
+        ).all()
+
+        active_job = None
+        for j in running_jobs:
+            j_hb = j.heartbeat_at or j.started_at
+            if j_hb.tzinfo is None:
+                j_hb = j_hb.replace(tzinfo=timezone.utc)
+            
+            # Normalize naive/aware for comparison
+            now_cmp = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+            cutoff_cmp = stale_cutoff if stale_cutoff.tzinfo is not None else stale_cutoff.replace(tzinfo=timezone.utc)
+
+            if j_hb >= cutoff_cmp:
+                active_job = j
+                break
+            else:
+                # Stale process crash recovery
+                j.finished_at = now
+                j.status = "ERROR"
+                j.error_message = f"Process terminated abnormally or timed out (last heartbeat: {j_hb.isoformat()})"
+
+        if active_job:
+            db.commit()
+            return None, f"A pipeline execution is currently in progress (Job ID: {active_job.id}, started by {active_job.source} at {active_job.started_at}). Please wait for it to complete."
+
+        # Create new running job
+        new_job = JobRunModel(
+            job_name=job_name,
+            started_at=now,
+            heartbeat_at=now,
+            status="RUNNING",
+            source=source
+        )
+        db.add(new_job)
+        db.commit()
+        db.refresh(new_job)
+        return new_job, None
+
+    except Exception as e:
+        db.rollback()
+        return None, f"Failed to acquire pipeline lock due to database error: {e}"
+
+
+def update_job_heartbeat(db: Session, job_id: int):
+    """Refreshes the active heartbeat timestamp of a running job."""
+    try:
+        job = db.query(JobRunModel).filter(JobRunModel.id == job_id).first()
+        if job and job.status == "RUNNING":
+            job.heartbeat_at = utc_now()
+            db.commit()
+    except Exception:
+        db.rollback()
+
+
+def create_job_run(db: Session, job_name: str, source: str = "API") -> JobRunModel:
+    now = utc_now()
+    job = JobRunModel(
+        job_name=job_name,
+        started_at=now,
+        heartbeat_at=now,
+        status="RUNNING",
+        source=source
+    )
     db.add(job)
     db.commit()
     db.refresh(job)
@@ -754,7 +872,9 @@ def create_job_run(db: Session, job_name: str) -> JobRunModel:
 def finish_job_run(db: Session, job_id: int, status: str = "SUCCESS", records: int = 0, error: Optional[str] = None):
     job = db.query(JobRunModel).filter(JobRunModel.id == job_id).first()
     if job:
-        job.finished_at = utc_now()
+        now = utc_now()
+        job.finished_at = now
+        job.heartbeat_at = now
         job.status = status
         job.records_processed = records
         job.error_message = error

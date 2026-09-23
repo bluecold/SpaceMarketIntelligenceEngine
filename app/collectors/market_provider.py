@@ -210,17 +210,37 @@ def _fetch_market_data_sync(ticker: str) -> MarketData:
 
         c_date = str(getattr(last_idx, "date", lambda: obs_dt.date())())
 
-        if pd.isna(latest_price) or latest_price <= 0:
+        # Check freshness of the latest candle against query timestamp and trading sessions (R2-07 audit fix)
+        candle_age_hours = (now - obs_dt).total_seconds() / 3600.0 if obs_dt else 999.0
+        is_stale_candle = False
+        if obs_dt is not None:
+            try:
+                b_days = len(pd.bdate_range(start=obs_dt.date(), end=now.date())) - 1
+            except Exception:
+                b_days = int(candle_age_hours // 24)
+
+            # Stale if:
+            # 1. 3 or more business days behind (e.g. Monday candle queried on Thursday)
+            # 2. 2 business days behind and past 14:00 UTC (regular trading open) or age > 48h
+            # 3. Absolute age > 84 hours (accommodating normal 3-day holiday weekends)
+            if b_days >= 3 or (b_days >= 2 and (now.hour >= 14 or candle_age_hours > 48.0)) or candle_age_hours > 84.0:
+                is_stale_candle = True
+        else:
+            is_stale_candle = True
+
+        if pd.isna(latest_price) or latest_price <= 0 or is_stale_candle:
+            status_val = "STALE" if is_stale_candle else "DATA_UNAVAILABLE"
+            logger.warning(f"Market data for {ticker} is {status_val} (last candle date: {c_date}, age: {candle_age_hours:.1f}h)")
             return MarketData(
                 ticker=ticker,
                 timestamp=now,
                 observed_at=obs_dt,
                 candle_date=c_date,
                 market_session=session,
-                price=None,
-                volume=None,
-                status="DATA_UNAVAILABLE",
-                raw_df=None
+                price=round(latest_price, 2) if not pd.isna(latest_price) and latest_price > 0 else None,
+                volume=int(latest_volume) if not pd.isna(latest_volume) else 0,
+                status=status_val,
+                raw_df=df
             )
 
         return MarketData(

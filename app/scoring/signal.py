@@ -25,7 +25,10 @@ def generate_signal_and_explanation(
     source_agreement: Optional[float] = None,
     data_quality: Optional[float] = None,
     fundamentals: Optional[Dict[str, Any]] = None,
-    fundamental_score: Optional[float] = None
+    fundamental_score: Optional[float] = None,
+    risk_score: Optional[float] = None,
+    momentum_score: Optional[float] = None,
+    is_mom_comparable_1d: bool = True
 ) -> Dict[str, Any]:
     """
     Generates quantitative trading signal, multi-source divergence detection,
@@ -61,7 +64,9 @@ def generate_signal_and_explanation(
     price = indicators.get("price")
     ema200 = indicators.get("ema200")
     vol_ratio = indicators.get("volume_ratio")
-    market_status = indicators.get("status", "AVAILABLE")
+    market_status = indicators.get("status")
+    if market_status is None:
+        market_status = "AVAILABLE" if (price is not None and price > 0) else "DATA_UNAVAILABLE"
 
     # Fundamental Runway & Burn analysis
     runway_info = get_fundamental_runway_info(fundamentals)
@@ -71,58 +76,78 @@ def generate_signal_and_explanation(
     burn_val = runway_info.get("burn")
 
     has_any_data = any(x is not None for x in [smi, ssi, social_score, prediction_score, news_score, technical_score_raw, fundamental_score, indicators.get("price")])
-    signal_modifier = None
+    modifiers: List[str] = []
+    is_overbought = False
 
     # 1. Base Signal Thresholds (Using SMI as the comprehensive index)
     if not has_any_data or (data_quality is not None and data_quality == 0.0):
         base_signal = "HOLD"
-        signal_modifier = "NO DATA"
-    elif primary_index >= settings.THRESHOLD_STRONG_BUY:
-        base_signal = "STRONG BUY"
-    elif primary_index >= settings.THRESHOLD_BUY:
-        base_signal = "BUY"
-    elif primary_index >= settings.THRESHOLD_WATCH:
-        base_signal = "WATCH"
-    elif primary_index >= settings.THRESHOLD_HOLD:
-        base_signal = "HOLD"
-    elif primary_index >= settings.THRESHOLD_AVOID:
-        base_signal = "AVOID"
+        modifiers.append("NO DATA")
     else:
-        base_signal = "STRONG AVOID"
-
-    # Capital Preservation Gate 1: Acute Source Contradiction (source_agreement <= -0.60)
-    if source_agreement is not None and source_agreement <= -0.60:
-        if base_signal in ["STRONG BUY", "BUY"]:
+        if primary_index >= settings.THRESHOLD_STRONG_BUY:
+            base_signal = "STRONG BUY"
+        elif primary_index >= settings.THRESHOLD_BUY:
+            base_signal = "BUY"
+        elif primary_index >= settings.THRESHOLD_WATCH:
             base_signal = "WATCH"
-            signal_modifier = "CONFLICTING SOURCES"
+        elif primary_index >= settings.THRESHOLD_HOLD:
+            base_signal = "HOLD"
+        elif primary_index >= getattr(settings, "THRESHOLD_STRONG_AVOID", getattr(settings, "THRESHOLD_AVOID", 20.0)):
+            base_signal = "AVOID"
+        else:
+            base_signal = "STRONG AVOID"
 
-    # Capital Preservation Gate 2: Low Data Quality (< 30.0%)
-    if data_quality is not None and data_quality < 30.0:
-        if base_signal in ["STRONG BUY", "BUY"]:
-            base_signal = "WATCH"
-            signal_modifier = "LOW DATA QUALITY"
+        # Capital Preservation Gate 1: Acute Source Contradiction (source_agreement <= -0.60)
+        if source_agreement is not None and source_agreement <= -0.60:
+            if base_signal in ["STRONG BUY", "BUY"]:
+                base_signal = "WATCH"
+            if "CONFLICTING SOURCES" not in modifiers:
+                modifiers.append("CONFLICTING SOURCES")
 
-    # Capital Preservation Gate 3: Critical Cash Runway (< 6 months)
-    if runway_months is not None and runway_months < 6.0:
-        if base_signal in ["STRONG BUY", "BUY"]:
-            base_signal = "BUY" if base_signal == "STRONG BUY" else "WATCH"
-            signal_modifier = "DILUTION RISK" if not signal_modifier else f"{signal_modifier} | DILUTION RISK"
+        # Capital Preservation Gate 2: Low Data Quality (< 30.0%)
+        if data_quality is not None and data_quality < 30.0:
+            if base_signal in ["STRONG BUY", "BUY"]:
+                base_signal = "WATCH"
+            if "LOW DATA QUALITY" not in modifiers:
+                modifiers.append("LOW DATA QUALITY")
 
-    # Special Rule: Overbought restriction (RSI > 75 restricts STRONG BUY to WATCH, warns on BUY)
-    is_overbought = False
-    if rsi is not None and rsi > 75.0:
-        is_overbought = True
-        if base_signal == "STRONG BUY":
-            base_signal = "WATCH"
-            signal_modifier = "OVEREXTENDED"
-        elif base_signal == "BUY":
-            signal_modifier = "OVEREXTENDED"
+        # Capital Preservation Gate 3: Critical Cash Runway (< 6 months)
+        if runway_months is not None and runway_months < 6.0:
+            if base_signal in ["STRONG BUY", "BUY"]:
+                base_signal = "BUY" if base_signal == "STRONG BUY" else "WATCH"
+            if "DILUTION RISK" not in modifiers:
+                modifiers.append("DILUTION RISK")
 
-    if market_status != "AVAILABLE":
-        if base_signal in ["STRONG BUY", "BUY"]:
-            signal_modifier = "NO MKT DATA"
+        # Special Rule: Overbought restriction (RSI > 75 restricts both STRONG BUY and BUY to WATCH)
+        is_overbought = False
+        if rsi is not None and rsi > 75.0:
+            is_overbought = True
+            if base_signal in ["STRONG BUY", "BUY"]:
+                base_signal = "WATCH"
+            if "OVEREXTENDED" not in modifiers:
+                modifiers.append("OVEREXTENDED")
 
+        # Capital Preservation Gate 4: Elevated Volatility / Risk Governance (risk_score < 35.0)
+        # Size Down, Don't Veto: Cap STRONG BUY to BUY and flag for reduced position sizing (50%)
+        if risk_score is not None and risk_score < 35.0:
+            if base_signal == "STRONG BUY":
+                base_signal = "BUY"
+            if "HIGH RISK" not in modifiers:
+                modifiers.append("HIGH RISK")
+
+        # Market Confirmation Gate: Non-operable without active market price (restricts BUY/STRONG BUY to WATCH)
+        if market_status != "AVAILABLE" or price is None or price <= 0:
+            if base_signal in ["STRONG BUY", "BUY"]:
+                base_signal = "WATCH"
+            if "NO MKT DATA" not in modifiers:
+                modifiers.append("NO MKT DATA")
+
+    signal_modifier = " | ".join(modifiers) if modifiers else None
     full_signal = f"{base_signal} ({signal_modifier})" if signal_modifier else base_signal
+
+    eff_momentum = momentum_score
+    if eff_momentum is None and indicators:
+        eff_momentum = indicators.get("momentum_score")
 
     # 2. Tripartite Divergence Engine (X ↔ Polymarket ↔ Price)
     active_divergences = detect_divergences(
@@ -131,6 +156,7 @@ def generate_signal_and_explanation(
         prediction_score=prediction_score,
         prediction_delta_24h=eff_pred_delta,
         news_score=news_score,
+        momentum_score=eff_momentum,
         technical_score=technical_score_raw,
         price_return_1d=price_change_1d,
         volume_ratio=vol_ratio,
@@ -162,7 +188,7 @@ def generate_signal_and_explanation(
             "level": "CRITICAL",
             "message": f"🛑 {ticker} issued STRONG AVOID signal (SMI: {primary_index}/100) — high capital risk"
         })
-    elif base_signal == "BUY" and effective_mom is not None and effective_mom >= 3.0:
+    elif base_signal == "BUY" and effective_mom is not None and effective_mom >= 3.0 and is_mom_comparable_1d:
         alerts.append({
             "id": f"{ticker}:SIGNAL:MOMENTUM_BUY",
             "ticker": ticker,

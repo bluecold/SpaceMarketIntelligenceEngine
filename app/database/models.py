@@ -115,6 +115,7 @@ class PredictionMarketModel(Base):
     clob_token_id = Column(String(128), nullable=True, index=True) # 256-bit asset token ID for CLOB prices-history
     condition_id = Column(String(128), nullable=True) # Polymarket condition ID
     polarity = Column(Integer, default=1) # +1 = Bullish when YES occurs, -1 = Bearish when YES occurs
+    baseline_probability = Column(Float, nullable=True, default=None) # Prior baseline probability anchor
     
     url = Column(String(500), nullable=True)
     source = Column(String(20), default="LIVE", index=True) # "LIVE", "MOCK", "GAMMA_LIVE"
@@ -274,8 +275,10 @@ class JobRunModel(Base):
     id = Column(Integer, primary_key=True, index=True)
     job_name = Column(String(100), nullable=False, index=True)
     started_at = Column(DateTime, default=utc_now)
+    heartbeat_at = Column(DateTime, default=utc_now, index=True)
     finished_at = Column(DateTime, nullable=True)
     status = Column(String(20), nullable=False)  # SUCCESS, ERROR, RUNNING
+    source = Column(String(50), default="API", index=True)  # API, CLI, SCHEDULER
     records_processed = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
 
