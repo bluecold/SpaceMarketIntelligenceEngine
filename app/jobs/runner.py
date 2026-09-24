@@ -44,8 +44,12 @@ def get_x_provider():
         try:
             return TwikitProvider()
         except Exception:
-            return MockXProvider()
-    return MockXProvider()
+            if getattr(settings, "ALLOW_MOCK_FALLBACK", False):
+                return MockXProvider()
+            return TwikitProvider()
+    if getattr(settings, "ALLOW_MOCK_FALLBACK", False):
+        return MockXProvider()
+    return TwikitProvider()
 
 
 def get_news_provider():
@@ -57,7 +61,9 @@ def get_news_provider():
 def get_polymarket_provider():
     if settings.POLYMARKET_PROVIDER.lower() == "polymarket":
         return PolymarketGammaProvider()
-    return MockPolymarketProvider()
+    if getattr(settings, "ALLOW_MOCK_FALLBACK", False):
+        return MockPolymarketProvider()
+    return PolymarketGammaProvider()
 
 
 async def ingest_prediction_markets(db: SessionLocal, poly_provider=None) -> List[Any]:
@@ -253,16 +259,40 @@ async def ingest_market_for_ticker(
 PIPELINE_LOCK = asyncio.Lock()
 
 
+async def _pipeline_heartbeat_worker(job_id: int, stop_event: asyncio.Event, interval: float = 30.0):
+    """
+    Background worker that periodically refreshes the job heartbeat in the database
+    every `interval` seconds (default 30s) while the pipeline is executing.
+    Prevents false timeout expiration during long ticker computations (FinBERT, rate limits, network timeouts).
+    """
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+            break
+        except asyncio.TimeoutError:
+            pass
+
+        try:
+            def _touch():
+                with SessionLocal() as db_hb:
+                    update_job_heartbeat(db_hb, job_id)
+            await asyncio.to_thread(_touch)
+        except Exception as hb_err:
+            logger.debug(f"Heartbeat worker tick failed for job {job_id}: {hb_err}")
+
+
 async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> Dict[str, Any]:
     """Core pipeline execution logic."""
-    init_db()
     db = SessionLocal()
     if existing_job_id is not None:
         job_id = existing_job_id
     else:
         job_run = create_job_run(db, "smie_full_pipeline")
         job_id = job_run.id
-    
+
+    stop_heartbeat = asyncio.Event()
+    heartbeat_task = asyncio.create_task(_pipeline_heartbeat_worker(job_id, stop_heartbeat, interval=30.0))
+
     records_processed = 0
     results = {}
     collected_alerts = []
@@ -278,14 +308,18 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
 
         # Step 0: Ingest Polymarket Prediction Markets globally for the sector (if enabled)
         poly_markets = []
+        poly_success = False
         if getattr(settings, "POLYMARKET_ENABLED", True):
             try:
                 poly_markets = await ingest_prediction_markets(db, poly_provider=poly_provider)
                 records_processed += len(poly_markets)
+                poly_success = True
             except Exception as e:
                 logger.error(f"Polymarket collection error (isolated): {e}")
+                poly_success = False
         else:
             logger.info("Polymarket collection is disabled (POLYMARKET_ENABLED=False).")
+            poly_success = True
             
         update_job_heartbeat(db, job_id)
 
@@ -392,12 +426,24 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
             # Extract fundamental data (Cash runway, solvency, growth, margins)
             fundamental_score = None
             fund_raw = None
+            fund_success = False
             try:
                 if hasattr(market_provider, "get_fundamentals"):
                     fund_raw = await market_provider.get_fundamentals(ticker)
-                    fundamental_score = calculate_fundamental_score(fund_raw)
+                    # Verify whether genuine financial statement metrics were retrieved
+                    if fund_raw and any(v is not None for v in [fund_raw.get("total_cash"), fund_raw.get("free_cashflow"), fund_raw.get("total_debt")]):
+                        fund_success = True
+                        fundamental_score = calculate_fundamental_score(fund_raw)
+                    elif ticker_config.is_private_or_test:
+                        # Private or test tickers have no SEC filings; consider fundamental eval clean
+                        fund_success = True
+                    else:
+                        fund_success = False
+                else:
+                    fund_success = True
             except Exception as e:
                 logger.warning(f"Could not compute fundamentals for {ticker}: {e}")
+                fund_success = False
 
             # Extract 1d price return from indicators or raw OHLCV DataFrame
             price_change_1d = indicators.get("price_change_1d")
@@ -498,7 +544,9 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
 
             # --- STEP 6: DETERMINE DATA PROVENANCE & SAVE STATEFUL DATA ---
             # 1. Social Provenance from actual posts in window
-            if len(recent_posts) == 0:
+            if not social_success:
+                soc_src = "ERROR"
+            elif len(recent_posts) == 0:
                 soc_src = "EXCLUDED"
             else:
                 is_mock_p = lambda p: getattr(p, "source", "") == "MOCK" or str(p.tweet_id).startswith("mock_")
@@ -511,7 +559,11 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                     soc_src = "LIVE"
 
             # 2. Prediction Market Provenance from actual markets in window
-            if not getattr(settings, "POLYMARKET_ENABLED", True) or prediction_count == 0 or pms_score is None:
+            if not getattr(settings, "POLYMARKET_ENABLED", True):
+                pred_src = "EXCLUDED"
+            elif not poly_success:
+                pred_src = "ERROR"
+            elif prediction_count == 0 or pms_score is None:
                 pred_src = "EXCLUDED"
             else:
                 relevant_markets = direct_markets + sector_events
@@ -525,7 +577,9 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                     pred_src = "LIVE"
 
             # 3. News Provenance from actual news in window
-            if len(recent_news) == 0:
+            if not news_success:
+                news_src = "ERROR"
+            elif len(recent_news) == 0:
                 news_src = "EXCLUDED"
             else:
                 is_mock_n = lambda n: getattr(n, "source", "") in ["Mock News", "MOCK"] or str(getattr(n, "url", "")).startswith("mock_")
@@ -602,18 +656,35 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 "explanation": signal_res["explanation"]
             }
 
+            # Determine health of divergence sources (tripartite: X / Polymarket / Price)
+            mkt_success = indicators.get("status") in ["AVAILABLE", "DEGRADED"]
+            poly_active = getattr(settings, "POLYMARKET_ENABLED", True)
+            div_sources_success = social_success and mkt_success and (poly_success if poly_active else True)
+
             # Atomic Unit of Work (R2-04 & R2-05 audit fix): Persist divergences, alerts & snapshot together
             try:
-                save_divergences(db, ticker, signal_res.get("active_divergences", []), commit=False)
+                save_divergences(
+                    db,
+                    ticker,
+                    signal_res.get("active_divergences", []),
+                    resolve_missing=div_sources_success,
+                    commit=False
+                )
 
                 alerts_to_save = signal_res.get("alerts", [])
                 for al in alerts_to_save:
                     al["data_source"] = overall_data_src
-                # Deterministic categories recomputed on every run must always be resolved if condition ceased
-                resolve_categories = {"SIGNAL", "DIVERGENCE", "FUNDAMENTAL"}
-                # Only resolve catalyst alerts when both news and social collection succeeded without error
+
+                # Condition alert category resolution strictly on source collection health to eliminate alert flapping
+                resolve_categories = set()
+                if mkt_success:
+                    resolve_categories.add("SIGNAL")
                 if news_success and social_success:
                     resolve_categories.add("CATALYST")
+                if fund_success:
+                    resolve_categories.add("FUNDAMENTAL")
+                if div_sources_success:
+                    resolve_categories.add("DIVERGENCE")
 
                 save_alerts(
                     db,
@@ -664,6 +735,11 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
         finish_job_run(db, job_id, status="ERROR", error=str(e))
         return {"status": "ERROR", "error": str(e)}
     finally:
+        stop_heartbeat.set()
+        try:
+            await heartbeat_task
+        except Exception:
+            pass
         db.close()
 
 

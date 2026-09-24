@@ -602,6 +602,9 @@ def evaluate_backtest_dataset(
                         "status": current.get("market_status", "AVAILABLE")
                     },
                     fundamentals=current.get("fundamentals"),
+                    fundamental_score=fund,
+                    risk_score=risk,
+                    is_mom_comparable_1d=smi_a_res.get("is_mom_comparable_1d", True),
                     social_stats={"total_posts": post_cnt} if post_cnt is not None else None
                 )
                 if smi_a is not None and smi_a >= buy_threshold and sig_a_res.get("base_signal") in ["BUY", "STRONG BUY"]:
@@ -647,6 +650,9 @@ def evaluate_backtest_dataset(
                             "status": current.get("market_status", "AVAILABLE")
                         },
                         fundamentals=current.get("fundamentals"),
+                        fundamental_score=fund,
+                        risk_score=risk,
+                        is_mom_comparable_1d=smi_b_res.get("is_mom_comparable_1d", True),
                         social_stats={"total_posts": post_cnt} if post_cnt is not None else None
                     )
                     if smi_b is not None and smi_b >= buy_threshold and sig_b_res.get("base_signal") in ["BUY", "STRONG BUY"]:

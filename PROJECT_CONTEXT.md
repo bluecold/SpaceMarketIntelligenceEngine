@@ -148,27 +148,29 @@ $$w_i^{\text{active}} = \frac{w_i}{\sum_{j \in \text{active}} w_j}$$
 - **Señal Base Simétrica:** Enum canónico puro con calibración balanceada alrededor de 50.0 (`STRONG BUY ≥ 85`, `BUY ≥ 70`, `WATCH ≥ 55`, `HOLD 45–55`, `AVOID 20–45`, `STRONG AVOID < 20`).
 - **Modificadores Acumulativos:** `DILUTION RISK`, `CONFLICTING SOURCES`, `LOW DATA QUALITY`, `OVEREXTENDED`, `HIGH RISK`, `NO MKT DATA`.
 - **Bloqueo Operativo por Falta de Cotización:** Si `market_status != 'AVAILABLE'` o `price is None` o `price <= 0`, las compras se restringen obligatoriamente a `WATCH (NO MKT DATA)`, alineando la ejecución en vivo con el motor de backtesting y evitando órdenes ciegas.
+- **Guarda de Vela Diaria y Filtro de Apertura:** Comprobación estricta `is_today_candle` antes de descartar la última barra intradía (evita descartar días completos en cierres de mercado) y neutralización del volumen inicial (ratio 1.0) hasta las 10:00 ET para amortiguar los 15 minutos de retraso de la cinta pública.
 - **Alertas de Catalizadores Críticos con Identidad Única:** Identificadores con categoría explícita `{ticker}:CATALYST:{category}` permitiendo la coexistencia de múltiples catalizadores simultáneos en el mismo activo.
-- **Detección Sintáctica de Negaciones en NLP:** El clasificador de catalizadores detecta negaciones contextuales (`"no delay"`, `"not delayed"`, `"no failure"`), evitando falsos bajistas en noticias tranquilizadoras y separando ofertas de capital (`CAPITAL_RAISE`) de lanzamientos espaciales.
+- **Detección Sintáctica y Desambiguación NLP:** Detección de negaciones contextuales (`"no delay"`, `"no failure"`), cobertura exhaustiva de `CAPITAL_RAISE`, y desambiguación regex con hasta 4 modificadores intermediarios diferenciando lanzamientos de cohetes (`LAUNCH`) de anuncios corporativos de líneas de productos comerciales.
 
 ---
 
-### E. Predicción Cuantitativa (PMS) y Divergencias
+### E. Predicción Cuantitativa (PMS), Divergencias y Resolución Robusta
 
-1. **Calibración con Tasa Base ($P_0 = 0.20$):** La probabilidad se evalúa respecto a la base histórica de hitos aeroespaciales ambiciosos, evitando que una probabilidad del 20% sea castigada injustamente como bajista y eliminando la paradoja de formulación positiva/negativa.
+1. **Calibración con Anclaje Dinámico de Consenso (Media Móvil 7 Días):** Si el mercado no provee una tasa base explícita, se ancla a la media móvil histórica de 7 días de ese mismo contrato (acotada entre 0.05 y 0.95), midiendo la sorpresa real en lugar de sesgos estructurales de contratos muy asimétricos.
 2. **Dominancia de Momentum ($\Delta P_{24h}$ 60% / Nivel 40%):** Ponderación prioritaria al flujo de capital informado y sorpresas de corto plazo.
 3. **Divergencias con Blend 50/50:** El motor de divergencias tripartitas combina 50% de retorno de corto plazo con 50% de momentum estructural de tendencia.
+4. **Protección Anti-Aleteo (Flapping) ante Fallo de Fuentes:** La resolución de alertas de dilución queda condicionada al éxito real de obtención de fundamentales (`fund_success == True`) y las divergencias al éxito de ingesta de Polymarket, previniendo cierres y reaperturas espurias ante cortes temporales de red.
 
 ---
 
-### F. Seguridad, Concurrencia y Gestión de Episodios
+### F. Seguridad, Concurrencia y Visualización Institucional
 
 1. **Seguridad Timing-Safe:** Verificación de claves mediante `secrets.compare_digest`, mitigando ataques de canal lateral.
-2. **Same-Origin Dashboard Authorization:** Reconocimiento de cabeceras de origen seguro que permite al dashboard web ejecutar jobs sin exponer secretos en el bundle estático de Vite.
-3. **Bloqueo Atómico con Heartbeat Dinámico:** Bloqueo distribuido atómico con renovación de heartbeat cada 120s en `JobRunModel`, coordinando API, CLI y Scheduler y recuperando workers caídos automáticamente.
-4. **Silent Cold-Start:** En el arranque o recarga ($F5$), las alertas existentes se registran sin disparar notificaciones ruidosas.
-5. **Identidad por Episodio (`baseId@opened_at`):** Si una alerta se resuelve y vuelve a abrirse semanas después con nuevo timestamp, el navegador dispara la notificación del nuevo episodio oportunamente.
-6. **Sondeo Inteligente:** Cadencia periódica de 1 hora alineada con el programador backend y sondeo inmediato al enfocar la pestaña si estuvo inactiva $\ge 15$ minutos (`visibilitychange`).
+2. **Same-Origin Dashboard Authorization:** Verificación criptográfica segura para invocaciones internas sin exponer secretos en el cliente Vite y fail-secure (HTTP 503) en entornos productivos si la clave no está configurada.
+3. **Bloqueo Distribuido Garantizado por Base de Datos:** Exclusión mutua garantizada a nivel de SQLite mediante índice único parcial `uq_job_runs_single_running` sobre `status='RUNNING'`. Las inserciones concurrentes fallan atómicamente con HTTP 409 Conflict.
+4. **Heartbeat en Hilo Autónomo (30s):** Un worker en segundo plano renueva el heartbeat cada 30 segundos mientras el pipeline procesa modelos pesados (FinBERT, scraping o cómputo técnico), evitando que jobs legítimos sean declarados zombis por el timeout de 120s.
+5. **Visualización Institucional de Historial (HistoryChart):** Conexión continua de series sorteando cierres bursátiles de fin de semana (`maxGapHours = 96`), sombreado visual de receso bursátil (`WEEKEND / MKT CLOSED`) y marcas de calendario inteligentes no superpuestas en el eje temporal.
+6. **Silent Cold-Start & Episodios:** Identidad única por episodio `{baseId}@{opened_at}` con inicio silencioso para evitar ráfagas de notificaciones al recargar el navegador.
 
 ---
 
@@ -178,17 +180,17 @@ La suite de pruebas (`tests/`) está totalmente aislada de la red y la base de d
 ```powershell
 python -m pytest tests/ -v
 ```
-- **184 pruebas automatizadas** que se ejecutan de forma reproducible y con 100% de éxito.
+- **191 pruebas automatizadas** que se ejecutan de forma reproducible y con 100% de éxito.
 - Cobertura integral de:
-  - **Paridad de Estrategias y Cero Sesgo de Anticipación:** Validación matemática idéntica entre ejecución live y backtesting.
+  - **Paridad de Estrategias y Cero Sesgo de Anticipación:** Validación matemática idéntica entre ejecución live y backtesting, incluyendo compuertas de `risk_score` y `fundamental_score` en Modelos A y B.
   - **Invarianza de Escala ATR & Macd Normalizado:** Preservación de escalas relativas ante acciones de alta o baja volatilidad.
-  - **Gobernanza de Datos y Procedencia (Data Provenance):** Trazabilidad estricta (`LIVE`, `DEGRADED`, `MOCK`), flags de control y purga segura.
-  - **Seguridad de API & Bloqueo Atómico Distribuido:** Pruebas contra timing attacks, fallos seguros en producción, bypass de origen seguro y watchdog de heartbeats.
+  - **Gobernanza de Datos y Procedencia (Data Provenance):** Trazabilidad estricta (`LIVE`, `DEGRADED`, `MOCK`), integridad referencial en cascada y purga segura.
+  - **Seguridad de API & Bloqueo Atómico Distribuido:** Pruebas contra timing attacks, fallos seguros en producción, índice único parcial `uq_job_runs_single_running` y worker autónomo de heartbeats.
   - **Calibración de Señales Simétricas & Inoperabilidad de Precios Nulos:** Verificación de bandas simétricas y degradación a `WATCH (NO MKT DATA)`.
-  - **Calibración de Prediction Markets (PMS):** Validación de simetría de formulación y anclaje a tasa base.
-  - **Single-Source Confidence Gating:** Eliminación de bonificación indebida (+15%) cuando solo existe una fuente activa.
+  - **Calibración de Prediction Markets (PMS):** Validación de simetría de formulación y anclaje a media móvil de 7 días.
+  - **Single-Source Confidence Gating & Anti-Flapping:** Eliminación de bonificación indebida (+15%) cuando solo existe una fuente activa y preservación de alertas ante degradación de proveedores.
   - **Normalización Fundamental Adaptativa:** Reescalado dinámico sobre componentes observados sin imputación artificial neutra de 50.0.
   - **Paired Block Bootstrap:** Remuestreo por bloques temporalmente sincronizados entre Model A y Model B para cálculo de significancia estadística.
   - **Persistencia de Pesos Efectivos:** Serialización completa del vector `effective_weights` por snapshot.
   - **Episodios de Alertas y Mutex Atómico HTTP 409:** Notificaciones silenciosas en arranque y prevención de carreras concurrentes en pipeline.
-  - **Cobertura de Catalizadores Catastróficos y Negaciones:** Detección de `CAPITAL_RAISE`, `LAUNCH_FAILURE` y desambiguación sintáctica de negaciones.
+  - **Cobertura de Catalizadores Catastróficos y Negaciones:** Detección de `CAPITAL_RAISE`, `LAUNCH_FAILURE`, filtrado de productos comerciales y desambiguación sintáctica de negaciones.

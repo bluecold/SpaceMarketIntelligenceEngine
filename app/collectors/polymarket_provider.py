@@ -217,7 +217,9 @@ class PolymarketGammaProvider(PredictionMarketProvider):
                                 fallback_params["title"] = query
                             resp = await client.get(f"{self.base_url}/events", params=fallback_params)
                         if resp.status_code != 200:
-                            break
+                            err_msg = f"Polymarket Gamma API returned status {resp.status_code} for query '{query}'"
+                            logger.warning(err_msg)
+                            raise RuntimeError(err_msg)
 
                     events = resp.json()
                     if not isinstance(events, list) or len(events) == 0:
@@ -247,15 +249,15 @@ class PolymarketGammaProvider(PredictionMarketProvider):
             if getattr(settings, "ALLOW_MOCK_FALLBACK", False):
                 logger.warning("Polymarket Gamma API returned 0 markets. Using fallback mock data.")
                 return await self._fallback_provider.get_markets(query=query, ticker=ticker)
-            logger.warning("Polymarket Gamma API returned 0 markets. ALLOW_MOCK_FALLBACK=False, returning empty dataset.")
+            logger.info("Polymarket Gamma API returned 0 markets legitimately.")
             return []
 
         except Exception as e:
             if getattr(settings, "ALLOW_MOCK_FALLBACK", False):
                 logger.warning(f"Error connecting to Polymarket Gamma API ({e}). Using mock provider fallback.")
                 return await self._fallback_provider.get_markets(query=query, ticker=ticker)
-            logger.error(f"Error connecting to Polymarket Gamma API ({e}). ALLOW_MOCK_FALLBACK=False, returning empty dataset.")
-            return []
+            logger.error(f"Error connecting to Polymarket Gamma API ({e}). ALLOW_MOCK_FALLBACK=False, propagating exception.")
+            raise
 
     async def get_market(self, market_id: str) -> Optional[PredictionMarketData]:
         try:

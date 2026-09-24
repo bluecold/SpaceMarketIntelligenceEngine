@@ -71,8 +71,9 @@ class TwikitProvider(XProvider):
         if not is_auth or not self.client:
             if getattr(settings, "ALLOW_MOCK_FALLBACK", False):
                 return await self._fallback_provider.search(query, ticker, max_results)
-            logger.warning(f"Twikit unauthenticated and ALLOW_MOCK_FALLBACK=False. Returning empty dataset for {ticker}.")
-            return []
+            err_msg = f"Twikit unauthenticated for ticker {ticker} (ALLOW_MOCK_FALLBACK=False)."
+            logger.warning(err_msg)
+            raise RuntimeError(err_msg)
 
         posts = []
         try:
@@ -113,7 +114,7 @@ class TwikitProvider(XProvider):
             if getattr(settings, "ALLOW_MOCK_FALLBACK", False):
                 logger.warning(f"Twikit search error for ticker {ticker} ({e}). Using mock fallback.")
                 return await self._fallback_provider.search(query, ticker, max_results)
-            logger.error(f"Twikit search error for ticker {ticker} ({e}). ALLOW_MOCK_FALLBACK=False, returning empty dataset.")
-            return []
+            logger.error(f"Twikit search error for ticker {ticker} ({e}). ALLOW_MOCK_FALLBACK=False, propagating exception.")
+            raise
             
         return posts

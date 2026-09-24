@@ -68,6 +68,7 @@ def calculate_prediction_market_score(
             base_rate = getattr(m, "baseline_probability", None)
             if base_rate is None or not (0.0 < base_rate < 1.0):
                 base_rate = getattr(settings, "PMS_DEFAULT_BASE_RATE", 0.20)
+            base_rate = min(0.95, max(0.05, float(base_rate)))
 
             if pol < 0:
                 # Negative event (e.g. failure, delay): high YES probability is bearish for stock

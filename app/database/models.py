@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from sqlalchemy import (
-    Column, Integer, String, Float, DateTime, Text, Boolean, ForeignKey, Index, UniqueConstraint
+    Column, Integer, String, Float, DateTime, Text, Boolean, ForeignKey, Index, UniqueConstraint, text
 )
 from sqlalchemy.orm import relationship
 from app.database.connection import Base
@@ -121,14 +121,14 @@ class PredictionMarketModel(Base):
     source = Column(String(20), default="LIVE", index=True) # "LIVE", "MOCK", "GAMMA_LIVE"
     collected_at = Column(DateTime, default=utc_now, index=True)
 
-    snapshots = relationship("PredictionMarketSnapshotModel", back_populates="market_rel")
+    snapshots = relationship("PredictionMarketSnapshotModel", back_populates="market_rel", cascade="all, delete-orphan")
 
 
 class PredictionMarketSnapshotModel(Base):
     __tablename__ = "prediction_market_snapshots"
 
     id = Column(Integer, primary_key=True, index=True)
-    market_id = Column(Integer, ForeignKey("prediction_markets.id"), index=True, nullable=False)
+    market_id = Column(Integer, ForeignKey("prediction_markets.id", ondelete="CASCADE"), index=True, nullable=False)
     timestamp = Column(DateTime, default=utc_now, index=True)
     
     yes_probability = Column(Float, nullable=False)
@@ -271,6 +271,16 @@ class SSISnapshotModel(Base):
 
 class JobRunModel(Base):
     __tablename__ = "job_runs"
+    __table_args__ = (
+        Index(
+            "uq_job_runs_single_running",
+            "job_name",
+            "status",
+            unique=True,
+            sqlite_where=text("status = 'RUNNING'"),
+            postgresql_where=text("status = 'RUNNING'")
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     job_name = Column(String(100), nullable=False, index=True)

@@ -67,10 +67,10 @@ export const HistoryChart: React.FC<HistoryChartProps> = ({ data }) => {
     return padding.top + chartH - ((price - minPrice) / priceRange) * chartH;
   };
 
-  // Helper: Generates discontinuous SVG polyline path, splitting on null values or gaps > 48h
+  // Helper: Generates discontinuous SVG polyline path, splitting on null values or true multi-day outages (> 96h)
   const buildSegmentedPath = (
     getYCoord: (p: HistoryPoint) => number | null,
-    maxGapHours: number = 48
+    maxGapHours: number = 96
   ): string => {
     if (safeData.length === 0) return '';
     const maxGapMs = maxGapHours * 3600 * 1000;
@@ -107,7 +107,7 @@ export const HistoryChart: React.FC<HistoryChartProps> = ({ data }) => {
   // Helper: Generates discontinuous SVG area path
   const buildSegmentedArea = (
     getYCoord: (p: HistoryPoint) => number | null,
-    maxGapHours: number = 48
+    maxGapHours: number = 96
   ): string => {
     if (safeData.length === 0) return '';
     const maxGapMs = maxGapHours * 3600 * 1000;
@@ -151,14 +151,61 @@ export const HistoryChart: React.FC<HistoryChartProps> = ({ data }) => {
     return fullArea;
   };
 
-  // Segmented Paths
-  const smiPath = useMemo(() => buildSegmentedPath((d) => getY_Score(d.smi ?? d.ssi)), [safeData, minTime, maxTime]);
-  const smiAreaPath = useMemo(() => buildSegmentedArea((d) => getY_Score(d.smi ?? d.ssi)), [safeData, minTime, maxTime]);
-  const ssiPath = useMemo(() => buildSegmentedPath((d) => getY_Score(d.ssi ?? d.social_score)), [safeData, minTime, maxTime]);
-  const pmsPath = useMemo(() => buildSegmentedPath((d) => getY_Score(d.pms)), [safeData, minTime, maxTime]);
-  const pricePath = useMemo(() => buildSegmentedPath((d) => getY_Price(d.price)), [safeData, minTime, maxTime, validPrices]);
+  // Segmented Paths bridging over normal weekend gaps (up to 96h)
+  const smiPath = useMemo(() => buildSegmentedPath((d) => getY_Score(d.smi ?? d.ssi), 96), [safeData, minTime, maxTime]);
+  const smiAreaPath = useMemo(() => buildSegmentedArea((d) => getY_Score(d.smi ?? d.ssi), 96), [safeData, minTime, maxTime]);
+  const ssiPath = useMemo(() => buildSegmentedPath((d) => getY_Score(d.ssi ?? d.social_score), 96), [safeData, minTime, maxTime]);
+  const pmsPath = useMemo(() => buildSegmentedPath((d) => getY_Score(d.pms), 96), [safeData, minTime, maxTime]);
+  const pricePath = useMemo(() => buildSegmentedPath((d) => getY_Price(d.price), 96), [safeData, minTime, maxTime, validPrices]);
 
-  // Date formatters for continuous timeline axis
+  // Compute weekend spans (Saturday 00:00 to Sunday 23:59) within [minTime, maxTime]
+  const weekendBands = useMemo(() => {
+    if (!minTime || !maxTime || timeSpan <= 0) return [];
+    const bands: { x1: number; x2: number }[] = [];
+    const start = new Date(minTime);
+    const cur = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+    const end = new Date(maxTime);
+
+    while (cur <= end) {
+      const day = cur.getDay(); // 0 is Sunday, 6 is Saturday
+      if (day === 6) {
+        const satStart = cur.getTime();
+        const sunEnd = satStart + 2 * 24 * 3600 * 1000;
+        const visibleStart = Math.max(minTime, satStart);
+        const visibleEnd = Math.min(maxTime, sunEnd);
+        if (visibleEnd > visibleStart) {
+          const x1 = padding.left + ((visibleStart - minTime) / timeSpan) * chartW;
+          const x2 = padding.left + ((visibleEnd - minTime) / timeSpan) * chartW;
+          bands.push({
+            x1: Math.max(padding.left, x1),
+            x2: Math.min(width - padding.right, x2)
+          });
+        }
+        cur.setDate(cur.getDate() + 2);
+      } else {
+        cur.setDate(cur.getDate() + 1);
+      }
+    }
+    return bands;
+  }, [minTime, maxTime, timeSpan, chartW, padding.left, width, padding.right]);
+
+  // Clean date ticks across the time axis (4-5 ticks evenly spaced by calendar days)
+  const timeTicks = useMemo(() => {
+    if (!minTime || !maxTime || timeSpan <= 0) return [];
+    const count = 4;
+    const ticks: { x: number; label: string; anchor: 'start' | 'middle' | 'end' }[] = [];
+    for (let i = 0; i <= count; i++) {
+      const t = minTime + (i / count) * timeSpan;
+      const x = padding.left + (i / count) * chartW;
+      const d = new Date(t);
+      const label = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      const anchor: 'start' | 'middle' | 'end' = i === 0 ? 'start' : i === count ? 'end' : 'middle';
+      ticks.push({ x, label, anchor });
+    }
+    return ticks;
+  }, [minTime, maxTime, timeSpan, chartW, padding.left]);
+
+  // Date formatters for continuous timeline tooltip
   const formatTimeLabel = (timestampMs: number): string => {
     if (!timestampMs || isNaN(timestampMs)) return '';
     const d = new Date(timestampMs);
@@ -269,20 +316,49 @@ export const HistoryChart: React.FC<HistoryChartProps> = ({ data }) => {
           );
         })}
 
-        {/* Bottom Time Axis Ticks */}
-        {timeSpan > 0 && (
-          <g>
-            <text x={padding.left} y={bottomY + 18} fill="var(--text-dim)" fontSize="9.5" textAnchor="start">
-              {formatTimeLabel(minTime)}
-            </text>
-            {data.length > 2 && (
-              <text x={padding.left + chartW / 2} y={bottomY + 18} fill="var(--text-dim)" fontSize="9.5" textAnchor="middle">
-                {formatTimeLabel(minTime + timeSpan / 2)}
+        {/* Weekend Shading Bands (Non-trading market closure) */}
+        {weekendBands.map((band, idx) => (
+          <g key={`weekend-${idx}`}>
+            <rect
+              x={band.x1}
+              y={padding.top}
+              width={Math.max(0, band.x2 - band.x1)}
+              height={chartH}
+              fill="rgba(255, 255, 255, 0.03)"
+              stroke="rgba(255, 255, 255, 0.05)"
+              strokeDasharray="2 2"
+            />
+            {band.x2 - band.x1 > 35 && (
+              <text
+                x={(band.x1 + band.x2) / 2}
+                y={padding.top + 14}
+                fill="rgba(255, 255, 255, 0.25)"
+                fontSize="8"
+                letterSpacing="1"
+                textAnchor="middle"
+                style={{ textTransform: 'uppercase', pointerEvents: 'none' }}
+              >
+                WEEKEND
               </text>
             )}
-            <text x={width - padding.right} y={bottomY + 18} fill="var(--text-dim)" fontSize="9.5" textAnchor="end">
-              {formatTimeLabel(maxTime)}
-            </text>
+          </g>
+        ))}
+
+        {/* Bottom Time Axis Ticks (Intelligent Calendar Dates) */}
+        {timeTicks.length > 0 && (
+          <g>
+            {timeTicks.map((tick, idx) => (
+              <text
+                key={`tick-${idx}`}
+                x={tick.x}
+                y={bottomY + 18}
+                fill="var(--text-dim)"
+                fontSize="9.5"
+                textAnchor={tick.anchor}
+              >
+                {tick.label}
+              </text>
+            ))}
           </g>
         )}
 

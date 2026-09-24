@@ -45,6 +45,7 @@ def _create_engine_for_url(target_url: str):
                 cursor = dbapi_connection.cursor()
                 cursor.execute("PRAGMA journal_mode=WAL;")
                 cursor.execute("PRAGMA synchronous=NORMAL;")
+                cursor.execute("PRAGMA foreign_keys=ON;")
                 cursor.close()
 
     return new_engine
@@ -287,6 +288,32 @@ def init_db(target_engine=None):
                     conn.rollback()
                     logger.error(f"Error during news_items migration: {mig_err}", exc_info=True)
 
+        # Migrate prediction_market_snapshots to support ON DELETE CASCADE if created under older schema
+        if "prediction_market_snapshots" in existing_tables:
+            snap_sql = conn.execute(text("SELECT sql FROM sqlite_master WHERE type='table' AND name='prediction_market_snapshots';")).scalar() or ""
+            if "ON DELETE CASCADE" not in snap_sql.upper():
+                logger.info("Migrating prediction_market_snapshots table to ON DELETE CASCADE schema...")
+                try:
+                    conn.execute(text("DROP TABLE IF EXISTS _prediction_market_snapshots_old;"))
+                    for idx in inspector.get_indexes("prediction_market_snapshots"):
+                        idx_name = idx.get("name")
+                        if idx_name and not idx_name.startswith("sqlite_autoindex_"):
+                            conn.execute(text(f"DROP INDEX IF EXISTS {idx_name};"))
+
+                    conn.execute(text("ALTER TABLE prediction_market_snapshots RENAME TO _prediction_market_snapshots_old;"))
+                    Base.metadata.tables["prediction_market_snapshots"].create(conn)
+                    new_cols = [c["name"] for c in inspect(conn).get_columns("prediction_market_snapshots")]
+                    old_cols = [c["name"] for c in inspect(conn).get_columns("_prediction_market_snapshots_old")]
+                    shared_cols = [c for c in new_cols if c in old_cols]
+                    cols_str = ", ".join(shared_cols)
+                    conn.execute(text(f"INSERT OR IGNORE INTO prediction_market_snapshots ({cols_str}) SELECT {cols_str} FROM _prediction_market_snapshots_old;"))
+                    conn.execute(text("DROP TABLE _prediction_market_snapshots_old;"))
+                    conn.commit()
+                    logger.info("Successfully migrated prediction_market_snapshots table to ON DELETE CASCADE schema.")
+                except Exception as mig_err:
+                    conn.rollback()
+                    logger.error(f"Error during prediction_market_snapshots cascade migration: {mig_err}", exc_info=True)
+
         for table, col, col_type in columns_to_check:
             if table not in existing_tables:
                 logger.warning(f"Auto-migration skipped: Table '{table}' does not exist in database.")
@@ -322,13 +349,46 @@ def init_db(target_engine=None):
             except Exception as idx_err:
                 logger.debug(f"Note on news_items composite index: {idx_err}")
 
-        # Purge legacy mock data if live strict governance (ALLOW_MOCK_FALLBACK=False) is enforced
-        if not getattr(settings, "ALLOW_MOCK_FALLBACK", False):
+        # Ensure partial unique index on job_runs to guarantee atomic mutual exclusion
+        if "job_runs" in existing_tables:
             try:
-                conn.execute(text("DELETE FROM social_posts WHERE tweet_id LIKE 'mock_%' OR source = 'MOCK';"))
-                conn.execute(text("DELETE FROM news_items WHERE url LIKE 'mock_%' OR source = 'Mock News' OR source = 'MOCK';"))
-                conn.execute(text("DELETE FROM prediction_markets WHERE external_id LIKE 'mock_%' OR external_id LIKE 'poly-%-2026' OR source = 'MOCK';"))
+                conn.execute(text("""
+                    UPDATE job_runs 
+                    SET status = 'ERROR', error_message = 'Recovered during startup schema index migration'
+                    WHERE status = 'RUNNING' AND id NOT IN (
+                        SELECT id FROM job_runs WHERE status = 'RUNNING' ORDER BY started_at DESC LIMIT 1
+                    );
+                """))
                 conn.commit()
-                logger.info("Purged synthetic mock data from database under strict LIVE data governance.")
-            except Exception as purge_err:
-                logger.warning(f"Note on mock data purge: {purge_err}")
+                conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_job_runs_single_running ON job_runs (job_name, status) WHERE status = 'RUNNING';"))
+                conn.commit()
+            except Exception as idx_err:
+                logger.debug(f"Note on job_runs partial index: {idx_err}")
+
+        # One-time migration: Purge legacy orphaned snapshots and historical mock data atomically
+        try:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version VARCHAR(100) PRIMARY KEY,
+                    applied_at DATETIME
+                );
+            """))
+            conn.commit()
+
+            migrated = conn.execute(text("SELECT 1 FROM schema_migrations WHERE version = 'v2_mock_data_and_orphan_purge';")).scalar()
+            if not migrated:
+                # 1. Clean any existing orphaned snapshots whose parent prediction market was removed
+                conn.execute(text("DELETE FROM prediction_market_snapshots WHERE market_id NOT IN (SELECT id FROM prediction_markets);"))
+                
+                # 2. If strict governance is active, delete synthetic mock data atomically (children first, then parents)
+                if not getattr(settings, "ALLOW_MOCK_FALLBACK", False):
+                    conn.execute(text("DELETE FROM prediction_market_snapshots WHERE market_id IN (SELECT id FROM prediction_markets WHERE external_id LIKE 'mock_%' OR external_id LIKE 'poly-%-2026' OR source = 'MOCK');"))
+                    conn.execute(text("DELETE FROM prediction_markets WHERE external_id LIKE 'mock_%' OR external_id LIKE 'poly-%-2026' OR source = 'MOCK';"))
+                    conn.execute(text("DELETE FROM social_posts WHERE tweet_id LIKE 'mock_%' OR source = 'MOCK';"))
+                    conn.execute(text("DELETE FROM news_items WHERE url LIKE 'mock_%' OR source = 'Mock News' OR source = 'MOCK';"))
+                
+                conn.execute(text("INSERT INTO schema_migrations (version, applied_at) VALUES ('v2_mock_data_and_orphan_purge', CURRENT_TIMESTAMP);"))
+                conn.commit()
+                logger.info("Successfully executed one-time schema migration 'v2_mock_data_and_orphan_purge'.")
+        except Exception as purge_err:
+            logger.warning(f"Note on schema migration v2_mock_data_and_orphan_purge: {purge_err}")

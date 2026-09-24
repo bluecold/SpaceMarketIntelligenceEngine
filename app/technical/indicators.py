@@ -143,7 +143,34 @@ def calculate_technical_indicators(
     latest_macd_hist = float(macd_histogram.iloc[-1])
 
     # 5. Volume MA20 & Ratio (Pace-adjusted during active REGULAR sessions to prevent false weak-volume penalties)
-    if market_session == "REGULAR" and len(df_eval) >= 2:
+    from zoneinfo import ZoneInfo
+    from datetime import datetime, timezone
+    ref_dt = as_of if isinstance(as_of, datetime) else datetime.now(timezone.utc)
+    if ref_dt.tzinfo is None:
+        ref_dt = ref_dt.replace(tzinfo=timezone.utc)
+    eastern_dt = ref_dt.astimezone(ZoneInfo("America/New_York"))
+    today_et = eastern_dt.date()
+
+    # Determine whether the last candle is genuinely today's partial intraday bar
+    last_candle_date = None
+    if len(df_eval) > 0:
+        last_idx = df_eval.index[-1]
+        if hasattr(last_idx, "date"):
+            try:
+                last_candle_date = last_idx.date()
+            except Exception:
+                pass
+        elif isinstance(last_idx, datetime):
+            last_candle_date = last_idx.date()
+        elif isinstance(last_idx, str):
+            try:
+                last_candle_date = datetime.fromisoformat(last_idx[:10]).date()
+            except Exception:
+                pass
+
+    is_today_candle = (last_candle_date == today_et)
+
+    if market_session == "REGULAR" and is_today_candle and len(df_eval) >= 2:
         # Exclude today's partial intraday bar to avoid diluting the historical 20-day baseline
         vol_window = min(20, len(df_eval) - 1)
         volume_ma20 = float(volume.iloc[:-1].rolling(window=vol_window).mean().iloc[-1])
@@ -154,14 +181,8 @@ def calculate_technical_indicators(
     session_fraction = 1.0
     volume_ratio = 1.0
 
-    if market_session == "REGULAR":
+    if market_session == "REGULAR" and is_today_candle:
         try:
-            from zoneinfo import ZoneInfo
-            from datetime import datetime, timezone
-            ref_dt = as_of if isinstance(as_of, datetime) else datetime.now(timezone.utc)
-            if ref_dt.tzinfo is None:
-                ref_dt = ref_dt.replace(tzinfo=timezone.utc)
-            eastern_dt = ref_dt.astimezone(ZoneInfo("America/New_York"))
             curr_mins = eastern_dt.hour * 60 + eastern_dt.minute
             open_mins = 9 * 60 + 30  # 09:30 ET
 
@@ -178,10 +199,10 @@ def calculate_technical_indicators(
 
             if open_mins <= curr_mins <= close_mins:
                 elapsed = float(curr_mins - open_mins)
-                if elapsed < 20.0:
-                    # Opening window gate (09:30 - 09:50 ET):
-                    # Neutralize ratio to 1.0 during erratic opening auctions, unless raw volume
-                    # already exceeds 100% of MA20 (genuine breakout accumulation).
+                if elapsed < 30.0:
+                    # Opening window gate (09:30 - 10:00 ET):
+                    # Neutralize ratio to 1.0 during opening auction / yfinance 15-minute tape delay,
+                    # unless raw volume already exceeds 100% of MA20 (genuine breakout accumulation).
                     if volume_ma20 > 0 and latest_volume >= volume_ma20:
                         volume_ratio = latest_volume / volume_ma20
                     else:

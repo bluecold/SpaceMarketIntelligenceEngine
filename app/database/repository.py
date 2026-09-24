@@ -3,7 +3,8 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any, Set, Tuple
 from collections import defaultdict
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, func, or_
+from sqlalchemy import desc, func, or_, text
+from sqlalchemy.exc import IntegrityError
 from app.database.models import (
     TickerModel, SocialPostModel, NewsItemModel,
     MarketSnapshotModel, SSISnapshotModel, JobRunModel,
@@ -283,6 +284,29 @@ def save_prediction_markets(db: Session, markets: List[PredictionMarketData], co
                 delta_24h = round((m.yes_probability - snap_24h.yes_probability) * 100.0, 2)
                 m.probability_change_24h = delta_24h
 
+        # Compute rolling 7-day baseline probability anchor from snapshot history if not explicitly provided
+        if getattr(m, "baseline_probability", None) is None and existing:
+            seven_days_ago = now - timedelta(days=7)
+            oldest_snap = (
+                db.query(PredictionMarketSnapshotModel)
+                .filter(PredictionMarketSnapshotModel.market_id == market_id)
+                .filter(PredictionMarketSnapshotModel.timestamp >= seven_days_ago)
+                .order_by(PredictionMarketSnapshotModel.timestamp.asc())
+                .first()
+            )
+            # Require at least 48h of history to anchor to a stable multi-day consensus mean
+            if oldest_snap and (now - oldest_snap.timestamp).total_seconds() >= 48 * 3600:
+                snaps_7d = (
+                    db.query(PredictionMarketSnapshotModel.yes_probability)
+                    .filter(PredictionMarketSnapshotModel.market_id == market_id)
+                    .filter(PredictionMarketSnapshotModel.timestamp >= seven_days_ago)
+                    .all()
+                )
+                if snaps_7d:
+                    avg_7d = round(float(sum(s[0] for s in snaps_7d) / len(snaps_7d)), 4)
+                    m.baseline_probability = avg_7d
+                    existing.baseline_probability = avg_7d
+
         # Append snapshot
         snap = PredictionMarketSnapshotModel(
             market_id=market_id,
@@ -354,14 +378,20 @@ def get_recent_prediction_markets(
     return direct_markets + sector_markets
 
 
-def save_divergences(db: Session, ticker: str, divergences_data: List[Dict[str, Any]], commit: bool = True) -> int:
+def save_divergences(
+    db: Session,
+    ticker: str,
+    divergences_data: List[Dict[str, Any]],
+    resolve_missing: bool = True,
+    commit: bool = True
+) -> int:
     """
     Save or update active divergence episodes for a ticker.
     Maintains stateful divergence episodes:
     - Ongoing episodes: identified by composite (type, direction) key; updates last_seen, strength, confidence,
       description, and sources without duplicating or corrupting directional state.
     - Direction changes or new episode types: resolve previous episodes and insert fresh active DivergenceModel row.
-    - Ceased episodes: sets resolved_at = now to mark them as resolved.
+    - Ceased episodes: sets resolved_at = now to mark them as resolved (only when resolve_missing=True).
     """
     now = utc_now()
     ticker_sym = ticker.upper()
@@ -412,10 +442,11 @@ def save_divergences(db: Session, ticker: str, divergences_data: List[Dict[str, 
             db.add(new_ep)
         count += 1
 
-    # 3. Resolve episodes that ceased or changed direction in this execution
-    for key, ep in active_map.items():
-        if key not in detected_keys:
-            ep.resolved_at = now
+    # 3. Resolve episodes that ceased or changed direction in this execution (guarded by resolve_missing)
+    if resolve_missing:
+        for key, ep in active_map.items():
+            if key not in detected_keys:
+                ep.resolved_at = now
 
     if commit:
         db.commit()
@@ -797,8 +828,9 @@ def acquire_pipeline_job_lock(
     stale_cutoff = now - timedelta(seconds=heartbeat_timeout_seconds)
 
     try:
-        # Check running jobs
+        # Check running jobs for this specific pipeline job
         running_jobs = db.query(JobRunModel).filter(
+            JobRunModel.job_name == job_name,
             JobRunModel.status == "RUNNING"
         ).all()
 
@@ -837,6 +869,17 @@ def acquire_pipeline_job_lock(
         db.commit()
         db.refresh(new_job)
         return new_job, None
+
+    except IntegrityError:
+        db.rollback()
+        # A concurrent worker won the race and inserted status='RUNNING' simultaneously
+        running = db.query(JobRunModel).filter(
+            JobRunModel.job_name == job_name,
+            JobRunModel.status == "RUNNING"
+        ).order_by(JobRunModel.started_at.desc()).first()
+        if running:
+            return None, f"A pipeline execution is currently in progress (Job ID: {running.id}, started by {running.source} at {running.started_at}). Please wait for it to complete."
+        return None, "A pipeline execution is currently in progress. Please wait for it to complete."
 
     except Exception as e:
         db.rollback()

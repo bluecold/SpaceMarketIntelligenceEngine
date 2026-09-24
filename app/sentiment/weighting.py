@@ -237,10 +237,10 @@ NON_AEROSPACE_LAUNCH_PATTERNS = [
     # Offerings & Capital raises: "launches $500M share offering", "launches notes offering"
     r"\blaunch(?:es|ed|ing)?\s+(?:(?:\$\d+[bmk]?|\d+\s*(?:million|billion))\s+)?(?:share|shares|public|equity|debt|notes?|atm|direct|stock|token|coin)\s+offering\b",
     r"\blaunch(?:es|ed|ing)?\s+(?:a\s+|an\s+|the\s+)?(?:tender\s+offer|share\s+buyback|stock\s+offering|notes?\s+offering|debt\s+offering|equity\s+offering|capital\s+raise)\b",
-    # Commercial products, consumer apps, services, stores, brands, platforms
-    r"\blaunch(?:es|ed|ing)?\s+(?:a\s+|an\s+|the\s+|new\s+|its\s+|their\s+)?(?:product|products|product\s+line|service|services|platform|platforms|app|apps|application|applications|feature|features|initiative|initiatives|store|stores|brand|brands|program|programs|fund|etf|website|tool|tools|subscription|subscriptions|campaign|campaigns|tier|tiers)\b",
+    # Commercial products, consumer apps, services, stores, brands, platforms, product lines (allowing up to 4 descriptive modifiers like 'new satellite bus')
+    r"\blaunch(?:es|ed|ing)?\s+(?:[a-z0-9'-]+\s+){0,4}(?:product\s+line|product\s+family|product|products|service|services|platform|platforms|app|apps|application|applications|feature|features|initiative|initiatives|store|stores|brand|brands|program|programs|fund|etf|website|tool|tools|subscription|subscriptions|campaign|campaigns|tier|tiers|solution|solutions|hardware\s+line|bus\s+line)\b",
     # Legal / regulatory investigations
-    r"\blaunch(?:es|ed|ing)?\s+(?:a\s+|an\s+|the\s+|new\s+|its\s+|their\s+)?(?:investigation|investigations|inquiry|inquiries|probe|probes|lawsuit|lawsuits|audit|audits|review|proxy\s+fight|takeover\s+bid)\b",
+    r"\blaunch(?:es|ed|ing)?\s+(?:[a-z0-9'-]+\s+){0,4}(?:investigation|investigations|inquiry|inquiries|probe|probes|lawsuit|lawsuits|audit|audits|review|proxy\s+fight|takeover\s+bid)\b",
 ]
 
 AEROSPACE_CONTEXT_TERMS = {

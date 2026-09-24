@@ -23,23 +23,24 @@ def verify_api_key(
 ) -> bool:
     """
     Validates API Secret Key with constant-time comparison.
-    1. Supports same-origin requests from the web dashboard safely without exposing keys in bundle.
-    2. Enforces API_SECRET_KEY for external calls (cURL, scripts, automated webhooks).
-    3. Fails secure in production if API_SECRET_KEY is missing.
+    1. Rejects spoofable browser origin headers (Sec-Fetch-Site, Origin).
+    2. Enforces API_SECRET_KEY in production: fails secure (503) if unconfigured regardless of client input.
+    3. Requires valid API key via X-API-KEY or Authorization: Bearer header.
+    4. Allows unauthenticated access in development ONLY if API_SECRET_KEY is not configured.
     """
-    headers = getattr(request, "headers", {}) or {}
-    sec_fetch_site = headers.get("sec-fetch-site", "") if hasattr(headers, "get") else ""
-    sec_fetch_site = sec_fetch_site.lower() if isinstance(sec_fetch_site, str) else ""
-    origin = headers.get("origin", "") if hasattr(headers, "get") else ""
-    host = headers.get("host", "") if hasattr(headers, "get") else ""
-    
-    is_same_origin = (
-        sec_fetch_site == "same-origin" or
-        (origin and host and (host in origin or "localhost" in origin or "127.0.0.1" in origin))
-    )
-
     expected_key = getattr(settings, "API_SECRET_KEY", None)
     env = getattr(settings, "ENVIRONMENT", "development").lower()
+
+    # Production fail-secure: If API_SECRET_KEY is not configured in production, reject all requests
+    if env == "production" and not expected_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Server configuration error: API_SECRET_KEY must be configured in production."
+        )
+
+    # In development/test mode without API_SECRET_KEY, allow unauthenticated access
+    if not expected_key:
+        return True
 
     # Extract provided key from headers safely
     provided_key = x_api_key if isinstance(x_api_key, str) else None
@@ -50,35 +51,20 @@ def verify_api_key(
         else:
             provided_key = auth_str.strip()
 
-    # If key was explicitly provided, verify with constant-time comparison
-    if provided_key:
-        if not expected_key:
-            return True
-        if secrets.compare_digest(str(provided_key), str(expected_key)):
-            return True
+    if not provided_key:
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized: Missing API key header (X-API-KEY or Authorization Bearer)."
+        )
+
+    # Constant-time comparison to protect against timing attacks
+    if not secrets.compare_digest(str(provided_key), str(expected_key)):
         raise HTTPException(
             status_code=401,
             detail="Unauthorized: Invalid API key header (X-API-KEY)."
         )
 
-    # Legitimate same-origin browser request from the dashboard
-    if is_same_origin:
-        return True
-
-    # If no key was provided for an external request
-    if not expected_key:
-        if env == "production":
-            raise HTTPException(
-                status_code=503,
-                detail="Server configuration error: API_SECRET_KEY must be set in production for external requests."
-            )
-        # Development / test mode bypass
-        return True
-
-    raise HTTPException(
-        status_code=401,
-        detail="Unauthorized: Missing API key header (X-API-KEY)."
-    )
+    return True
 
 
 async def _execute_pipeline_task(job_id: int):

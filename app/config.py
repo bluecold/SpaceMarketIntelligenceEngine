@@ -138,7 +138,7 @@ class Settings(BaseSettings):
     ALLOW_MOCK_FALLBACK: bool = False  # If False, unauthenticated/failing live collectors return empty datasets instead of generating fake mock data
     
     # X / Social Provider Settings
-    X_PROVIDER: str = "mock"  # "mock" or "twikit"
+    X_PROVIDER: str = "twikit"  # "twikit" or "mock"
     X_AUTH_INFO_1: str = ""
     X_AUTH_INFO_2: str = ""
     X_PASSWORD: str = ""
@@ -155,7 +155,7 @@ class Settings(BaseSettings):
     
     # Prediction Market (Polymarket) Settings
     POLYMARKET_ENABLED: bool = True
-    POLYMARKET_PROVIDER: str = "mock"  # "mock" or "polymarket"
+    POLYMARKET_PROVIDER: str = "polymarket"  # "polymarket" or "mock"
     POLYMARKET_API_URL: str = "https://gamma-api.polymarket.com"
     POLYMARKET_MIN_QUALITY: float = 30.0  # Quality threshold below which weight becomes 0
     POLYMARKET_LOOKBACK_HOURS: int = 24
