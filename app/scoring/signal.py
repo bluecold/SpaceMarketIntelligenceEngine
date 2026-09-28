@@ -188,15 +188,64 @@ def generate_signal_and_explanation(
             "level": "CRITICAL",
             "message": f"🛑 {ticker} issued STRONG AVOID signal (SMI: {primary_index}/100) — high capital risk"
         })
-    elif base_signal == "BUY" and effective_mom is not None and effective_mom >= 3.0 and is_mom_comparable_1d:
+    elif base_signal == "BUY":
+        if effective_mom is not None and effective_mom >= 3.0 and is_mom_comparable_1d:
+            alerts.append({
+                "id": f"{ticker}:SIGNAL:MOMENTUM_BUY",
+                "ticker": ticker,
+                "type": "MOMENTUM_BUY",
+                "category": "SIGNAL",
+                "level": "HIGH",
+                "message": f"📈 {ticker} BUY signal confirmed with accelerating SMI (+{effective_mom} 1D)"
+            })
+        else:
+            alerts.append({
+                "id": f"{ticker}:SIGNAL:BUY",
+                "ticker": ticker,
+                "type": "BUY",
+                "category": "SIGNAL",
+                "level": "HIGH",
+                "message": f"📈 {ticker} issued BUY signal (SMI: {primary_index:.1f}/100)"
+            })
+    elif base_signal == "AVOID":
         alerts.append({
-            "id": f"{ticker}:SIGNAL:MOMENTUM_BUY",
+            "id": f"{ticker}:SIGNAL:AVOID",
             "ticker": ticker,
-            "type": "MOMENTUM_BUY",
+            "type": "AVOID",
             "category": "SIGNAL",
-            "level": "HIGH",
-            "message": f"📈 {ticker} BUY signal confirmed with accelerating SMI (+{effective_mom} 1D)"
+            "level": "WARNING",
+            "message": f"⚠️ {ticker} entered bearish AVOID regime (SMI: {primary_index:.1f}/100)"
         })
+    elif base_signal == "WATCH" and primary_index >= 60.0:
+        alerts.append({
+            "id": f"{ticker}:SIGNAL:WATCH_BULLISH",
+            "ticker": ticker,
+            "type": "WATCH_BULLISH",
+            "category": "SIGNAL",
+            "level": "INFO",
+            "message": f"👀 {ticker} emerging into bullish WATCH territory (SMI: {primary_index:.1f}/100)"
+        })
+
+    # SMI 24h Momentum shift alerts
+    if effective_mom is not None and is_mom_comparable_1d:
+        if effective_mom >= 5.0:
+            alerts.append({
+                "id": f"{ticker}:MOMENTUM:ACCELERATION",
+                "ticker": ticker,
+                "type": "MOMENTUM_ACCELERATION",
+                "category": "SIGNAL",
+                "level": "INFO",
+                "message": f"⚡ {ticker}: SMI momentum accelerated +{effective_mom:.1f} pts in 24h"
+            })
+        elif effective_mom <= -5.0:
+            alerts.append({
+                "id": f"{ticker}:MOMENTUM:BREAKDOWN",
+                "ticker": ticker,
+                "type": "MOMENTUM_BREAKDOWN",
+                "category": "SIGNAL",
+                "level": "WARNING",
+                "message": f"📉 {ticker}: SMI momentum dropped {effective_mom:.1f} pts in 24h"
+            })
 
     for div in active_divergences:
         div_level = (
@@ -215,19 +264,23 @@ def generate_signal_and_explanation(
 
     seen_cat_alerts: Set[str] = set()
     for cat in catalysts_found:
-        if cat.get("importance") == "CRITICAL":
+        imp = cat.get("importance")
+        if imp in ("CRITICAL", "HIGH"):
             cat_key = str(cat.get("category", "")).upper()
             if cat_key and cat_key not in seen_cat_alerts:
                 seen_cat_alerts.add(cat_key)
                 cat_name = cat_key.replace("_", " ").title()
+                cat_type = "CRITICAL_CATALYST" if imp == "CRITICAL" else "HIGH_CATALYST"
+                cat_level = "CRITICAL" if imp == "CRITICAL" else "HIGH"
                 alerts.append({
                     "id": f"{ticker}:CATALYST:{cat_key}",
                     "ticker": ticker,
-                    "type": "CRITICAL_CATALYST",
+                    "type": cat_type,
                     "category": "CATALYST",
-                    "level": "CRITICAL",
-                    "message": f"⚡ Critical Catalyst detected on {ticker}: {cat_name}"
+                    "level": cat_level,
+                    "message": f"⚡ {cat_name} detected on {ticker} ({imp.title()} Catalyst)"
                 })
+
 
     # Fundamental Balance Sheet & Runway Alerts
     cash_m = (cash_val / 1e6) if cash_val is not None else 0.0

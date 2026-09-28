@@ -615,3 +615,22 @@ def test_heuristic_classifier_conflicted_signals_confidence():
     assert res_unanimous.label == "BULLISH"
     assert res_unanimous.score >= 0.80
     assert res_unanimous.confidence >= 0.90, f"Unanimous signals should have high confidence, got {res_unanimous.confidence}"
+
+
+def test_finbert_classifier_inference():
+    """Validates local FinBERT batch inference and label classification."""
+    from app.sentiment.classifier import FinBERTSentimentClassifier
+    classifier = FinBERTSentimentClassifier()
+    texts = [
+        "Company announces major record profits and breakthrough commercial contract win.",
+        "Severe launch anomaly and catastrophic rocket explosion causes massive loss.",
+        "The board meeting is scheduled for tomorrow at 2 PM."
+    ]
+    results = classifier.analyze_batch(texts)
+    assert len(results) == 3
+    assert results[0].label == "BULLISH"
+    assert results[0].score > 0.20
+    assert results[1].label == "BEARISH"
+    assert results[1].score < -0.20
+    assert results[2].label == "NEUTRAL"
+

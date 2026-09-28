@@ -228,7 +228,10 @@ class FinBERTSentimentClassifier(BaseSentimentClassifier):
         try:
             from transformers import pipeline
             logger.info(f"Loading FinBERT model '{self.model_name}'...")
-            self.pipeline = pipeline("text-classification", model=self.model_name, return_all_scores=True)
+            try:
+                self.pipeline = pipeline("text-classification", model=self.model_name, top_k=None)
+            except Exception:
+                self.pipeline = pipeline("text-classification", model=self.model_name, return_all_scores=True)
             logger.info("FinBERT model loaded successfully.")
         except Exception as e:
             logger.error(f"Failed to load FinBERT model ({e}). Falling back to Heuristic classifier.")
@@ -244,12 +247,24 @@ class FinBERTSentimentClassifier(BaseSentimentClassifier):
             fallback = HeuristicSentimentClassifier()
             return fallback.analyze_batch(texts)
 
+        if not texts:
+            return []
+
+        # Sanitize texts to prevent pipeline errors on empty or non-string inputs
+        clean_texts = [str(t).strip() if (t and str(t).strip()) else "neutral" for t in texts]
+
         output_results = []
         try:
             # Batch inference with HuggingFace pipeline
-            predictions = self.pipeline(texts, truncation=True, max_length=128)
+            predictions = self.pipeline(clean_texts, truncation=True, max_length=128)
             for preds in predictions:
-                scores = {item['label'].lower(): item['score'] for item in preds}
+                if isinstance(preds, list):
+                    scores = {item['label'].lower(): float(item['score']) for item in preds if isinstance(item, dict) and 'label' in item}
+                elif isinstance(preds, dict):
+                    scores = {preds.get('label', 'neutral').lower(): float(preds.get('score', 1.0))}
+                else:
+                    scores = {}
+
                 # ProsusAI/finbert labels: positive, negative, neutral
                 pos = scores.get('positive', 0.0)
                 neg = scores.get('negative', 0.0)
@@ -280,8 +295,10 @@ _classifier_instance = None
 def get_sentiment_classifier() -> BaseSentimentClassifier:
     global _classifier_instance
     if _classifier_instance is None:
-        if settings.USE_FINBERT and settings.SENTIMENT_MODEL.startswith("ProsusAI"):
-            _classifier_instance = FinBERTSentimentClassifier(settings.SENTIMENT_MODEL)
+        if getattr(settings, "USE_FINBERT", False):
+            model_name = getattr(settings, "SENTIMENT_MODEL", "ProsusAI/finbert")
+            _classifier_instance = FinBERTSentimentClassifier(model_name)
         else:
             _classifier_instance = HeuristicSentimentClassifier()
     return _classifier_instance
+

@@ -149,7 +149,9 @@ $$w_i^{\text{active}} = \frac{w_i}{\sum_{j \in \text{active}} w_j}$$
 - **Modificadores Acumulativos:** `DILUTION RISK`, `CONFLICTING SOURCES`, `LOW DATA QUALITY`, `OVEREXTENDED`, `HIGH RISK`, `NO MKT DATA`.
 - **Bloqueo Operativo por Falta de Cotización:** Si `market_status != 'AVAILABLE'` o `price is None` o `price <= 0`, las compras se restringen obligatoriamente a `WATCH (NO MKT DATA)`, alineando la ejecución en vivo con el motor de backtesting y evitando órdenes ciegas.
 - **Guarda de Vela Diaria y Filtro de Apertura:** Comprobación estricta `is_today_candle` antes de descartar la última barra intradía (evita descartar días completos en cierres de mercado) y neutralización del volumen inicial (ratio 1.0) hasta las 10:00 ET para amortiguar los 15 minutos de retraso de la cinta pública.
-- **Alertas de Catalizadores Críticos con Identidad Única:** Identificadores con categoría explícita `{ticker}:CATALYST:{category}` permitiendo la coexistencia de múltiples catalizadores simultáneos en el mismo activo.
+- **Alertas de Catalizadores Críticos y Altos con Identidad Única:** Identificadores con categoría explícita `{ticker}:CATALYST:{category}` permitiendo la coexistencia de múltiples catalizadores simultáneos en el mismo activo. Soporte tanto para catalizadores `CRITICAL` (fallos de misión, explosiones) como `HIGH` (lanzamientos orbitales, despliegues satelitales, contratos gubernamentales).
+- **Ventana de Persistencia de Catalizadores (5-Day Grace Period):** Período de gracia de 5 días para alertas de categoría `CATALYST` en `save_alerts`, impidiendo la auto-resolución prematura cuando las noticias rotan fuera del top 20 RSS.
+- **Alertas Accionables Ampliadas & Shifts de Momentum en 24h:** Generación proactiva de alertas para señales `BUY`, regímenes de advertencia `AVOID`, transiciones alcistas tempranas `WATCH_BULLISH` (SMI $\ge 60$) y desplazamientos bruscos de momentum (`MOMENTUM_ACCELERATION` $\ge +5$ pts / `MOMENTUM_BREAKDOWN` $\le -5$ pts).
 - **Detección Sintáctica y Desambiguación NLP:** Detección de negaciones contextuales (`"no delay"`, `"no failure"`), cobertura exhaustiva de `CAPITAL_RAISE`, y desambiguación regex con hasta 4 modificadores intermediarios diferenciando lanzamientos de cohetes (`LAUNCH`) de anuncios corporativos de líneas de productos comerciales.
 
 ---
@@ -158,7 +160,7 @@ $$w_i^{\text{active}} = \frac{w_i}{\sum_{j \in \text{active}} w_j}$$
 
 1. **Calibración con Anclaje Dinámico de Consenso (Media Móvil 7 Días):** Si el mercado no provee una tasa base explícita, se ancla a la media móvil histórica de 7 días de ese mismo contrato (acotada entre 0.05 y 0.95), midiendo la sorpresa real en lugar de sesgos estructurales de contratos muy asimétricos.
 2. **Dominancia de Momentum ($\Delta P_{24h}$ 60% / Nivel 40%):** Ponderación prioritaria al flujo de capital informado y sorpresas de corto plazo.
-3. **Divergencias con Blend 50/50:** El motor de divergencias tripartitas combina 50% de retorno de corto plazo con 50% de momentum estructural de tendencia.
+3. **Divergencias Calibradas con Blend 50/50:** El motor de divergencias tripartitas combina 50% de retorno de corto plazo con 50% de momentum estructural de tendencia. Los umbrales de discrepancia se calibran empíricamente a $\pm 0.18$ para narrativa social y prediction markets, $\pm 0.10$ para divergencias de precio y RSI 70 para sobreextensión, manteniendo contracción bayesiana ante muestras pequeñas ($N < 3$).
 4. **Protección Anti-Aleteo (Flapping) ante Fallo de Fuentes:** La resolución de alertas de dilución queda condicionada al éxito real de obtención de fundamentales (`fund_success == True`) y las divergencias al éxito de ingesta de Polymarket, previniendo cierres y reaperturas espurias ante cortes temporales de red.
 
 ---
@@ -180,8 +182,9 @@ La suite de pruebas (`tests/`) está totalmente aislada de la red y la base de d
 ```powershell
 python -m pytest tests/ -v
 ```
-- **191 pruebas automatizadas** que se ejecutan de forma reproducible y con 100% de éxito.
+- **192 pruebas automatizadas** que se ejecutan de forma reproducible y con 100% de éxito.
 - Cobertura integral de:
+  - **Inferencia Local FinBERT y Robustez NLP:** Clasificación local neuronal con `ProsusAI/finbert`, compatibilidad HuggingFace transformers 5.x (`top_k=None`) y sanitización de lotes vacíos/nulos.
   - **Paridad de Estrategias y Cero Sesgo de Anticipación:** Validación matemática idéntica entre ejecución live y backtesting, incluyendo compuertas de `risk_score` y `fundamental_score` en Modelos A y B.
   - **Invarianza de Escala ATR & Macd Normalizado:** Preservación de escalas relativas ante acciones de alta o baja volatilidad.
   - **Gobernanza de Datos y Procedencia (Data Provenance):** Trazabilidad estricta (`LIVE`, `DEGRADED`, `MOCK`), integridad referencial en cascada y purga segura.

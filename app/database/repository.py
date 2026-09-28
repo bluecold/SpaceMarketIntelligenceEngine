@@ -546,9 +546,16 @@ def save_alerts(
                     else:
                         cat = "SIGNAL"
                 if resolve_categories is None or cat in resolve_categories:
+                    # Grace period for catalysts: do not auto-resolve catalysts younger than 5 days
+                    if cat == "CATALYST" and existing.timestamp:
+                        t_cat = existing.timestamp.replace(tzinfo=None) if existing.timestamp.tzinfo is not None else existing.timestamp
+                        age_days = (now - t_cat).total_seconds() / 86400.0
+                        if age_days < 5.0:
+                            continue  # Keep catalyst active during its 5-day impact window
                     existing.resolved_at = now
 
     if commit:
+
         db.commit()
     else:
         db.flush()

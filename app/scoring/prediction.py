@@ -166,6 +166,7 @@ def calculate_prediction_market_score(
                 w_level * adjusted_prob +
                 w_mom * mom_score
             )
+
             
             valid_market_scores.append({
                 "market_id": ev.external_id,

@@ -123,12 +123,12 @@ def detect_divergences(
     # -------------------------------------------------------------
     # Bullish Divergence: Narrative/Expectations are Bullish, but Price is falling
     bullish_sources = []
-    if dir_social is not None and dir_social >= 0.25:
+    if dir_social is not None and dir_social >= 0.18:
         bullish_sources.append(f"X Social ({effective_social:.0f})")
-    if dir_pred is not None and dir_pred >= 0.25:
+    if dir_pred is not None and dir_pred >= 0.18:
         bullish_sources.append(f"Polymarket PMS ({prediction_score:.0f})")
         
-    if bullish_sources and dir_price <= -0.15:
+    if bullish_sources and dir_price <= -0.10:
         valid_dirs = [d for d in [dir_social, dir_pred] if d is not None]
         max_dir = max(valid_dirs) if valid_dirs else 0.0
         strength = min(1.0, (max_dir - dir_price) / 1.5)
@@ -148,12 +148,12 @@ def detect_divergences(
 
     # Bearish Divergence: Narrative/Expectations are Bearish, but Price is rising/overextended
     bearish_sources = []
-    if dir_social is not None and dir_social <= -0.25:
+    if dir_social is not None and dir_social <= -0.18:
         bearish_sources.append(f"X Social ({effective_social:.0f})")
-    if dir_pred is not None and dir_pred <= -0.25:
+    if dir_pred is not None and dir_pred <= -0.18:
         bearish_sources.append(f"Polymarket PMS ({prediction_score:.0f})")
 
-    if bearish_sources and (dir_price >= 0.15 or (rsi and rsi >= 72)):
+    if bearish_sources and (dir_price >= 0.10 or (rsi and rsi >= 70)):
         valid_dirs = [d for d in [dir_social, dir_pred] if d is not None]
         min_dir = min(valid_dirs) if valid_dirs else 0.0
         strength = min(1.0, (dir_price - min_dir) / 1.5)
@@ -163,13 +163,14 @@ def detect_divergences(
             type="BEARISH_DIVERGENCE",
             source_a="PREDICTION_MARKET" if dir_social is None else ("SOCIAL_PREDICTION" if dir_pred is not None else "X_SOCIAL"),
             source_b="PRICE_ACTION",
-            source_c="RSI_OVEREXTENSION" if rsi and rsi >= 72 else None,
+            source_c="RSI_OVEREXTENSION" if rsi and rsi >= 70 else None,
             direction="BEARISH",
             strength=round(strength, 2),
             confidence=round(0.70 + (0.15 if len(bearish_sources) > 1 else 0.0), 2),
             description=f"Bearish Divergence: Price is extended ({dir_price:+.2f}) while {src_desc} is deteriorating. High risk of mean reversion.",
             timestamp=now
         ))
+
 
     # -------------------------------------------------------------
     # 3. EARLY REVERSAL SCENARIOS (X vs Polymarket Dynamic & Structural Disconnect)
