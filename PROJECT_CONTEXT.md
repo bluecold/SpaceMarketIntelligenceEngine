@@ -1,4 +1,4 @@
-# 🚀 SPACE MARKET INTELLIGENCE ENGINE (SMIE v2.0) — CONTEXTO MAESTRO DEL PROYECTO
+# 🚀 SPACE MARKET INTELLIGENCE ENGINE (SMIE v2.1) — CONTEXTO MAESTRO DEL PROYECTO
 
 > **Documento de Continuidad Arquitectónica, Contexto Técnico y Hoja de Ruta**  
 > *Diseñado para que cualquier desarrollador o IA (Claude Code, Cursor, Windsurf, Antigravity, etc.) comprenda inmediatamente el sistema, sus decisiones de diseño, estado actual, fórmulas cuantitativas y manual de operación.*
@@ -7,7 +7,7 @@
 
 ## 1. 🔭 Visión y Propósito del Proyecto
 
-**Space Market Intelligence Engine (SMIE v2.0)** es una plataforma de análisis cuantitativo e inteligencia de mercado diseñada específicamente para el sector espacial y aeroespacial estadounidense ($ASTS, $RKLB, $SATL, $SPCE, $SPCX, etc.).
+**Space Market Intelligence Engine (SMIE v2.1)** es una plataforma de análisis cuantitativo e inteligencia de mercado diseñada específicamente para el sector espacial y aeroespacial estadounidense ($ASTS, $RKLB, $SATL, $SPCE, $SPCX, etc.).
 
 ### El Problema que Resuelve
 La industria aeroespacial se caracteriza por una extrema dependencia de **eventos binarios de alto impacto** (lanzamientos de cohetes, anomalías de vuelo, despliegue de constelaciones satelitales, aprobaciones de espectro por la FCC, contratos de defensa con NASA/DoD y rondas de dilución por quema de caja). Los modelos tradicionales de análisis técnico o fundamental a menudo fallan al no capturar a tiempo la narrativa social ni las probabilidades implícitas en mercados de predicción ni el riesgo de solvencia.

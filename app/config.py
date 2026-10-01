@@ -119,6 +119,8 @@ DEFAULT_EVENT_COMPANY_MAPPINGS: Dict[str, Dict[str, float]] = {
 
 class Settings(BaseSettings):
     APP_NAME: str = "Space Market Intelligence Engine"
+    APP_VERSION: str = "2.1.0"
+    RULES_VERSION: str = "2.1.0"
     ENVIRONMENT: str = "development"  # "development", "testing", "production"
     DEBUG: bool = True
     DATABASE_URL: str = "sqlite:///./data/space_sentiment.db"

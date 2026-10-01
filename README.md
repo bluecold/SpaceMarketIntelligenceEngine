@@ -1,4 +1,4 @@
-# 🚀 Space Market Intelligence Engine (SMIE v2.0)
+# 🚀 Space Market Intelligence Engine (SMIE v2.1)
 
 **Motor cuantitativo multivariable de análisis e inteligencia de mercado para el sector espacial y aeroespacial.**
 

@@ -1,4 +1,5 @@
 """
-Space Sentiment Index (SSI) Application Package
+Space Market Intelligence Engine (SMIE) Application Package
 """
-__version__ = "1.0.0"
+__version__ = "2.1.0"
+

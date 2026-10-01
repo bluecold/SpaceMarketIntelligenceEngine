@@ -47,7 +47,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.APP_NAME,
-    version="2.0.0",
+    version=settings.APP_VERSION,
     description="Space Market Intelligence Engine (SMIE) Quantitative Backend",
     lifespan=lifespan
 )

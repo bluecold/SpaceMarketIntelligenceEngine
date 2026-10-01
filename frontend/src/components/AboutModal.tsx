@@ -52,7 +52,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
             </div>
             <div>
               <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.35rem', margin: 0, color: '#fff' }}>
-                Space Market Intelligence Engine (SMIE v2.0)
+                Space Market Intelligence Engine (SMIE v2.1)
               </h2>
               <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: '2px 0 0 0' }}>
                 Manual de Operaciones, Arquitectura Cuantitativa & Guía del Usuario
@@ -205,7 +205,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                 La industria aeroespacial es única en el mercado financiero: depende fuertemente de <strong>eventos binarios</strong> (lanzamientos de cohetes, despliegue de constelaciones satelitales, aprobaciones de espectro por la FCC, contratos de defensa con el DoD/NASA). Los modelos tradicionales de análisis técnico o fundamental a menudo fallan al no capturar a tiempo las expectativas de eventos ni la narrativa social.
               </p>
 
-              <h4 style={{ color: '#fff', fontSize: '0.95rem', marginBottom: '8px' }}>🧠 La Solución de SMIE v2.0: Seis Pilares Desacoplados</h4>
+              <h4 style={{ color: '#fff', fontSize: '0.95rem', marginBottom: '8px' }}>🧠 La Solución de SMIE v2.1: Seis Pilares Desacoplados</h4>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px', marginTop: '12px' }}>
                 <div style={{ background: 'rgba(255,255,255,0.03)', padding: '12px', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
                   <div style={{ color: 'var(--bullish-green)', fontWeight: 700, fontSize: '0.85rem' }}>1. Narrativa Social (X)</div>
@@ -404,6 +404,15 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                   </div>
                 </div>
 
+                <div style={{ background: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: '10px', padding: '14px' }}>
+                  <div style={{ color: '#fbbf24', fontWeight: 700, fontSize: '0.9rem' }}>
+                    📉 INTRADAY BEARISH DIVERGENCE [HIGH]
+                  </div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-main)', marginTop: '6px' }}>
+                    Apertura eufórica rechazada ("Fade the Open / Sell the News"): la narrativa matinal o noticias son positivas pero el precio sufre una fuerte venta intradiaria (≤ -4.0% desde máximos en volumen institucional).
+                  </div>
+                </div>
+
                 <div style={{ background: 'rgba(255, 255, 255, 0.05)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '14px', gridColumn: '1 / -1' }}>
                   <div style={{ color: '#fff', fontWeight: 700, fontSize: '0.9rem' }}>
                     🛡️ BULLISH CONFIRMATION [HIGH]
@@ -425,9 +434,9 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                     1
                   </div>
                   <div>
-                    <h4 style={{ margin: 0, color: '#fff', fontSize: '0.95rem' }}>Revisa el Termómetro del Sector y Alertas de Escritorio</h4>
+                    <h4 style={{ margin: 0, color: '#fff', fontSize: '0.95rem' }}>Revisa el Termómetro del Sector y Radar de Alertas</h4>
                     <p style={{ margin: '4px 0 0 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                      En la barra superior del Dashboard verás el <strong>SMI Promedio del Sector</strong>, el activo líder y la campana de alertas en tiempo real. Puedes habilitar notificaciones nativas de escritorio (con deduplicación inteligente) haciendo clic en el icono de la campana.
+                      En la barra superior del Dashboard verás el <strong>SMI Promedio del Sector</strong>, el activo líder y la campana de alertas en tiempo real con pestañas de filtrado (🚨 Críticas, ⚡ Divergencias, 📈 Técnicas, 🚀 Señales). Puedes habilitar notificaciones nativas de escritorio (con deduplicación inteligente y detección de reversiones intradiarias) haciendo clic en el icono de la campana.
                     </p>
                   </div>
                 </div>
@@ -529,7 +538,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
           }}
         >
           <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-            SMIE v2.0 • Aerospace Market Intelligence Architecture
+            SMIE v2.1 • Aerospace Market Intelligence Architecture
           </span>
           <button
             onClick={onClose}

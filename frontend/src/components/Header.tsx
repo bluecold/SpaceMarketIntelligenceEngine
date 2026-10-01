@@ -73,7 +73,7 @@ export const Header: React.FC<HeaderProps> = ({
             </span>
           </div>
           <p className="brand-subtitle">
-            Multivariate Space Market Intelligence: Social (X) • Prediction Markets (Polymarket) • Technical • News (SMIE v2.0)
+            Multivariate Space Market Intelligence: Social (X) • Prediction Markets (Polymarket) • Technical • News (SMIE v2.1)
           </p>
         </div>
       </div>
