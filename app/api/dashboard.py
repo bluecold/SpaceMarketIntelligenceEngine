@@ -123,6 +123,8 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                         "data_source": getattr(ssi_snap, "data_source", "LIVE") or "LIVE",
                         "timestamp": snap_iso,
                         "age_hours": age_hours,
+                        "last_seen": snap_iso,
+                        "last_seen_age_hours": age_hours,
                         "is_active": not is_stale
                     })
                 elif ssi_snap.signal and "STRONG AVOID" in ssi_snap.signal:
@@ -136,6 +138,8 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                         "data_source": getattr(ssi_snap, "data_source", "LIVE") or "LIVE",
                         "timestamp": snap_iso,
                         "age_hours": age_hours,
+                        "last_seen": snap_iso,
+                        "last_seen_age_hours": age_hours,
                         "is_active": not is_stale
                     })
                 
@@ -161,6 +165,8 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                         "data_source": getattr(ssi_snap, "data_source", "LIVE") or "LIVE",
                         "timestamp": div_iso,
                         "age_hours": div_age,
+                        "last_seen": div_iso,
+                        "last_seen_age_hours": div_age,
                         "is_active": not is_stale
                     })
 
@@ -176,6 +182,8 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                     "data_source": getattr(ssi_snap, "data_source", "LIVE") or "LIVE",
                     "timestamp": ssi_snap.timestamp.isoformat() + "Z" if ssi_snap.timestamp else None,
                     "age_hours": age_hours,
+                    "last_seen": ssi_snap.timestamp.isoformat() + "Z" if ssi_snap.timestamp else None,
+                    "last_seen_age_hours": age_hours,
                     "is_active": False
                 })
         else:
@@ -217,7 +225,11 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
             if al_ts and al_ts.tzinfo is not None:
                 al_ts = al_ts.replace(tzinfo=None)
             al_age = round(max(0.0, (now_dt - al_ts).total_seconds() / 3600.0), 1) if al_ts else None
-            
+            al_last_seen = getattr(al, "last_seen", None)
+            if al_last_seen and al_last_seen.tzinfo is not None:
+                al_last_seen = al_last_seen.replace(tzinfo=None)
+            last_seen_age = round(max(0.0, (now_dt - al_last_seen).total_seconds() / 3600.0), 1) if al_last_seen else None
+
             snap = ssi_snaps.get(al.ticker)
             is_snap_stale = False
             if snap and snap.timestamp:
@@ -234,6 +246,8 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                 "data_source": getattr(al, "data_source", "LIVE") or "LIVE",
                 "timestamp": al.timestamp.isoformat() + "Z" if al.timestamp else None,
                 "age_hours": al_age,
+                "last_seen": al.last_seen.isoformat() + "Z" if getattr(al, "last_seen", None) else None,
+                "last_seen_age_hours": last_seen_age,
                 "is_active": not is_snap_stale
             })
 

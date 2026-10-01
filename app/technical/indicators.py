@@ -58,7 +58,9 @@ def calculate_technical_indicators(
             "bollinger_upper": None, "bollinger_middle": None, "bollinger_lower": None,
             "macd_line": None, "macd_signal": None, "macd_histogram": None,
             "volume_ma20": None, "volume_ratio": None, "atr": None,
-            "price_change_1d": None, "status": "DATA_UNAVAILABLE"
+            "price_change_1d": None, "day_high": None, "day_low": None, "day_open": None,
+            "intraday_reversal_pct": None, "range_location": None, "intraday_change": None,
+            "status": "DATA_UNAVAILABLE"
         }
 
     # Slice DataFrame up to at_index (inclusive) to prevent lookahead bias
@@ -71,7 +73,9 @@ def calculate_technical_indicators(
                 "bollinger_upper": None, "bollinger_middle": None, "bollinger_lower": None,
                 "macd_line": None, "macd_signal": None, "macd_histogram": None,
                 "volume_ma20": None, "volume_ratio": None, "atr": None,
-                "price_change_1d": None, "status": "DATA_UNAVAILABLE"
+                "price_change_1d": None, "day_high": None, "day_low": None, "day_open": None,
+                "intraday_reversal_pct": None, "range_location": None, "intraday_change": None,
+                "status": "DATA_UNAVAILABLE"
             }
         df_eval = df.iloc[: at_index + 1]
     else:
@@ -83,16 +87,44 @@ def calculate_technical_indicators(
             "bollinger_upper": None, "bollinger_middle": None, "bollinger_lower": None,
             "macd_line": None, "macd_signal": None, "macd_histogram": None,
             "volume_ma20": None, "volume_ratio": None, "atr": None,
-            "price_change_1d": None, "status": "DATA_UNAVAILABLE"
+            "price_change_1d": None, "day_high": None, "day_low": None, "day_open": None,
+            "intraday_reversal_pct": None, "range_location": None, "intraday_change": None,
+            "status": "DATA_UNAVAILABLE"
         }
 
     close = df_eval['Close']
     volume = df_eval['Volume']
+    high_s = df_eval['High'] if 'High' in df_eval.columns else close
+    low_s = df_eval['Low'] if 'Low' in df_eval.columns else close
+    open_s = df_eval['Open'] if 'Open' in df_eval.columns else close
+
     latest_price = float(close.iloc[-1])
     latest_volume = float(volume.iloc[-1])
+    latest_high = float(high_s.iloc[-1])
+    latest_low = float(low_s.iloc[-1])
+    latest_open = float(open_s.iloc[-1])
+
     price_change_1d = (
         round(((float(close.iloc[-1]) - float(close.iloc[-2])) / float(close.iloc[-2])) * 100.0, 2)
         if len(close) >= 2 and float(close.iloc[-2]) > 0
+        else 0.0
+    )
+
+    # Intraday range, drawdown from session high, and location metrics
+    intraday_reversal_pct = (
+        round(((latest_price - latest_high) / latest_high) * 100.0, 2)
+        if latest_high > 0
+        else 0.0
+    )
+    range_span = latest_high - latest_low
+    range_location = (
+        round((latest_price - latest_low) / range_span, 3)
+        if range_span > 0
+        else 0.5
+    )
+    intraday_change = (
+        round(((latest_price - latest_open) / latest_open) * 100.0, 2)
+        if latest_open > 0
         else 0.0
     )
 
@@ -292,5 +324,11 @@ def calculate_technical_indicators(
         "candle_label": candle_label,
         "passes_rr_gate": passes_rr_gate,
         "price_change_1d": price_change_1d,
+        "day_high": round(latest_high, 2),
+        "day_low": round(latest_low, 2),
+        "day_open": round(latest_open, 2),
+        "intraday_reversal_pct": intraday_reversal_pct,
+        "range_location": range_location,
+        "intraday_change": intraday_change,
         "status": "AVAILABLE"
     }

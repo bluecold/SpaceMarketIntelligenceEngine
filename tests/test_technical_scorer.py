@@ -246,4 +246,113 @@ def test_all_bearish_conditions_in_technical_scorer():
     assert score_b3 < score_bullish
 
 
+def test_intraday_metrics_in_calculate_technical_indicators():
+    """Validates intraday_reversal_pct, range_location, and intraday_change calculations."""
+    # Day high: 63.0, Day low: 58.0, Day open: 60.0, Close: 58.5
+    # intraday_reversal_pct: (58.5 - 63.0) / 63.0 * 100 = -7.14%
+    # range_location: (58.5 - 58.0) / (63.0 - 58.0) = 0.5 / 5.0 = 0.10
+    # intraday_change: (58.5 - 60.0) / 60.0 * 100 = -2.5%
+    df = pd.DataFrame({
+        'Open': [55.0, 56.0, 57.0, 58.0, 59.0, 60.0],
+        'Close': [56.0, 57.0, 58.0, 59.0, 59.5, 58.5],
+        'High': [57.0, 58.0, 59.0, 60.0, 61.0, 63.0],
+        'Low': [54.0, 55.0, 56.0, 57.0, 58.0, 58.0],
+        'Volume': [1000] * 6
+    })
+    res = calculate_technical_indicators(df)
+    assert res["status"] == "AVAILABLE"
+    assert res["intraday_reversal_pct"] is not None
+    assert round(res["intraday_reversal_pct"], 2) == -7.14
+    assert res["range_location"] is not None
+    assert round(res["range_location"], 2) == 0.10
+    assert res["intraday_change"] is not None
+    assert round(res["intraday_change"], 2) == -2.50
+
+
+def test_intraday_reversal_alert_generation():
+    """
+    Validates that a sharp intraday drop from morning highs triggers
+    INTRADAY_REVERSAL_EXHAUSTION alert even if 1-day change vs yesterday is small.
+    """
+    from app.scoring.signal import generate_signal_and_explanation
+
+    tech_data = {
+        "price": 58.86,
+        "volume_ratio": 1.45,
+        "intraday_reversal_pct": -6.65,
+        "range_location": 0.05,
+        "rsi14": 52.0,
+        "ema200": 50.0,
+        "bollinger_lower": 52.0
+    }
+    # Stock is -0.9% vs yesterday (flat/HOLD zone), but collapsed -6.65% from day's high
+    sig_res = generate_signal_and_explanation(
+        ticker="ASTS",
+        smi=51.0,
+        price_change_1d=-0.9,
+        indicators=tech_data
+    )
+    alerts = sig_res.get("alerts", [])
+    rev_alerts = [a for a in alerts if a.get("type") == "INTRADAY_REVERSAL_EXHAUSTION"]
+    assert len(rev_alerts) == 1
+    assert rev_alerts[0]["category"] == "TECHNICAL"
+    assert rev_alerts[0]["level"] == "WARNING"
+    assert "-6.6%" in rev_alerts[0]["message"] or "-6.7%" in rev_alerts[0]["message"]
+
+
+def test_technical_alerts_rsi_ema_and_bollinger():
+    """Validates technical alerts for RSI overbought/oversold, EMA breakdown, and Bollinger band breach."""
+    from app.scoring.signal import generate_signal_and_explanation
+
+    # 1. RSI Overbought
+    res_ob = generate_signal_and_explanation(
+        ticker="RKLB",
+        smi=68.0,
+        price_change_1d=2.0,
+        indicators={"price": 75.0, "rsi14": 78.5}
+    )
+    ob_alerts = [a for a in res_ob.get("alerts", []) if a.get("type") == "RSI_OVERBOUGHT"]
+    assert len(ob_alerts) == 1
+    assert ob_alerts[0]["category"] == "TECHNICAL"
+    assert ob_alerts[0]["level"] == "WARNING"
+
+    # 2. RSI Oversold
+    res_os = generate_signal_and_explanation(
+        ticker="SPCE",
+        smi=32.0,
+        price_change_1d=-3.0,
+        indicators={"price": 2.5, "rsi14": 26.0}
+    )
+    os_alerts = [a for a in res_os.get("alerts", []) if a.get("type") == "RSI_OVERSOLD"]
+    assert len(os_alerts) == 1
+    assert os_alerts[0]["category"] == "TECHNICAL"
+    assert os_alerts[0]["level"] == "WARNING"
+
+    # 3. EMA200 Breakdown
+    res_ema = generate_signal_and_explanation(
+        ticker="ASTS",
+        smi=42.0,
+        price_change_1d=-3.5,
+        indicators={"price": 48.0, "ema200": 51.0, "volume_ratio": 1.4}
+    )
+    ema_alerts = [a for a in res_ema.get("alerts", []) if a.get("type") == "EMA200_BREAKDOWN"]
+    assert len(ema_alerts) == 1
+    assert ema_alerts[0]["category"] == "TECHNICAL"
+    assert ema_alerts[0]["level"] == "HIGH"
+
+    # 4. Bollinger Bands Lower Breach
+    res_bb = generate_signal_and_explanation(
+        ticker="LMT",
+        smi=40.0,
+        price_change_1d=-2.5,
+        indicators={"price": 435.0, "bollinger_lower": 440.0}
+    )
+    bb_alerts = [a for a in res_bb.get("alerts", []) if a.get("type") == "BOLLINGER_LOWER_BREACH"]
+    assert len(bb_alerts) == 1
+    assert bb_alerts[0]["category"] == "TECHNICAL"
+    assert bb_alerts[0]["level"] == "WARNING"
+
+
+
+
 

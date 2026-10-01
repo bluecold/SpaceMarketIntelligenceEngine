@@ -11,7 +11,7 @@ interface AlertsManagerProps {
   onSelectTicker?: (ticker: string) => void;
 }
 
-type FilterCategory = 'ALL' | 'CRITICAL' | 'DIVERGENCES' | 'SIGNALS' | 'SYSTEM';
+type FilterCategory = 'ALL' | 'CRITICAL' | 'DIVERGENCES' | 'TECHNICAL' | 'SIGNALS' | 'SYSTEM';
 type NotificationSeverity = 'CRITICAL' | 'HIGH' | 'ALL';
 
 interface NotificationSettings {
@@ -280,8 +280,9 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
     }
   };
 
-  const getCategory = (al: AlertItem): 'SIGNAL' | 'DIVERGENCES' | 'SYSTEM' => {
+  const getCategory = (al: AlertItem): 'SIGNAL' | 'DIVERGENCES' | 'TECHNICAL' | 'SYSTEM' => {
     if (al.category === 'SIGNAL' || al.type.includes('BUY') || al.type.includes('AVOID')) return 'SIGNAL';
+    if (al.category === 'TECHNICAL' || al.type.includes('RSI') || al.type.includes('BOLLINGER') || al.type.includes('EMA') || al.type.includes('INTRADAY')) return 'TECHNICAL';
     if (al.category === 'SYSTEM' || al.type.includes('STALE')) return 'SYSTEM';
     return 'DIVERGENCES';
   };
@@ -290,32 +291,58 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
   const format24hTime = (ts?: string | null): string => {
     if (!ts) return '--:--:--';
     const d = new Date(ts);
-    return isNaN(d.getTime())
-      ? '--:--:--'
-      : d.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    if (isNaN(d.getTime())) return '--:--:--';
+
+    const now = new Date();
+    const isToday =
+      d.getDate() === now.getDate() &&
+      d.getMonth() === now.getMonth() &&
+      d.getFullYear() === now.getFullYear();
+
+    const timeStr = d.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+    if (isToday) {
+      return timeStr;
+    }
+
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    const isYesterday =
+      d.getDate() === yesterday.getDate() &&
+      d.getMonth() === yesterday.getMonth() &&
+      d.getFullYear() === yesterday.getFullYear();
+
+    if (isYesterday) {
+      return `Ayer ${d.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' })}`;
+    }
+
+    const dateStr = d.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+    const shortTimeStr = d.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' });
+    return `${dateStr}, ${shortTimeStr}`;
   };
 
   const formatRelativeTime = (ts?: string | null, ageHours?: number | null): string => {
-    if (ageHours !== undefined && ageHours !== null) {
-      if (ageHours < 0.05) return 'Recién emitido';
-      if (ageHours < 1.0) return `hace ${Math.round(ageHours * 60)} min`;
-      return `hace ${ageHours.toFixed(1)}h`;
+    let effectiveHours = ageHours;
+    if (effectiveHours === undefined || effectiveHours === null) {
+      if (!ts) return 'Reciente';
+      const d = new Date(ts).getTime();
+      if (isNaN(d)) return 'Reciente';
+      effectiveHours = Math.max(0, (Date.now() - d) / (1000 * 60 * 60));
     }
-    if (!ts) return 'Reciente';
-    const now = Date.now();
-    const d = new Date(ts).getTime();
-    if (isNaN(d)) return 'Reciente';
-    const diffMin = Math.max(0, Math.floor((now - d) / 60000));
-    if (diffMin < 2) return 'Justo ahora';
-    if (diffMin < 60) return `hace ${diffMin} min`;
-    const diffHours = (diffMin / 60).toFixed(1);
-    return `hace ${diffHours}h`;
+
+    if (effectiveHours < 0.05) return 'Recién emitido';
+    if (effectiveHours < 1.0) return `hace ${Math.round(effectiveHours * 60)} min`;
+    if (effectiveHours < 48.0) return `hace ${effectiveHours.toFixed(1)}h`;
+
+    const days = Math.round(effectiveHours / 24.0);
+    return days === 1 ? 'hace 1 día' : `hace ${days} días`;
   };
 
   // Filter calculations
   const filteredAlerts = alerts.filter((al) => {
     if (activeFilter === 'CRITICAL') return al.level === 'CRITICAL';
     if (activeFilter === 'DIVERGENCES') return getCategory(al) === 'DIVERGENCES';
+    if (activeFilter === 'TECHNICAL') return getCategory(al) === 'TECHNICAL';
     if (activeFilter === 'SIGNALS') return getCategory(al) === 'SIGNAL';
     if (activeFilter === 'SYSTEM') return getCategory(al) === 'SYSTEM';
     return true;
@@ -328,6 +355,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
     ALL: alerts.length,
     CRITICAL: alerts.filter(a => a.level === 'CRITICAL').length,
     DIVERGENCES: alerts.filter(a => getCategory(a) === 'DIVERGENCES').length,
+    TECHNICAL: alerts.filter(a => getCategory(a) === 'TECHNICAL').length,
     SIGNALS: alerts.filter(a => getCategory(a) === 'SIGNAL').length,
     SYSTEM: alerts.filter(a => getCategory(a) === 'SYSTEM').length,
   };
@@ -554,6 +582,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
                 { id: 'ALL', label: `Todas (${countByFilter.ALL})` },
                 { id: 'CRITICAL', label: `🚨 Críticas (${countByFilter.CRITICAL})` },
                 { id: 'DIVERGENCES', label: `⚡ Divergencias (${countByFilter.DIVERGENCES})` },
+                { id: 'TECHNICAL', label: `📈 Técnicas (${countByFilter.TECHNICAL})` },
                 { id: 'SIGNALS', label: `🚀 Señales (${countByFilter.SIGNALS})` },
                 { id: 'SYSTEM', label: `⏳ Sistema (${countByFilter.SYSTEM})` }
               ] as const
@@ -658,8 +687,8 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
                     }}
                   >
                     {/* Top Meta Line: Severity, Status & 24h Timestamp */}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '5px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '5px', flexWrap: 'wrap', gap: '4px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                         {/* Severity Badge */}
                         <span
                           style={{
@@ -688,6 +717,51 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
                         >
                           {isActive ? '🟢 Vigente' : '⏳ Obsoleta'}
                         </span>
+
+                        {/* Persistent Active Verification Badge */}
+                        {isActive && (al.age_hours ?? 0) >= 48 && (
+                          <span
+                            style={{
+                              fontSize: '0.64rem',
+                              fontWeight: 600,
+                              padding: '1px 5px',
+                              borderRadius: '3px',
+                              background: 'rgba(56, 189, 248, 0.12)',
+                              color: '#38bdf8',
+                              border: '1px solid rgba(56, 189, 248, 0.25)',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '3px'
+                            }}
+                            title={
+                              al.last_seen_age_hours !== undefined && al.last_seen_age_hours !== null
+                                ? `Condición activa confirmada hace ${al.last_seen_age_hours < 1 ? 'minutos' : `${al.last_seen_age_hours.toFixed(1)}h`}`
+                                : 'Condición activa persistente'
+                            }
+                          >
+                            <Check size={10} />
+                            {al.last_seen_age_hours !== undefined && al.last_seen_age_hours !== null && al.last_seen_age_hours < 24
+                              ? 'Confirmada hoy'
+                              : 'Riesgo activo'}
+                          </span>
+                        )}
+
+                        {/* Category Tag for Fundamental / Catalyst / Technical */}
+                        {al.category && (al.category === 'FUNDAMENTAL' || al.category === 'CATALYST' || al.category === 'TECHNICAL') && (
+                          <span
+                            style={{
+                              fontSize: '0.62rem',
+                              fontWeight: 700,
+                              padding: '1px 5px',
+                              borderRadius: '3px',
+                              background: al.category === 'FUNDAMENTAL' ? 'rgba(168, 85, 247, 0.16)' : al.category === 'CATALYST' ? 'rgba(249, 115, 22, 0.16)' : 'rgba(56, 189, 248, 0.16)',
+                              color: al.category === 'FUNDAMENTAL' ? '#c084fc' : al.category === 'CATALYST' ? '#fb923c' : '#38bdf8',
+                              border: `1px solid ${al.category === 'FUNDAMENTAL' ? 'rgba(168, 85, 247, 0.35)' : al.category === 'CATALYST' ? 'rgba(249, 115, 22, 0.35)' : 'rgba(56, 189, 248, 0.35)'}`
+                            }}
+                          >
+                            {al.category === 'FUNDAMENTAL' ? 'Balance/Runway' : al.category === 'CATALYST' ? 'Catalizador' : 'Técnico'}
+                          </span>
+                        )}
 
                         {/* Data Provenance Badge if not LIVE */}
                         {al.data_source && al.data_source !== 'LIVE' && (
@@ -721,7 +795,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
                       </div>
 
                       {/* Exact 24h Time & Relative Age */}
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.7rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
                         <Clock size={11} />
                         <span style={{ fontWeight: 600, color: '#cbd5e1' }}>
                           {format24hTime(al.timestamp)}

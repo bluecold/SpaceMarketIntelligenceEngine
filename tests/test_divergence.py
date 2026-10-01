@@ -393,6 +393,57 @@ def test_divergence_none_social_score_never_attributes_to_x_social():
     assert direct_divs[0].source_a == "PREDICTION_MARKET"
 
 
+def test_intraday_bearish_divergence_fades_open():
+    """
+    Validates that a stock opening with strong sentiment/catalyst (+8% morning run)
+    that reverses heavily intraday (-6% from high, closing at low of day on volume >= 1.15x)
+    produces an INTRADAY_BEARISH_DIVERGENCE even if daily close vs yesterday close is flat (-0.5%).
+    """
+    from app.scoring.signal import generate_signal_and_explanation
+
+    # Scenario 1: ASTS setup (Social bullish at 75, flat vs yesterday -0.5%, but intraday reversal -6.5% on volume 1.35x)
+    res = generate_signal_and_explanation(
+        ticker="ASTS",
+        smi=52.0,
+        social_score=75.0,
+        price_change_1d=-0.5,
+        indicators={
+            "price": 58.86,
+            "volume_ratio": 1.35,
+            "intraday_reversal_pct": -6.5,
+            "range_location": 0.15
+        }
+    )
+    div_types = [d["type"] for d in res.get("active_divergences", [])]
+    assert "INTRADAY_BEARISH_DIVERGENCE" in div_types
+    div = next(d for d in res["active_divergences"] if d["type"] == "INTRADAY_BEARISH_DIVERGENCE")
+    assert div["direction"] == "BEARISH"
+    assert div["confidence"] >= 0.70
+
+    # Also verify that a DIVERGENCE alert was generated in alerts list
+    div_alerts = [a for a in res.get("alerts", []) if a.get("type") == "INTRADAY_BEARISH_DIVERGENCE"]
+    assert len(div_alerts) == 1
+    assert div_alerts[0]["category"] == "DIVERGENCE"
+    assert div_alerts[0]["level"] == "HIGH"
+
+    # Scenario 2: Normal small intraday retracement (-1.5% from high, range_location 0.65) should NOT trigger
+    res_mild = generate_signal_and_explanation(
+        ticker="ASTS",
+        smi=52.0,
+        social_score=75.0,
+        price_change_1d=-0.5,
+        indicators={
+            "price": 62.0,
+            "volume_ratio": 1.10,
+            "intraday_reversal_pct": -1.5,
+            "range_location": 0.65
+        }
+    )
+    div_mild_types = [d["type"] for d in res_mild.get("active_divergences", [])]
+    assert "INTRADAY_BEARISH_DIVERGENCE" not in div_mild_types
+
+
+
 
 
 

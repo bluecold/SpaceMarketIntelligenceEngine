@@ -174,6 +174,21 @@ $$w_i^{\text{active}} = \frac{w_i}{\sum_{j \in \text{active}} w_j}$$
 5. **Visualización Institucional de Historial (HistoryChart):** Conexión continua de series sorteando cierres bursátiles de fin de semana (`maxGapHours = 96`), sombreado visual de receso bursátil (`WEEKEND / MKT CLOSED`) y marcas de calendario inteligentes no superpuestas en el eje temporal.
 6. **Silent Cold-Start & Episodios:** Identidad única por episodio `{baseId}@{opened_at}` con inicio silencioso para evitar ráfagas de notificaciones al recargar el navegador.
 
+### G. Inteligencia Intradiaria, Fade The Open & Alertas Técnicas
+
+1. **Métricas de Dinámica Intradiaria (`indicators.py`):** Extracción matemática rigurosa de las componentes de vela OHLCV:
+   - `intraday_reversal_pct`: $(\text{price} - \text{day\_high}) / \text{day\_high} \times 100$, mide el porcentaje de caída desde el punto álgido de la sesión.
+   - `range_location`: $(\text{price} - \text{day\_low}) / (\text{day\_high} - \text{day\_low})$, oscilador normalizado $[0.0, 1.0]$ que ubica el precio dentro del rango de la sesión actual.
+   - `intraday_change`: $(\text{price} - \text{day\_open}) / \text{day\_open} \times 100$.
+2. **Divergencia Intradiaria "Fade the Open / Sell the News" (`INTRADAY_BEARISH_DIVERGENCE`):** Detecta cuando la apertura o la narrativa matutina es constructiva (Social $\ge 0.08$ o Noticias $\ge 55.0$), pero el precio sufre un rechazo intradiario severo ($\le -4.0\%$ del máximo de la sesión con volumen $\ge 1.15\times$ cerrando en el 40% inferior del rango). Emite alerta de alta prioridad (`level='HIGH'`).
+3. **Categoría de Alertas Técnicas Estructurales (`TECHNICAL`):**
+   - `INTRADAY_REVERSAL_EXHAUSTION`: Caída $\le -4.5\%$ (nivel `WARNING`) o $\le -7.0\%$ (nivel `HIGH`) desde el máximo con volumen $\ge 1.15\times$ cerrando cerca de mínimos.
+   - `RSI_OVERBOUGHT` ($\ge 75$) & `RSI_OVERSOLD` ($\le 30$): Alertas de compresión extrema y riesgo inminente de reversión a la media.
+   - `EMA200_BREAKDOWN`: Pérdida de la media móvil institucional de 200 periodos con caída $\le -2.0\%$ en volumen $\ge 1.2\times$.
+   - `BOLLINGER_LOWER_BREACH`: Ruptura del envelope de $2\sigma$ inferior.
+4. **Ciclo de Vida y Auto-Resolución:** Las alertas de categoría `TECHNICAL` se auto-resuelven únicamente si la obtención de datos de mercado fue exitosa (`mkt_success == True`), previniendo aleteos por caídas de red.
+5. **Visualización y Filtrado en Frontend:** Pestaña dedicada "📈 Técnicas" en `AlertsManager.tsx` con conteo en vivo e insignia visual cyan (`#38bdf8`) para distinguir eventos técnicos de catalizadores noticiosos o señales canónicas.
+
 ---
 
 ## 4. 🧪 Suite de Pruebas Automatizadas
@@ -182,10 +197,11 @@ La suite de pruebas (`tests/`) está totalmente aislada de la red y la base de d
 ```powershell
 python -m pytest tests/ -v
 ```
-- **192 pruebas automatizadas** que se ejecutan de forma reproducible y con 100% de éxito.
+- **196 pruebas automatizadas** que se ejecutan de forma reproducible y con 100% de éxito.
 - Cobertura integral de:
   - **Inferencia Local FinBERT y Robustez NLP:** Clasificación local neuronal con `ProsusAI/finbert`, compatibilidad HuggingFace transformers 5.x (`top_k=None`) y sanitización de lotes vacíos/nulos.
   - **Paridad de Estrategias y Cero Sesgo de Anticipación:** Validación matemática idéntica entre ejecución live y backtesting, incluyendo compuertas de `risk_score` y `fundamental_score` en Modelos A y B.
+  - **Dinámica Intradiaria y Alertas Técnicas:** Verificación de cálculo de `intraday_reversal_pct`, `range_location`, alertas de sobrecompra/sobreventa de RSI, pérdida de EMA200 y divergencias intradiarias bajistas.
   - **Invarianza de Escala ATR & Macd Normalizado:** Preservación de escalas relativas ante acciones de alta o baja volatilidad.
   - **Gobernanza de Datos y Procedencia (Data Provenance):** Trazabilidad estricta (`LIVE`, `DEGRADED`, `MOCK`), integridad referencial en cascada y purga segura.
   - **Seguridad de API & Bloqueo Atómico Distribuido:** Pruebas contra timing attacks, fallos seguros en producción, índice único parcial `uq_job_runs_single_running` y worker autónomo de heartbeats.
@@ -197,3 +213,4 @@ python -m pytest tests/ -v
   - **Persistencia de Pesos Efectivos:** Serialización completa del vector `effective_weights` por snapshot.
   - **Episodios de Alertas y Mutex Atómico HTTP 409:** Notificaciones silenciosas en arranque y prevención de carreras concurrentes en pipeline.
   - **Cobertura de Catalizadores Catastróficos y Negaciones:** Detección de `CAPITAL_RAISE`, `LAUNCH_FAILURE`, filtrado de productos comerciales y desambiguación sintáctica de negaciones.
+

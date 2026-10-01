@@ -679,6 +679,7 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 resolve_categories = set()
                 if mkt_success:
                     resolve_categories.add("SIGNAL")
+                    resolve_categories.add("TECHNICAL")
                 if news_success and social_success:
                     resolve_categories.add("CATALYST")
                 if fund_success:

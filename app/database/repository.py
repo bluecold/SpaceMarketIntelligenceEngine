@@ -539,6 +539,8 @@ def save_alerts(
                         cat = "SIGNAL"
                     elif "CATALYST" in al_type:
                         cat = "CATALYST"
+                    elif "TECHNICAL" in al_type or "RSI" in al_type or "BOLLINGER" in al_type or "EMA" in al_type or "INTRADAY_REVERSAL" in al_type:
+                        cat = "TECHNICAL"
                     elif "DIVERGENCE" in al_type or "CONFIRMATION" in al_type or "REVERSAL" in al_type:
                         cat = "DIVERGENCE"
                     elif "FUNDAMENTAL" in al_type or "DILUTION" in al_type or "CAPITAL_RAISE" in al_type or "RUNWAY" in al_type:

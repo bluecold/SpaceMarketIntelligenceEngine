@@ -161,7 +161,9 @@ def generate_signal_and_explanation(
         price_return_1d=price_change_1d,
         volume_ratio=vol_ratio,
         rsi=rsi,
-        post_count=post_count
+        post_count=post_count,
+        intraday_reversal_pct=indicators.get("intraday_reversal_pct"),
+        range_location=indicators.get("range_location")
     )
 
     primary_divergence_text = "NONE"
@@ -307,6 +309,71 @@ def generate_signal_and_explanation(
             "category": "FUNDAMENTAL",
             "level": "HIGH",
             "message": f"⚠️ {ticker} Low Runway Alert: {runway_months:.1f} months of cash remaining (${cash_m:.0f}M cash{as_of_str}) — watch for financing announcements"
+        })
+
+    # Technical Structural & Price Action Alerts
+    intraday_rev = indicators.get("intraday_reversal_pct")
+    range_loc = indicators.get("range_location")
+    d_high = indicators.get("day_high")
+    b_lower = indicators.get("bollinger_lower")
+
+    # A. Bearish Intraday Reversal / Exhaustion
+    if intraday_rev is not None and intraday_rev <= -4.5:
+        if (range_loc is None or range_loc <= 0.38) and (vol_ratio is not None and vol_ratio >= 1.15):
+            high_str = f" (${d_high:.2f})" if d_high else ""
+            rev_level = "HIGH" if intraday_rev <= -7.0 else "WARNING"
+            alerts.append({
+                "id": f"{ticker}:TECHNICAL:INTRADAY_REVERSAL",
+                "ticker": ticker,
+                "type": "INTRADAY_REVERSAL_EXHAUSTION",
+                "category": "TECHNICAL",
+                "level": rev_level,
+                "message": f"📉 {ticker}: Bearish intraday reversal ({intraday_rev:.1f}% from session high{high_str}) on {vol_ratio:.1f}x volume"
+            })
+
+    # B. RSI Extremes
+    if rsi is not None:
+        if rsi >= 75.0:
+            alerts.append({
+                "id": f"{ticker}:TECHNICAL:RSI_OVERBOUGHT",
+                "ticker": ticker,
+                "type": "RSI_OVERBOUGHT",
+                "category": "TECHNICAL",
+                "level": "WARNING",
+                "message": f"⚠️ {ticker}: RSI severely overbought ({rsi:.1f}) — elevated mean-reversion risk"
+            })
+        elif rsi <= 30.0:
+            alerts.append({
+                "id": f"{ticker}:TECHNICAL:RSI_OVERSOLD",
+                "ticker": ticker,
+                "type": "RSI_OVERSOLD",
+                "category": "TECHNICAL",
+                "level": "WARNING",
+                "message": f"⚠️ {ticker}: RSI deeply oversold ({rsi:.1f}) — potential technical exhaustion"
+            })
+
+    # C. 200 EMA Support Breakdown on Volume
+    if price is not None and ema200 is not None and price < ema200:
+        if indicators.get("ema200_reliable", True):
+            if price_change_1d is not None and price_change_1d <= -2.0 and vol_ratio is not None and vol_ratio >= 1.2:
+                alerts.append({
+                    "id": f"{ticker}:TECHNICAL:EMA200_BREAKDOWN",
+                    "ticker": ticker,
+                    "type": "EMA200_BREAKDOWN",
+                    "category": "TECHNICAL",
+                    "level": "HIGH",
+                    "message": f"📉 {ticker}: Lost institutional 200 EMA support (${ema200:.2f}) on heavy volume"
+                })
+
+    # D. Bollinger Bands Lower Piercing
+    if price is not None and b_lower is not None and price < b_lower:
+        alerts.append({
+            "id": f"{ticker}:TECHNICAL:BOLLINGER_LOWER_BREACH",
+            "ticker": ticker,
+            "type": "BOLLINGER_LOWER_BREACH",
+            "category": "TECHNICAL",
+            "level": "WARNING",
+            "message": f"⚡ {ticker}: Pierced 2σ Lower Bollinger Band (${b_lower:.2f}) — extreme stretch"
         })
 
     # 4. Build Detailed Multi-Source "WHY?" Reasons (Explanations)

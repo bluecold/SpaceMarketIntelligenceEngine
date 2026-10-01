@@ -2,12 +2,14 @@ export interface AlertItem {
   id?: string;
   ticker: string;
   type: string;
-  category?: 'SIGNAL' | 'DIVERGENCE' | 'CATALYST' | 'SYSTEM' | string;
+  category?: 'SIGNAL' | 'DIVERGENCE' | 'CATALYST' | 'FUNDAMENTAL' | 'TECHNICAL' | 'SYSTEM' | string;
   level: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'WARNING';
   message: string;
   data_source?: 'LIVE' | 'DEGRADED' | 'MOCK' | string;
   timestamp?: string | null;
   age_hours?: number | null;
+  last_seen?: string | null;
+  last_seen_age_hours?: number | null;
   is_active?: boolean;
 }
 

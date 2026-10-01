@@ -33,7 +33,9 @@ def detect_divergences(
     price_return_1d: Optional[float] = None,
     volume_ratio: Optional[float] = None,
     rsi: Optional[float] = None,
-    post_count: Optional[int] = None
+    post_count: Optional[int] = None,
+    intraday_reversal_pct: Optional[float] = None,
+    range_location: Optional[float] = None
 ) -> List[DivergenceResult]:
     """
     Divergence Engine for SMIE v2.0 (Tripartite Analysis: X ↔ Polymarket ↔ Price).
@@ -78,6 +80,11 @@ def detect_divergences(
         dir_price = (momentum_score - 50.0) / 50.0
     elif technical_score is not None:
         dir_price = ((technical_score / 40.0) * 100.0 - 50.0) / 50.0
+
+    # Intraday rejection adjustment: if price collapsed from session high, drag dir_price downward
+    if intraday_reversal_pct is not None and intraday_reversal_pct <= -3.0:
+        rev_drag = max(-1.0, intraday_reversal_pct / 8.0)
+        dir_price = min(dir_price, 0.60 * dir_price + 0.40 * rev_drag)
 
     vol_ratio = volume_ratio if volume_ratio is not None else 1.0
 
@@ -170,6 +177,34 @@ def detect_divergences(
             description=f"Bearish Divergence: Price is extended ({dir_price:+.2f}) while {src_desc} is deteriorating. High risk of mean reversion.",
             timestamp=now
         ))
+
+    # -------------------------------------------------------------
+    # 2b. INTRADAY EXHAUSTION DIVERGENCE (Fade the Open / Sell the News)
+    # -------------------------------------------------------------
+    has_constructive_narrative = (
+        (dir_social is not None and dir_social >= 0.08)
+        or (news_score is not None and news_score >= 55.0)
+        or (dir_pred is not None and dir_pred >= 0.08)
+    )
+    if has_constructive_narrative and intraday_reversal_pct is not None and intraday_reversal_pct <= -4.0 and vol_ratio >= 1.15:
+        if range_location is None or range_location <= 0.40:
+            narrative_desc = (
+                f"Social Sentiment ({effective_social:.0f})" if (dir_social is not None and dir_social >= 0.08)
+                else (f"News Catalysts ({news_score:.0f})" if news_score is not None else "Polymarket Expectations")
+            )
+            strength = min(1.0, abs(intraday_reversal_pct) / 8.0)
+            results.append(DivergenceResult(
+                ticker=ticker,
+                type="INTRADAY_BEARISH_DIVERGENCE",
+                source_a="NARRATIVE_SENTIMENT",
+                source_b="INTRADAY_PRICE_ACTION",
+                source_c="VOLUME_DISTRIBUTION" if vol_ratio >= 1.3 else None,
+                direction="BEARISH",
+                strength=round(strength, 2),
+                confidence=0.82,
+                description=f"Intraday Exhaustion Divergence: Constructive morning narrative from {narrative_desc} faded by aggressive intraday selling ({intraday_reversal_pct:.1f}% from session high on {vol_ratio:.1f}x volume).",
+                timestamp=now
+            ))
 
 
     # -------------------------------------------------------------
