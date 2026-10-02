@@ -105,7 +105,8 @@ class TwikitProvider(XProvider):
                         reposts=reposts_val,
                         replies=replies_val,
                         views=views_val,
-                        source="LIVE"
+                        source="LIVE",
+                        lang=getattr(tweet, 'lang', None)
                     ))
             logger.info(f"Twikit collected {len(posts)} posts for {ticker} query '{query}'.")
             if not posts and getattr(settings, "ALLOW_MOCK_FALLBACK", False):

@@ -119,8 +119,8 @@ DEFAULT_EVENT_COMPANY_MAPPINGS: Dict[str, Dict[str, float]] = {
 
 class Settings(BaseSettings):
     APP_NAME: str = "Space Market Intelligence Engine"
-    APP_VERSION: str = "2.1.0"
-    RULES_VERSION: str = "2.1.0"
+    APP_VERSION: str = "2.2.0"
+    RULES_VERSION: str = "2.2.0"  # Stored per snapshot: 2.2.0 = opinion-only SSI + baseline, FinTwitBERT, mirrored bands, v2.2 weights
     ENVIRONMENT: str = "development"  # "development", "testing", "production"
     DEBUG: bool = True
     DATABASE_URL: str = "sqlite:///./data/space_sentiment.db"
@@ -152,7 +152,15 @@ class Settings(BaseSettings):
     SOCIAL_LOOKBACK_HOURS: int = 24
     SOCIAL_MAX_POSTS_PER_TICKER: int = 100
     SOCIAL_MIN_RELEVANCE: float = 0.40
+    # Sentiment models are English-only; other languages are excluded from the SSI (~6.5% of relevant posts)
+    SOCIAL_ALLOWED_LANGUAGES: List[str] = ["en"]
+    SOCIAL_EXCLUDE_SPAM: bool = True  # Drop stock-promo bot posts (group invites, paid signals, hashtag campaigns)
     NEWS_MIN_RELEVANCE: float = 0.40
+    # SSI baseline: X polarity is measured against the ticker's own trailing norm (excluding the lookback window)
+    SOCIAL_BASELINE_DAYS: int = 14
+    SOCIAL_BASELINE_PRIOR_WEIGHT: float = 10.0  # Pseudo-weight (~10-15 posts) shrinking thin baselines towards neutral
+    SOCIAL_BASELINE_MIN_DAYS: float = 3.0       # History needed before mention_volume_ratio is reported
+    SOCIAL_ATTENTION_SPIKE_RATIO: float = 2.0   # Mentions >= 2x the ticker's normal daily rate -> ATTENTION_SPIKE alert
     ENGAGEMENT_SCALE_DIVISOR: float = 10.0  # Scales log1p engagement: ln(1 + ~22,000) ≈ 10.0 maps high engagement to ~2.0x weight
     
     # Prediction Market (Polymarket) Settings
@@ -166,14 +174,20 @@ class Settings(BaseSettings):
     NEWS_PROVIDER: str = "rss"  # "rss" or "mock"
     
     # Sentiment Model
-    SENTIMENT_MODEL: str = "heuristic"  # "heuristic" or "ProsusAI/finbert"
-    USE_FINBERT: bool = False
+    SENTIMENT_MODEL: str = "heuristic"  # News model: "heuristic" or "ProsusAI/finbert"
+    USE_FINBERT: bool = False           # Enables local transformer models (news and X posts)
+    # X/Twitter model. FinTwitBERT understands trading slang but is overconfident and bullish-biased, so only
+    # |P(bull) - P(bear)| >= 0.90 counts as an opinion (blind review of 137 tweets: opinion precision 64% vs 17%
+    # for FinBERT, polarity flips 0.5% vs 2.8%). Revert with "ProsusAI/finbert" and 0.20.
+    SOCIAL_SENTIMENT_MODEL: str = "StephanAkkerman/FinTwitBERT-sentiment"
+    SOCIAL_SENTIMENT_THRESHOLD: float = 0.90
     
-    # SMIE v2.0 Scoring Weights (Total 100%)
-    WEIGHT_SOCIAL: float = 0.30        # SSI (Social Sentiment)
+    # SMIE v2.2 Scoring Weights (Total 100%): sentiment pillars drive the index (80%), technicals frame it.
+    # Before v2.2 momentum weighed 0.25 and explained ~58% of SMI movement while social explained ~4%.
+    WEIGHT_SOCIAL: float = 0.35        # SSI (Social Sentiment)
     WEIGHT_PREDICTION: float = 0.15    # PMS (Prediction Market Score)
-    WEIGHT_NEWS: float = 0.20          # News & Catalysts
-    WEIGHT_MOMENTUM: float = 0.25      # Technical Market Momentum (0.20 + 0.05 reallocated from decoupled risk)
+    WEIGHT_NEWS: float = 0.30          # News & Catalysts
+    WEIGHT_MOMENTUM: float = 0.10      # Technical context: no momentum variant predicted forward returns on 2y of prices
     WEIGHT_FUNDAMENTALS: float = 0.10  # Fundamentals
     WEIGHT_RISK: float = 0.0           # Decoupled from directional SMI (used as Capital Preservation Gate)
     
@@ -183,13 +197,14 @@ class Settings(BaseSettings):
     DYNAMIC_WEIGHT_PRED_MIN: float = 0.05
     DYNAMIC_WEIGHT_PRED_MAX: float = 0.25
     
-    # Signal thresholds (Symmetric Calibrated Bands around 50.0)
+    # Signal thresholds: bands mirrored around 50.0. Bullish bands use >=, bearish bands use <=.
+    #   STRONG BUY >= 85 | BUY [70, 85) | WATCH [55, 70) | HOLD (45, 55) | CAUTION (30, 45] | AVOID (15, 30] | STRONG AVOID <= 15
     THRESHOLD_STRONG_BUY: float = 85.0    # SMI >= 85.0 (+35 over 50.0)
     THRESHOLD_BUY: float = 70.0           # SMI >= 70.0 (+20 over 50.0)
     THRESHOLD_WATCH: float = 55.0         # SMI >= 55.0 (+5 over 50.0)
-    THRESHOLD_HOLD: float = 45.0          # SMI >= 45.0 (-5 over 50.0, neutral band [45.0, 55.0))
-    THRESHOLD_AVOID: float = 20.0         # SMI >= 20.0 (bearish band [20.0, 45.0))
-    THRESHOLD_STRONG_AVOID: float = 20.0  # SMI < 20.0 (-30 over 50.0, critical risk band [0.0, 20.0))
+    THRESHOLD_HOLD: float = 45.0          # SMI <= 45.0 leaves HOLD for CAUTION (-5 under 50.0)
+    THRESHOLD_AVOID: float = 30.0         # SMI <= 30.0 (-20 under 50.0, mirror of BUY)
+    THRESHOLD_STRONG_AVOID: float = 15.0  # SMI <= 15.0 (-35 under 50.0, mirror of STRONG BUY)
     
     # Divergence Engine thresholds
     DIVERGENCE_EARLY_REVERSAL_DELTA: float = 15.0  # 24h probability change threshold (+/- 15 pp)

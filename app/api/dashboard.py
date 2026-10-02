@@ -10,6 +10,7 @@ from app.database.repository import (
     utc_now
 )
 from app.config import INITIAL_TICKERS
+from app.scoring.smi import describe_engine
 
 router = APIRouter(tags=["Dashboard"])
 
@@ -262,5 +263,6 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
         "last_update": rankings[0]["timestamp"] if rankings and rankings[0]["timestamp"] else None,
         "count": len(rankings),
         "rankings": rankings,
-        "alerts": alerts
+        "alerts": alerts,
+        "engine": describe_engine()
     }

@@ -2,7 +2,7 @@ import re
 import math
 import logging
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
 from pydantic import BaseModel
 from app.config import settings
 
@@ -19,6 +19,11 @@ class BaseSentimentClassifier(ABC):
     @abstractmethod
     def analyze(self, text: str) -> SentimentResult:
         pass
+
+    @property
+    def model_id(self) -> str:
+        """Identifier of the model that actually produced the last results (stored per post)."""
+        return "heuristic-lexicon"
 
     def analyze_batch(self, texts: List[str]) -> List[SentimentResult]:
         return [self.analyze(t) for t in texts]
@@ -37,17 +42,27 @@ class HeuristicSentimentClassifier(BaseSentimentClassifier):
         "growth", "breakout", "success", "successful", "successfully", "upgrade", "upgrades", "upgraded", "upgrading",
         "win", "wins", "winning", "won", "milestone", "record high", "all-time high", "all time high",
         "ath", "52-week high", "gamechanger", "expansion", "profit", "profitable",
-        "profitability", "rally", "rallies", "rallying", "rallied", "soar", "soars", "soaring", "soared"
+        "profitability", "rally", "rallies", "rallying", "rallied", "soar", "soars", "soaring", "soared",
+        # A squeeze forces shorts to cover: bullish for the price
+        "short squeeze", "undervalued",
+        # FinTwit slang. Emojis are intentionally not scored: on real data rocket/chart emojis are mostly
+        # decoration in watchlists, promos and literal launch posts, and flipped ~7% of posts to BULLISH.
+        "lfg", "diamond hands"
     ]
-    
+
     BEARISH_KEYWORDS = [
         "bear", "bearish", "short selling", "short seller", "short sellers", "short interest",
         "short position", "short positions", "shorting", "go short", "going short", "heavily short",
-        "naked short", "fall short", "fell short", "falling short", "short squeeze",
+        "naked short", "fall short", "fell short", "falling short",
         "sell", "selling",
         "put option", "put options", "put buying", "buying puts", "bearish puts", "heavy puts",
         "__BUYING_PUTS__", "__SELLING_CALLS__", "__BEARISH_PUT_FLOW__", "__BEARISH_PUTS__",
-        "dilution", "capital raise", "offering", "downgrade", "downgrades", "downgraded", "downgrading",
+        "dilution", "capital raise", "downgrade", "downgrades", "downgraded", "downgrading",
+        # Only financing offerings; bare 'offering' also matches products and services
+        "share offering", "shares offering", "stock offering", "public offering", "secondary offering",
+        "equity offering", "direct offering", "notes offering", "atm offering", "convertible notes",
+        "explosion", "explodes", "exploded", "exploding", "blew up", "blows up", "anomaly",
+        "bagholder", "bagholders", "bag holder", "rug pull",
         "delay", "delayed", "delays", "delaying", "failure", "fail", "failed", "failing", "fails",
         "miss", "missed", "misses", "missing", "underperform", "underperforms", "underperforming", "underperformed",
         "burn", "cash burn", "drop", "dropped", "dropping", "drops", "loss", "losses",
@@ -88,6 +103,15 @@ class HeuristicSentimentClassifier(BaseSentimentClassifier):
 
     def _preprocess(self, text: str) -> str:
         t = text.lower()
+        # 0. Mask figurative explosions ('explosion of demand', 'shares exploded higher') so they are not read as failures
+        t = re.sub(
+            r'\bexplosions?\s+(?:of|in)\s+(?:demand|growth|interest|sales|activity|volume|revenue|users|orders|popularity|traffic|capacity)\b'
+            r'|\b(?:demand|growth|interest|sales|popularity|revenue|activity|volume)\s+(?:explodes|exploded|exploding)\b'
+            r'|\b(?:stock|stocks|shares?|price|calls?|options?)\s+(?:explodes|exploded|exploding|blew\s+up|blows\s+up)\b'
+            r'|\b(?:explodes|exploded|exploding)\s+(?:higher|upward|up|in\s+popularity|onto\s+the\s+scene)\b',
+            ' __FIGURATIVE_SURGE__ ', t
+        )
+
         # 1. Options trading idioms resolution (prevents bare buy/sell from cancelling options direction)
         t = re.sub(r'\b(?:buy|buying|bought|load|loaded|loading|purchas(?:e|ing|ed))\s+(?:put\s+options?|puts)\b', ' __BUYING_PUTS__ ', t)
         t = re.sub(r'\b(?:sell|selling|sold)\s+(?:put\s+options?|puts)\b', ' __SELLING_PUTS__ ', t)
@@ -121,19 +145,20 @@ class HeuristicSentimentClassifier(BaseSentimentClassifier):
         t = re.sub(r'\blong\s*-\s*term\b|\blong\s+term\b|\blong\s+time\b|\blong\s+run\b|\blong\s+road\b|\blong\s+way\b|\bhow\s+long\b', ' __LONG_TERM__ ', t)
         return t
 
-    def _is_negated(self, kw: str, clean_text: str) -> bool:
+    def _find_negation(self, kw: str, clean_text: str) -> Optional[Tuple[int, int]]:
         """
-        Check if keyword is preceded by a genuine negation within 0-2 intervening words,
-        resisting affirmative idioms (e.g. 'no doubt') and punctuation boundaries.
+        Return the (start, end) span of the negation word governing keyword kw, or None.
+        A negation counts when it precedes kw within 0-2 intervening words without punctuation,
+        and is not part of an affirmative idiom (e.g. 'no doubt').
         """
-        # 1. Mask affirmative idioms so phrases like 'no doubt' are not treated as negations
+        # 1. Mask affirmative idioms with same-length filler so match offsets stay aligned with clean_text
         temp_text = clean_text
         for idiom in self.AFFIRMATIVE_IDIOMS:
-            temp_text = re.sub(r'\b' + re.escape(idiom) + r'\b', '__AFFIRMED__', temp_text)
+            temp_text = re.sub(r'\b' + re.escape(idiom) + r'\b', lambda m: '_' * len(m.group(0)), temp_text)
 
         # 2. Strict syntax window: Negation word + 0 to 2 words + target keyword
         neg_re = (
-            r'\b(?:' + '|'.join(re.escape(nw) for nw in self.NEGATION_WORDS) + r')\b'
+            r'\b(' + '|'.join(re.escape(nw) for nw in self.NEGATION_WORDS) + r')\b'
             r'(?:\s+[a-z0-9\'-]+){0,2}\s+'
             r'\b' + re.escape(kw) + r'\b'
         )
@@ -141,47 +166,72 @@ class HeuristicSentimentClassifier(BaseSentimentClassifier):
         if match:
             matched_segment = match.group(0)
             if not any(punct in matched_segment for punct in ['.', ';', '!', '?', ',', ':', '-', '—', '(', ')']):
-                return True
-        return False
+                return match.span(1)
+        return None
+
+    def _is_negated(self, kw: str, clean_text: str) -> bool:
+        return self._find_negation(kw, clean_text) is not None
+
+    def _is_negative_metric_high(self, kw: str, clean_text: str) -> bool:
+        """True when an 'all-time high' style expression modifies a negative metric (e.g. 'short interest hits all-time high')."""
+        if kw not in self.HIGH_PRICE_EXPRESSIONS:
+            return False
+        neg_pattern = (
+            r'\b(?:' + '|'.join(re.escape(t) for t in self.NEGATIVE_METRIC_TARGETS) + r')\b'
+            r'(?:\s+[a-z0-9\'-]+){0,3}\s+'
+            r'\b' + re.escape(kw) + r'\b'
+        )
+        neg_pattern_rev = (
+            r'\b' + re.escape(kw) + r'\b'
+            r'(?:\s+(?:in|of))?\s+'
+            r'\b(?:' + '|'.join(re.escape(t) for t in self.NEGATIVE_METRIC_TARGETS) + r')\b'
+        )
+        return bool(re.search(neg_pattern, clean_text) or re.search(neg_pattern_rev, clean_text))
 
     def analyze(self, text: str) -> SentimentResult:
         clean_text = self._preprocess(text)
-        
+
+        # 1. Claim keyword spans longest-first so nested keywords ('cash burn' -> 'burn',
+        #    'short selling' -> 'selling', 'risk of failure' -> 'failure') are counted once.
+        #    Each keyword still counts at most once (presence semantics).
+        candidates = [(kw, 1) for kw in self.BULLISH_KEYWORDS] + [(kw, -1) for kw in self.BEARISH_KEYWORDS]
+        candidates.sort(key=lambda c: -len(c[0]))
+        claimed: List[Tuple[int, int]] = []
+        hits: List[Tuple[str, int, Tuple[int, int]]] = []
+        for kw, polarity in candidates:
+            for m in re.finditer(r'\b' + re.escape(kw) + r'\b', clean_text):
+                span = m.span()
+                if any(span[0] < c_end and c_start < span[1] for c_start, c_end in claimed):
+                    continue
+                claimed.append(span)
+                hits.append((kw, polarity, span))
+                break
+
+        # 2. Resolve polarity with negation inversion and negative-metric disambiguation
+        resolved: List[Tuple[str, int, Tuple[int, int]]] = []
+        negator_spans: List[Tuple[int, int]] = []
+        for kw, polarity, span in hits:
+            if polarity > 0 and self._is_negative_metric_high(kw, clean_text):
+                resolved.append((kw, -1, span))
+                continue
+            neg_span = self._find_negation(kw, clean_text)
+            if neg_span is not None:
+                negator_spans.append(neg_span)
+                resolved.append((kw, -polarity, span))
+            else:
+                resolved.append((kw, polarity, span))
+
+        # 3. A keyword that also served as the negator ('failed' in 'failed to beat') is not counted again
         bull_hits = 0
         bear_hits = 0
+        for kw, polarity, span in resolved:
+            if kw in self.NEGATION_WORDS and span in negator_spans:
+                continue
+            if polarity > 0:
+                bull_hits += 1
+            else:
+                bear_hits += 1
 
-        # Evaluate Bullish keywords with negation inversion and context disambiguation
-        for kw in self.BULLISH_KEYWORDS:
-            if re.search(r'\b' + re.escape(kw) + r'\b', clean_text):
-                # Disambiguation: if 'all-time high' is modifying a negative metric (e.g. 'short interest reaches all-time high')
-                if kw in self.HIGH_PRICE_EXPRESSIONS:
-                    neg_pattern = (
-                        r'\b(?:' + '|'.join(re.escape(t) for t in self.NEGATIVE_METRIC_TARGETS) + r')\b'
-                        r'(?:\s+[a-z0-9\'-]+){0,3}\s+'
-                        r'\b' + re.escape(kw) + r'\b'
-                    )
-                    neg_pattern_rev = (
-                        r'\b' + re.escape(kw) + r'\b'
-                        r'(?:\s+(?:in|of))?\s+'
-                        r'\b(?:' + '|'.join(re.escape(t) for t in self.NEGATIVE_METRIC_TARGETS) + r')\b'
-                    )
-                    if re.search(neg_pattern, clean_text) or re.search(neg_pattern_rev, clean_text):
-                        bear_hits += 1
-                        continue
-
-                if self._is_negated(kw, clean_text):
-                    bear_hits += 1  # Negated bullish = Bearish
-                else:
-                    bull_hits += 1
-
-        # Evaluate Bearish keywords with negation inversion
-        for kw in self.BEARISH_KEYWORDS:
-            if re.search(r'\b' + re.escape(kw) + r'\b', clean_text):
-                if self._is_negated(kw, clean_text):
-                    bull_hits += 1  # Negated bearish = Bullish
-                else:
-                    bear_hits += 1
-        
         total_hits = bull_hits + bear_hits
         if total_hits == 0:
             return SentimentResult(score=0.0, label="NEUTRAL", confidence=0.70)
@@ -216,11 +266,27 @@ class HeuristicSentimentClassifier(BaseSentimentClassifier):
 
 
 class FinBERTSentimentClassifier(BaseSentimentClassifier):
-    """HuggingFace ProsusAI/finbert model with lazy loading and batch processing."""
-    
-    def __init__(self, model_name: str = "ProsusAI/finbert"):
+    """
+    Local HuggingFace sentiment model with lazy loading and batch processing.
+
+    Supports both label vocabularies:
+      - ProsusAI/finbert (news): positive / negative / neutral
+      - StephanAkkerman/FinTwitBERT-sentiment (tweets): bullish / bearish / neutral
+    score = P(positive|bullish) - P(negative|bearish); the label is BULLISH/BEARISH only when
+    |score| >= label_threshold. FinTwitBERT needs a high threshold (0.90): its probabilities are
+    overconfident and it reads ~68% of tweets as bullish at the FinBERT threshold of 0.20.
+    Falls back to the heuristic lexicon if the model cannot be loaded or inference fails.
+    """
+
+    def __init__(self, model_name: str = "ProsusAI/finbert", label_threshold: float = 0.20):
         self.model_name = model_name
+        self.label_threshold = label_threshold
         self.pipeline = None
+        self._used_fallback = False
+
+    @property
+    def model_id(self) -> str:
+        return "heuristic-lexicon" if self._used_fallback else self.model_name
 
     def _load_model(self):
         if self.pipeline is not None:
@@ -243,6 +309,7 @@ class FinBERTSentimentClassifier(BaseSentimentClassifier):
 
     def analyze_batch(self, texts: List[str]) -> List[SentimentResult]:
         self._load_model()
+        self._used_fallback = self.pipeline is None
         if self.pipeline is None:
             fallback = HeuristicSentimentClassifier()
             return fallback.analyze_batch(texts)
@@ -265,15 +332,15 @@ class FinBERTSentimentClassifier(BaseSentimentClassifier):
                 else:
                     scores = {}
 
-                # ProsusAI/finbert labels: positive, negative, neutral
-                pos = scores.get('positive', 0.0)
-                neg = scores.get('negative', 0.0)
+                # FinBERT: positive/negative/neutral; FinTwitBERT: bullish/bearish/neutral
+                pos = scores.get('positive', scores.get('bullish', 0.0))
+                neg = scores.get('negative', scores.get('bearish', 0.0))
                 neu = scores.get('neutral', 0.0)
 
                 score = pos - neg  # Range -1.0 to +1.0
-                if score >= 0.20:
+                if score >= self.label_threshold:
                     label = "BULLISH"
-                elif score <= -0.20:
+                elif score <= -self.label_threshold:
                     label = "BEARISH"
                 else:
                     label = "NEUTRAL"
@@ -282,17 +349,20 @@ class FinBERTSentimentClassifier(BaseSentimentClassifier):
                 output_results.append(SentimentResult(score=round(score, 3), label=label, confidence=round(confidence, 2)))
         except Exception as e:
             logger.error(f"Error during FinBERT batch inference: {e}")
+            self._used_fallback = True
             fallback = HeuristicSentimentClassifier()
             return fallback.analyze_batch(texts)
 
         return output_results
 
 
-# Global Singleton for Classifier
+# Global Singletons: one classifier for news (FinBERT), one for X posts (FinTwitBERT by default)
 _classifier_instance = None
+_social_classifier_instance = None
 
 
 def get_sentiment_classifier() -> BaseSentimentClassifier:
+    """News classifier: settings.SENTIMENT_MODEL (FinBERT, trained on formal financial text)."""
     global _classifier_instance
     if _classifier_instance is None:
         if getattr(settings, "USE_FINBERT", False):
@@ -301,4 +371,22 @@ def get_sentiment_classifier() -> BaseSentimentClassifier:
         else:
             _classifier_instance = HeuristicSentimentClassifier()
     return _classifier_instance
+
+
+def get_social_sentiment_classifier() -> BaseSentimentClassifier:
+    """
+    X/Twitter classifier: settings.SOCIAL_SENTIMENT_MODEL with settings.SOCIAL_SENTIMENT_THRESHOLD.
+    Uses the heuristic lexicon when transformer models are disabled (USE_FINBERT=False).
+    To revert tweets to FinBERT, set SOCIAL_SENTIMENT_MODEL=ProsusAI/finbert and SOCIAL_SENTIMENT_THRESHOLD=0.20.
+    """
+    global _social_classifier_instance
+    if _social_classifier_instance is None:
+        if getattr(settings, "USE_FINBERT", False):
+            _social_classifier_instance = FinBERTSentimentClassifier(
+                getattr(settings, "SOCIAL_SENTIMENT_MODEL", "StephanAkkerman/FinTwitBERT-sentiment"),
+                label_threshold=getattr(settings, "SOCIAL_SENTIMENT_THRESHOLD", 0.90)
+            )
+        else:
+            _social_classifier_instance = HeuristicSentimentClassifier()
+    return _social_classifier_instance
 

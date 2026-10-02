@@ -51,6 +51,7 @@ class SocialPostModel(Base):
     sentiment_score = Column(Float, nullable=False)  # -1.0 to +1.0
     sentiment_label = Column(String(20), nullable=False)  # BULLISH, BEARISH, NEUTRAL
     sentiment_confidence = Column(Float, default=1.0)  # 0.0 to 1.0
+    sentiment_model = Column(String(80), nullable=True)  # Model that produced the label (NULL = before it was tracked)
     relevance_score = Column(Float, default=1.0)  # 0.0 to 1.0
     engagement_score = Column(Float, default=0.0)
     recency_weight = Column(Float, default=1.0)
@@ -61,6 +62,7 @@ class SocialPostModel(Base):
 
     # Data Provenance: "LIVE", "MOCK", "TWIKIT"
     source = Column(String(20), default="LIVE", index=True)
+    lang = Column(String(10), nullable=True)  # Language detected by X; NULL for posts collected before it was stored
 
     ticker_rel = relationship("TickerModel", back_populates="social_posts")
 
@@ -243,6 +245,9 @@ class SSISnapshotModel(Base):
     relevant_post_count = Column(Integer, nullable=True) # Posts passing relevance threshold
     unique_post_count = Column(Integer, nullable=True) # Unique posts after text deduplication
     author_count = Column(Integer, nullable=True)     # Distinct authors count
+    social_polarity_raw = Column(Float, nullable=True)  # Opinion-only X polarity (0-100) before baseline centering
+    social_baseline = Column(Float, nullable=True)      # Ticker's trailing X polarity norm (0-100) subtracted from the SSI
+    mention_volume_ratio = Column(Float, nullable=True) # Unique relevant posts vs the ticker's normal daily rate
     news_count = Column(Integer, nullable=True)       # News articles count
     prediction_count = Column(Integer, nullable=True) # Prediction markets count
     

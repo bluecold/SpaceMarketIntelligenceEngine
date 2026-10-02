@@ -1,4 +1,5 @@
 import pytest
+from app.config import settings
 from app.backtesting.engine import (
     calculate_financial_metrics,
     evaluate_backtest_dataset,
@@ -198,7 +199,7 @@ def test_dynamic_weight_calibration_closed_loop():
     assert cal_pos["calibrated_weight"] > 0.15
     assert cal_pos["calibrated_weight"] == pytest.approx(0.225, abs=0.01)
     assert sum(cal_pos["effective_weights"].values()) == pytest.approx(1.0, abs=1e-4)
-    assert cal_pos["effective_weights"]["social"] < 0.30  # Proportional reduction of others
+    assert cal_pos["effective_weights"]["social"] < settings.WEIGHT_SOCIAL  # Proportional reduction of others
 
     # Case 3: Significant Underperformance (N=50 >= 30, Delta Sharpe = -1.5, difference_significant = True)
     mock_negative_alpha = {

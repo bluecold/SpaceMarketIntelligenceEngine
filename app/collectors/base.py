@@ -16,6 +16,7 @@ class SocialPostData(BaseModel):
     replies: int = 0
     views: int = 0
     source: str = "LIVE"  # "LIVE", "MOCK", "DEGRADED"
+    lang: Optional[str] = None  # Language detected by X (e.g. "en", "ja", "und"); None when unknown
 
 
 class MarketData(BaseModel):

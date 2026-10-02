@@ -3,6 +3,9 @@ import pandas as pd
 import numpy as np
 from app.config import settings
 
+# Points added/removed by the EMA200 trend filter (price above/below the long-term trend)
+TREND_FILTER_POINTS = 10.0
+
 
 def calculate_momentum_score(
     indicators: Dict[str, Any],
@@ -10,9 +13,21 @@ def calculate_momentum_score(
     at_index: Optional[int] = None
 ) -> Optional[float]:
     """
-    Computes Price Momentum Score (0 to 100).
-    Evaluates short-term returns (1d, 3d, 5d), distance from EMA200, volume ratio,
-    with penalties for extreme RSI / overextension.
+    Computes the Market Momentum pillar (0 to 100) as technical *context* for a sentiment-driven SMI.
+
+    Components:
+      - EMA200 trend filter: +/-10 for price above/below the EMA200 (binary, scale invariant), skipped
+        when the EMA200 is not reliable (short price history).
+      - Direction-aware volume confirmation: heavy volume adds up to +10 on up days and subtracts up to
+        10 on down days; thin volume (< 0.8x) subtracts 5.
+      - Overextension penalty: RSI above 75 subtracts 1.5 points per RSI point.
+
+    Why not trend-following returns: on 2 years of daily prices for the covered tickers (1,756 bars,
+    Oct 2026 review) the previous 1/3/5-day return term had ~0 rank correlation with forward 1-5 day
+    returns, and the linear EMA200 distance had a negative one (-0.13 within ticker at 3 days). No variant
+    showed positive predictive power, so the pillar is kept small (WEIGHT_MOMENTUM = 0.10) and
+    low-variance (std ~9 points instead of ~22) so it frames the sentiment pillars instead of driving the SMI.
+
     Supports `at_index` slicing for historical backtesting parity without lookahead bias.
     """
     if indicators.get("status") != "AVAILABLE" or indicators.get("price") is None:
@@ -23,50 +38,25 @@ def calculate_momentum_score(
     rsi = indicators.get("rsi14", 50.0)
     vol_ratio = indicators.get("volume_ratio", 1.0)
 
-    # Base baseline momentum score
     score = 50.0
 
-    # 1. EMA200 Distance (ATR-Normalized Scale Invariance)
-    atr = indicators.get("atr")
-    if ema200 and ema200 > 0:
-        if atr and atr > 0:
-            # Express distance in ATR units (Z_atr = (Price - EMA) / ATR)
-            # 1 full ATR above EMA200 maps to +10.0 momentum points (capped at +/-20.0 for 2 ATRs)
-            z_atr = (price - ema200) / atr
-            score += float(np.clip(z_atr * 10.0, -20.0, 20.0))
-        else:
-            dist_pct = ((price - ema200) / ema200) * 100.0
-            if dist_pct > 0:
-                score += min(20.0, dist_pct * 1.5)
-            else:
-                score += max(-20.0, dist_pct * 1.5)
+    # 1. EMA200 trend filter (binary)
+    if ema200 and ema200 > 0 and indicators.get("ema200_reliable", True):
+        score += TREND_FILTER_POINTS if price >= ema200 else -TREND_FILTER_POINTS
 
-    # 2. Short term price returns from dataframe
+    # 2. Direction of the latest session, used to sign the volume confirmation
     is_falling = False
     if raw_df is not None:
         df_slice = raw_df.iloc[: at_index + 1] if at_index is not None else raw_df
         if len(df_slice) >= 2:
             close = df_slice['Close']
             is_falling = bool(close.iloc[-1] < close.iloc[-2])
-        if len(df_slice) >= 6:
-            close = df_slice['Close']
-            ret_1d = ((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2]) * 100.0
-            ret_3d = ((close.iloc[-1] - close.iloc[-4]) / close.iloc[-4]) * 100.0
-            ret_5d = ((close.iloc[-1] - close.iloc[-6]) / close.iloc[-6]) * 100.0
-            
-            weighted_ret = (0.5 * ret_1d) + (0.3 * ret_3d) + (0.2 * ret_5d)
-            score += np.clip(weighted_ret * 2.0, -25.0, 25.0)
-            if weighted_ret < -0.2:
-                is_falling = True
     else:
         p_chg = indicators.get("price_change_1d")
         if p_chg is not None and p_chg < 0:
             is_falling = True
 
-    # 3. Volume confirmation: Direction-aware (P1.6 audit fix)
-    # High volume confirms direction:
-    # - If price is rising/neutral: institutional accumulation adds up to +10.0
-    # - If price is falling: high volume indicates selling pressure / distribution, penalizing up to -10.0
+    # 3. Volume confirmation: high volume confirms the day's direction (accumulation vs distribution)
     if vol_ratio is not None:
         if vol_ratio >= settings.VOLUME_RATIO_INSTITUTIONAL_BUY:
             vol_delta = min(10.0, (vol_ratio - 1.0) * 8.0)
@@ -77,7 +67,7 @@ def calculate_momentum_score(
         elif vol_ratio < settings.VOLUME_RATIO_WEAKNESS:
             score -= 5.0
 
-    # 4. Overbought Penalty (extreme RSI > 75 dampens momentum quality)
+    # 4. Overbought penalty (extreme RSI > 75 dampens momentum quality)
     if rsi and rsi > 75.0:
         overbought_excess = rsi - 75.0
         score -= overbought_excess * 1.5

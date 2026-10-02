@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional
 
 from app.config import settings, INITIAL_TICKERS
@@ -20,14 +20,18 @@ from app.collectors.market_provider import YFinanceMarketProvider
 from app.collectors.news_provider import GoogleRSSNewsProvider, MockNewsProvider
 from app.collectors.mock_polymarket_provider import MockPolymarketProvider
 from app.collectors.polymarket_provider import PolymarketGammaProvider
-from app.sentiment.classifier import get_sentiment_classifier
+from app.sentiment.classifier import get_sentiment_classifier, get_social_sentiment_classifier
 from app.sentiment.weighting import (
     calculate_engagement_score, calculate_recency_weight,
-    calculate_relevance_score, detect_catalysts, calculate_news_score
+    calculate_relevance_score, detect_catalysts, calculate_news_score,
+    reconcile_sentiment_with_catalyst
 )
 from app.technical.indicators import calculate_technical_indicators
 from app.technical.scorer import calculate_technical_score
-from app.scoring.social import calculate_social_score, apply_bayesian_shrinkage
+from app.scoring.social import (
+    calculate_social_score, apply_bayesian_shrinkage, calculate_social_baseline, apply_social_baseline,
+    is_promotional_spam
+)
 from app.scoring.prediction import calculate_prediction_market_score
 from app.scoring.momentum import calculate_momentum_score
 from app.scoring.risk import calculate_risk_score
@@ -89,7 +93,7 @@ async def ingest_social_posts_for_ticker(
     if x_provider is None:
         x_provider = get_x_provider()
     if sentiment_classifier is None:
-        sentiment_classifier = get_sentiment_classifier()
+        sentiment_classifier = get_social_sentiment_classifier()
 
     ticker = ticker_config.symbol
     query = f"${ticker} OR \"{ticker_config.name}\""
@@ -109,7 +113,7 @@ async def ingest_social_posts_for_ticker(
         eng_score = calculate_engagement_score(p.likes, p.reposts, p.replies, p.views)
 
         post_cats = detect_catalysts(p.text, ticker=ticker)
-        if rel_score >= 0.30:
+        if rel_score >= 0.30 and not is_promotional_spam(p):
             for c in post_cats:
                 catalysts_found.append({"category": c["category"], "direction": c["direction"], "importance": c["importance"]})
 
@@ -117,6 +121,9 @@ async def ingest_social_posts_for_ticker(
         cat_type = top_cat["category"] if top_cat else None
         cat_dir = top_cat["direction"] if top_cat else None
         cat_imp = top_cat["importance"] if top_cat else "MEDIUM"
+        sent_score, sent_label, sent_conf = reconcile_sentiment_with_catalyst(
+            sent_res.score, sent_res.label, sent_res.confidence, top_cat
+        )
 
         processed_posts.append({
             "tweet_id": p.tweet_id,
@@ -129,16 +136,18 @@ async def ingest_social_posts_for_ticker(
             "reposts": p.reposts,
             "replies": p.replies,
             "views": p.views,
-            "sentiment_score": sent_res.score,
-            "sentiment_label": sent_res.label,
-            "sentiment_confidence": sent_res.confidence,
+            "sentiment_score": sent_score,
+            "sentiment_label": sent_label,
+            "sentiment_confidence": sent_conf,
             "relevance_score": rel_score,
             "engagement_score": eng_score,
             "recency_weight": rec_weight,
             "catalyst": cat_type,
             "catalyst_direction": cat_dir,
             "catalyst_importance": cat_imp,
-            "source": getattr(p, "source", "LIVE")
+            "source": getattr(p, "source", "LIVE"),
+            "lang": getattr(p, "lang", None),
+            "sentiment_model": getattr(sentiment_classifier, "model_id", None)
         })
 
     saved_count = 0
@@ -165,9 +174,10 @@ async def ingest_news_for_ticker(
     catalysts_found = []
     now_utc = utc_now()
 
-    for n in news_items:
-        text_content = f"{n.title}. {n.summary}"
-        sent_res = sentiment_classifier.analyze(text_content)
+    news_texts = [f"{n.title}. {n.summary}" for n in news_items]
+    news_sentiments = sentiment_classifier.analyze_batch(news_texts) if news_texts else []
+
+    for n, text_content, sent_res in zip(news_items, news_texts, news_sentiments):
         rel_score = calculate_relevance_score(text_content, ticker, ticker_config.aliases)
         news_cats = detect_catalysts(text_content, ticker=ticker)
 
@@ -185,6 +195,9 @@ async def ingest_news_for_ticker(
         cat_type = top_cat["category"] if top_cat else None
         cat_dir = top_cat["direction"] if top_cat else None
         cat_imp = top_cat["importance"] if top_cat else "MEDIUM"
+        sent_score, sent_label, sent_conf = reconcile_sentiment_with_catalyst(
+            sent_res.score, sent_res.label, sent_res.confidence, top_cat
+        )
 
         processed_news.append({
             "ticker": ticker,
@@ -193,9 +206,9 @@ async def ingest_news_for_ticker(
             "source": n.source,
             "url": n.url,
             "published_at": n.published_at,
-            "sentiment_score": sent_res.score,
-            "sentiment_label": sent_res.label,
-            "sentiment_confidence": sent_res.confidence,
+            "sentiment_score": sent_score,
+            "sentiment_label": sent_label,
+            "sentiment_confidence": sent_conf,
             "relevance_score": rel_score,
             "catalyst": cat_type,
             "catalyst_direction": cat_dir,
@@ -305,6 +318,7 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
         market_provider = YFinanceMarketProvider()
         poly_provider = get_polymarket_provider()
         sentiment_classifier = get_sentiment_classifier()
+        social_classifier = get_social_sentiment_classifier()
 
         # Step 0: Ingest Polymarket Prediction Markets globally for the sector (if enabled)
         poly_markets = []
@@ -334,7 +348,7 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
             catalysts_found = []
             try:
                 saved_count, posts_data, soc_cats = await ingest_social_posts_for_ticker(
-                    db, ticker_config, x_provider=x_provider, sentiment_classifier=sentiment_classifier
+                    db, ticker_config, x_provider=x_provider, sentiment_classifier=social_classifier
                 )
                 catalysts_found.extend(soc_cats)
                 records_processed += len(posts_data)
@@ -413,6 +427,14 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
             now_eval = utc_now()
             recent_posts = get_recent_social_posts(db, ticker, hours=settings.SOCIAL_LOOKBACK_HOURS)
             social_res = calculate_social_score(recent_posts, analysis_timestamp=now_eval)
+            # Re-center X polarity on the ticker's own trailing norm (excluding the current lookback window)
+            baseline_posts = get_recent_social_posts(db, ticker, hours=settings.SOCIAL_BASELINE_DAYS * 24)
+            social_baseline = calculate_social_baseline(
+                baseline_posts,
+                window_start=now_eval - timedelta(days=settings.SOCIAL_BASELINE_DAYS),
+                window_end=now_eval - timedelta(hours=settings.SOCIAL_LOOKBACK_HOURS)
+            )
+            social_res = apply_social_baseline(social_res, social_baseline)
             social_score = social_res["social_score"]
 
             recent_news = get_recent_news_items(db, ticker, days=3)
@@ -638,6 +660,9 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 "relevant_post_count": social_res.get("relevant_post_count", len(recent_posts)),
                 "unique_post_count": social_res.get("unique_post_count", len(recent_posts)),
                 "author_count": social_res.get("author_count", 0),
+                "social_polarity_raw": social_res.get("social_polarity_raw"),
+                "social_baseline": social_res.get("social_baseline"),
+                "mention_volume_ratio": social_res.get("mention_volume_ratio"),
                 "news_count": len(recent_news),
                 "prediction_count": prediction_count,
                 "data_source": overall_data_src,

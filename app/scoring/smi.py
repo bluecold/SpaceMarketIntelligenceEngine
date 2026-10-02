@@ -74,6 +74,15 @@ def get_active_weights() -> Dict[str, float]:
     }
 
 
+def describe_engine() -> Dict[str, Any]:
+    """Version and active SMI base weights, served to the UI so its labels never drift from the code."""
+    return {
+        "version": settings.APP_VERSION,
+        "rules_version": getattr(settings, "RULES_VERSION", settings.APP_VERSION),
+        "weights": {k: round(v, 4) for k, v in get_active_weights().items()},
+    }
+
+
 def calculate_smi(
     social_score: Optional[float] = None,
     prediction_score: Optional[float] = None,

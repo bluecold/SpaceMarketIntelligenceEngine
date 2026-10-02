@@ -9,7 +9,8 @@ from app.database.repository import (
     utc_now
 )
 from app.scoring.social import calculate_social_score
-from app.config import INITIAL_TICKERS, DEFAULT_EVENT_COMPANY_MAPPINGS
+from app.scoring.smi import describe_engine
+from app.config import INITIAL_TICKERS, DEFAULT_EVENT_COMPANY_MAPPINGS, settings
 
 router = APIRouter(tags=["Tickers"])
 
@@ -24,18 +25,27 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
 
     ssi_snap = get_latest_ssi_snapshot(db, ticker_sym)
     mkt_snap = get_latest_market_snapshot(db, ticker_sym)
-    posts = get_recent_social_posts(db, ticker_sym, hours=24)
+    posts = get_recent_social_posts(db, ticker_sym, hours=settings.SOCIAL_LOOKBACK_HOURS)
     news_items = get_recent_news_items(db, ticker_sym, days=3)
     markets = get_recent_prediction_markets(db, ticker_sym)
     divergences = get_active_divergences(db, ticker_sym, hours=48)
-    social_stats = calculate_social_score(posts)
+    # Same pass as the SSI: every post is tagged counted/excluded with its weight, so the feed matches the score
+    post_details: Dict[int, Dict[str, Any]] = {}
+    social_stats = calculate_social_score(posts, post_details=post_details)
 
     # Post serialization
     posts_payload = []
     catalysts_payload = []
+    excluded_counts: Dict[str, int] = {}
 
     for p in posts:
-        if p.catalyst and p.catalyst not in [c["category"] for c in catalysts_payload]:
+        info = post_details.get(id(p), {"status": "excluded", "reason": "low_relevance", "weight": 0.0, "vote_share": 0.0})
+        if info["status"] == "excluded":
+            excluded_counts[info["reason"]] = excluded_counts.get(info["reason"], 0) + 1
+
+        # Catalysts only from posts that can raise them in the pipeline (relevant, English, not promo spam)
+        if (p.catalyst and info["reason"] not in ("language", "spam") and (p.relevance_score or 0) >= 0.30
+                and p.catalyst not in [c["category"] for c in catalysts_payload]):
             catalysts_payload.append({
                 "category": p.catalyst,
                 "direction": p.catalyst_direction,
@@ -43,6 +53,10 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
             })
 
         posts_payload.append({
+            "status": info["status"],
+            "excluded_reason": info["reason"],
+            "ssi_weight": info["weight"],
+            "vote_share": info["vote_share"],
             "id": p.tweet_id,
             "username": p.username,
             "text": p.text,
@@ -59,6 +73,16 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
             "catalyst": p.catalyst,
             "catalyst_importance": p.catalyst_importance
         })
+
+    def _feed_rank(post: Dict[str, Any]):
+        if post["status"] != "counted":
+            return (2, 0.0)
+        is_opinion = post["sentiment_label"] in ("BULLISH", "BEARISH")
+        return (0 if is_opinion else 1, -post["ssi_weight"])
+
+    posts_payload.sort(key=_feed_rank)
+    social_stats["counted_post_count"] = sum(1 for x in posts_payload if x["status"] == "counted")
+    social_stats["excluded_post_counts"] = excluded_counts
 
     # News serialization
     news_payload = []
@@ -213,7 +237,8 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
         "reasons": reasons,
         "explanation": ssi_snap.explanation if ssi_snap else "",
         "recent_posts": posts_payload,
-        "recent_news": news_payload
+        "recent_news": news_payload,
+        "engine": describe_engine()
     }
 
 

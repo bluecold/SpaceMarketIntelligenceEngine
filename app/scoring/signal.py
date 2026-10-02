@@ -58,7 +58,9 @@ def generate_signal_and_explanation(
         
     raw_social = social_score
     effective_social = apply_bayesian_shrinkage(raw_social, post_count) if (raw_social is not None and post_count is not None) else raw_social
-    effective_mom = smi_mom_1d if (smi_mom_1d is not None and smi_mom_1d != 0.0) else (ssi_mom_1d if (ssi_mom_1d is not None and ssi_mom_1d != 0.0) else None)
+    # Momentum must come from the same index as primary_index: SSI momentum is only used when SMI is unavailable
+    mom_source = smi_mom_1d if smi is not None else ssi_mom_1d
+    effective_mom = mom_source if (mom_source is not None and mom_source != 0.0) else None
     
     rsi = indicators.get("rsi14")
     price = indicators.get("price")
@@ -90,9 +92,11 @@ def generate_signal_and_explanation(
             base_signal = "BUY"
         elif primary_index >= settings.THRESHOLD_WATCH:
             base_signal = "WATCH"
-        elif primary_index >= settings.THRESHOLD_HOLD:
+        elif primary_index > settings.THRESHOLD_HOLD:
             base_signal = "HOLD"
-        elif primary_index >= getattr(settings, "THRESHOLD_STRONG_AVOID", getattr(settings, "THRESHOLD_AVOID", 20.0)):
+        elif primary_index > settings.THRESHOLD_AVOID:
+            base_signal = "CAUTION"
+        elif primary_index > settings.THRESHOLD_STRONG_AVOID:
             base_signal = "AVOID"
         else:
             base_signal = "STRONG AVOID"
@@ -117,6 +121,19 @@ def generate_signal_and_explanation(
                 base_signal = "BUY" if base_signal == "STRONG BUY" else "WATCH"
             if "DILUTION RISK" not in modifiers:
                 modifiers.append("DILUTION RISK")
+
+        # Capital Preservation Gate 3b: Active bearish event catalyst (launch failure, contract cancellation,
+        # competitor selected, confirmed capital raise). Slow pillars cannot keep a BUY alive through such an event.
+        has_bearish_event = any(
+            cat.get("direction") == "BEARISH"
+            and (cat.get("importance") == "CRITICAL" or cat.get("category") == "CAPITAL_RAISE")
+            for cat in catalysts_found
+        )
+        if has_bearish_event:
+            if base_signal in ["STRONG BUY", "BUY"]:
+                base_signal = "WATCH"
+            if "CATALYST RISK" not in modifiers:
+                modifiers.append("CATALYST RISK")
 
         # Special Rule: Overbought restriction (RSI > 75 restricts both STRONG BUY and BUY to WATCH)
         is_overbought = False
@@ -227,6 +244,15 @@ def generate_signal_and_explanation(
             "level": "INFO",
             "message": f"👀 {ticker} emerging into bullish WATCH territory (SMI: {primary_index:.1f}/100)"
         })
+    elif base_signal == "CAUTION" and primary_index <= 40.0:
+        alerts.append({
+            "id": f"{ticker}:SIGNAL:CAUTION_BEARISH",
+            "ticker": ticker,
+            "type": "CAUTION_BEARISH",
+            "category": "SIGNAL",
+            "level": "INFO",
+            "message": f"👀 {ticker} slipping into bearish CAUTION territory (SMI: {primary_index:.1f}/100)"
+        })
 
     # SMI 24h Momentum shift alerts
     if effective_mom is not None and is_mom_comparable_1d:
@@ -248,6 +274,26 @@ def generate_signal_and_explanation(
                 "level": "WARNING",
                 "message": f"📉 {ticker}: SMI momentum dropped {effective_mom:.1f} pts in 24h"
             })
+
+    # X attention spike: abnormal mention volume, labelled with the direction the conversation is leaning
+    attention_ratio = social_stats.get("mention_volume_ratio") if social_stats else None
+    spike_ratio = getattr(settings, "SOCIAL_ATTENTION_SPIKE_RATIO", 2.0)
+    if attention_ratio is not None and attention_ratio >= spike_ratio:
+        if effective_social is not None and effective_social >= 55.0:
+            lean = "bullish"
+        elif effective_social is not None and effective_social <= 45.0:
+            lean = "bearish"
+        else:
+            lean = "mixed"
+        alerts.append({
+            "id": f"{ticker}:SIGNAL:ATTENTION_SPIKE",
+            "ticker": ticker,
+            "type": "ATTENTION_SPIKE",
+            "category": "SIGNAL",
+            "level": "WARNING" if lean == "mixed" else "HIGH",
+            "message": f"📣 {ticker}: X mention volume {attention_ratio:.1f}x normal with {lean} sentiment"
+                       + (f" (SSI {effective_social:.0f})" if effective_social is not None else "")
+        })
 
     for div in active_divergences:
         div_level = (
@@ -390,14 +436,19 @@ def generate_signal_and_explanation(
         elif runway_months >= 24.0 or runway_months == 999.0:
             reasons.append(f"+ Strong balance sheet runway: >24 months of cash reserves (low dilution risk)")
 
-    # Social Narrative reasons
-    bull_pct = social_stats.get("weighted_bullish_pct", 0) if social_stats else 0
-    bear_pct = social_stats.get("weighted_bearish_pct", 0) if social_stats else 0
-    if raw_social is not None and (post_count is None or post_count > 0):
-        if bull_pct >= 60.0:
-            reasons.append(f"+ High social bullish sentiment: {bull_pct}% of relevant posts are bullish")
-        elif bear_pct >= 40.0:
-            reasons.append(f"- Elevated social bearish sentiment: {bear_pct}% of relevant posts are bearish")
+    # Social Narrative reasons: SSI is centered on the ticker's own norm, so distance from 50 is the signal
+    social_baseline = social_stats.get("social_baseline") if social_stats else None
+    baseline_txt = f" (raw {social_stats.get('social_polarity_raw'):.0f} vs norm {social_baseline:.0f})" if (
+        social_baseline is not None and social_stats.get("social_polarity_raw") is not None
+    ) else ""
+    if effective_social is not None and (post_count is None or post_count > 0):
+        if effective_social >= 58.0:
+            reasons.append(f"+ X sentiment more bullish than this ticker's norm: SSI {effective_social:.0f}{baseline_txt}")
+        elif effective_social <= 42.0:
+            reasons.append(f"- X sentiment more bearish than this ticker's norm: SSI {effective_social:.0f}{baseline_txt}")
+
+    if attention_ratio is not None and attention_ratio >= spike_ratio:
+        reasons.append(f"! X mention volume {attention_ratio:.1f}x this ticker's normal daily rate")
 
     # No Data State reason
     if not has_any_data or (data_quality is not None and data_quality == 0.0):

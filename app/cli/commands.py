@@ -13,7 +13,7 @@ from app.database.repository import (
     get_latest_market_snapshot, get_recent_prediction_markets,
     get_active_divergences
 )
-from app.sentiment.classifier import get_sentiment_classifier
+from app.sentiment.classifier import get_sentiment_classifier, get_social_sentiment_classifier
 from app.reports.daily_report import generate_daily_report
 from app.backtesting.engine import run_historical_backtest
 
@@ -53,7 +53,7 @@ def collect_social():
         try:
             ensure_tickers_seeded(db)
             x_provider = get_x_provider()
-            sentiment_classifier = get_sentiment_classifier()
+            sentiment_classifier = get_social_sentiment_classifier()
             total_added = 0
             for cfg in INITIAL_TICKERS:
                 ticker = cfg.symbol
@@ -274,6 +274,44 @@ def analyze(ticker):
         click.echo(ssi_snap.explanation or "No explanation generated.")
         click.echo("==================================================")
 
+    finally:
+        db.close()
+
+
+@cli.command("reclassify-social")
+@click.option("--days", default=14, show_default=True, help="Reclassify posts created in the last N days (SSI baseline window).")
+@click.option("--all", "include_current", is_flag=True, help="Also reclassify posts already labelled by the current model.")
+def reclassify_social(days, include_current):
+    """Re-run the X/Twitter sentiment model on stored posts (run after changing SOCIAL_SENTIMENT_MODEL)."""
+    from app.database.repository import acquire_pipeline_job_lock, update_job_heartbeat, finish_job_run
+    from app.jobs.reclassify import reclassify_social_posts
+
+    init_db()
+    db = SessionLocal()
+    # Hold the pipeline lock so a scheduled run cannot write posts while history is being relabelled
+    job, conflict = acquire_pipeline_job_lock(db, source="CLI_RECLASSIFY")
+    if job is None:
+        db.close()
+        raise click.ClickException(conflict or "Pipeline lock unavailable.")
+    try:
+        classifier = get_social_sentiment_classifier()
+        click.echo(f"[SMIE] Reclassifying X posts from the last {days} days with {classifier.model_id}...")
+
+        def _progress(done, total):
+            update_job_heartbeat(db, job.id)
+            click.echo(f"  {done}/{total}")
+
+        res = reclassify_social_posts(db, days=days, classifier=classifier,
+                                      only_other_models=not include_current, on_batch=_progress)
+        finish_job_run(db, job.id, status="SUCCESS", records=res["processed"])
+        click.echo(click.style(
+            f"[SUCCESS] {res['processed']} posts reclassified with {res['model']} "
+            f"({res['label_changes']} label changes). Before: {res['labels_before']} | After: {res['labels_after']}",
+            fg="green"
+        ))
+    except Exception as e:
+        finish_job_run(db, job.id, status="ERROR", error=str(e))
+        raise click.ClickException(str(e))
     finally:
         db.close()
 

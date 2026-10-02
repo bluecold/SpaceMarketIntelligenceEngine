@@ -118,7 +118,14 @@ def test_momentum_and_risk_scores():
     mom_with_df = calculate_momentum_score(indicators, raw_df=raw_df)
     risk_with_df = calculate_risk_score(indicators, raw_df=raw_df)
 
-    assert mom_with_df is not None and mom_with_df > mom_no_df  # Positive short-term returns boost momentum
+    # v2.2: 1-5 day returns no longer move the pillar (no predictive power on 2y of prices); only the
+    # session direction signs the volume confirmation, and this series closes up on the last bar
+    assert mom_with_df is not None and mom_with_df == mom_no_df
+
+    falling_df = raw_df.copy()
+    falling_df.loc[falling_df.index[-1], 'Close'] = prices[-2] - 1.0
+    mom_falling = calculate_momentum_score(indicators, raw_df=falling_df)
+    assert mom_falling < mom_with_df  # Heavy volume on a down day is distribution, not accumulation
     assert risk_with_df is not None and 0.0 <= risk_with_df <= 100.0
 
 

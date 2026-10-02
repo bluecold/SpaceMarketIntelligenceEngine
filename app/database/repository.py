@@ -108,7 +108,9 @@ def save_social_posts(db: Session, posts_data: List[Dict[str, Any]]) -> int:
                 catalyst=data.get("catalyst"),
                 catalyst_direction=data.get("catalyst_direction"),
                 catalyst_importance=data.get("catalyst_importance", "MEDIUM"),
-                source=data.get("source", "MOCK" if str(tweet_id).startswith("mock_") else "LIVE")
+                source=data.get("source", "MOCK" if str(tweet_id).startswith("mock_") else "LIVE"),
+                lang=data.get("lang"),
+                sentiment_model=data.get("sentiment_model")
             )
             db.add(post)
             existing_posts[(tweet_id, ticker_up)] = post
@@ -653,6 +655,9 @@ def save_ssi_snapshot(db: Session, data: Dict[str, Any], commit: bool = True) ->
         relevant_post_count=data.get("relevant_post_count", data.get("post_count")),
         unique_post_count=data.get("unique_post_count", data.get("post_count")),
         author_count=data.get("author_count"),
+        social_polarity_raw=data.get("social_polarity_raw"),
+        social_baseline=data.get("social_baseline"),
+        mention_volume_ratio=data.get("mention_volume_ratio"),
         news_count=data.get("news_count"),
         prediction_count=data.get("prediction_count"),
         data_source=data.get("data_source", "LIVE"),

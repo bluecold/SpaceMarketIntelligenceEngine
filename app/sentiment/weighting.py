@@ -64,17 +64,20 @@ CATALYST_CONFIG = {
             "convertible debentures", "notes offering", "prices convertible notes",
             "prices offering", "prices public offering", "at-the-market",
             "at the market", "atm offering", "atm facility", "atm program",
-            "atm sales", "atm agreement", "capital raise", "cash burn",
+            "atm sales", "atm agreement", "capital raise",
             "debt offering", "private placement", "pipe financing", "pipe offering"
+            # 'cash burn' is deliberately absent: it is an ongoing risk (covered by fundamentals runway), not a raise event
         ],
         "direction": "BEARISH",
         "importance": "HIGH"
     },
     "LAUNCH_FAILURE": {
         "keywords": [
-            "launch failure", "failed launch", "explosion", "exploded", "exploding",
+            "launch failure", "failed launch", "explosion", "explodes", "exploded", "exploding",
+            "blew up", "blows up", "blown up", "broke apart", "breaks apart", "disintegrated",
             "rud", "rapid unscheduled disassembly", "lost vehicle", "mission failure",
-            "payload lost", "booster lost", "crash", "crashed", "engine failure"
+            "payload lost", "booster lost", "lost contact", "failed to reach orbit",
+            "crash", "crashed", "engine failure"
         ],
         "direction": "BEARISH",
         "importance": "CRITICAL"
@@ -176,8 +179,9 @@ CONTRACT_CANCELLATION_PATTERNS = [
     r"\b(?:contract|award|task\s+order|deal)\b(?:\s+\w+){0,4}\s+\b(?:revoked|rescinded|scrapped)\b",
     # loses/lost contract/award/deal
     r"\b(?:lost|loses|losing)\b(?:\s+\w+){0,3}\s+\b(?:contract|award|deal)\b",
-    # loss of contract/award
+    # loss of contract/award, contract loss
     r"\b(?:loss\s+of)\s+(?:the\s+|a\s+|its\s+)?(?:contract|award|deal)\b",
+    r"\b(?:contract|award|deal)\s+loss(?:es)?\b",
     # dropped/cut from contract/program
     r"\b(?:dropped\s+from|cut\s+from)\s+(?:the\s+|a\s+)?(?:contract|program|award)\b"
 ]
@@ -201,12 +205,68 @@ FAA_DENIAL_PATTERNS = [
 
 FIGURATIVE_EXPLOSION_PATTERNS = [
     r"\bexplosions?\s+(?:of|in)\s+(?:demand|growth|interest|sales|activity|volume|revenue|users|orders|popularity|traffic|capacity)\b",
-    r"\b(?:demand|growth|interest|sales|popularity|revenue|activity)\s+exploded\b",
-    r"\bexploded\s+(?:in\s+popularity|higher|onto\s+the\s+scene)\b"
+    r"\b(?:demand|growth|interest|sales|popularity|revenue|activity|volume)\s+(?:explodes|exploded|exploding)\b",
+    r"\b(?:explodes|exploded|exploding)\s+(?:in\s+popularity|higher|upward|up|onto\s+the\s+scene)\b",
+    r"\b(?:stock|stocks|shares?|price|calls?|options?)\s+(?:explodes|exploded|exploding|blew\s+up|blows\s+up)\b"
 ]
 
+EXPLOSION_KEYWORDS = ("explosion", "explodes", "exploded", "exploding", "blew up", "blows up", "blown up")
+
+# Bare delay/anomaly words also describe corporate events ('delays earnings report'); they need launch context
+GENERIC_DELAY_KEYWORDS = ("delay", "delayed", "delays", "rescheduled", "postponed", "anomaly", "scrubbed", "scrub", "grounded")
+
+FINANCIAL_DELAY_PATTERNS = [
+    r"\b(?:delay(?:s|ed|ing)?|postpone(?:s|d)?|reschedule(?:s|d)?)\s+(?:(?:its|the|their|a|an)\s+)?(?:[a-z0-9'-]+\s+){0,2}"
+    r"(?:earnings|results|report|filing|10-k|10-q|annual\s+meeting|shareholder\s+meeting|vote|merger|acquisition|closing|"
+    r"conference\s+call|investor\s+day|offering|ipo|listing|payment|dividend)\b",
+    r"\b(?:earnings|results|report|filing|10-k|10-q|meeting|vote|merger|acquisition|closing|ipo|listing|payment|dividend)\s+"
+    r"(?:[a-z0-9'-]+\s+){0,2}(?:delayed|postponed|rescheduled)\b"
+]
+
+# Context for generic delay words: aerospace terms plus launch/flight vocabulary.
+# Company names containing 'rocket' are stripped first so 'Rocket Lab' alone does not count as context.
+DELAY_CONTEXT_EXTRA_TERMS = {"launch", "launches", "launching", "flight", "test flight", "maiden", "debut", "deployment"}
+COMPANY_NAME_CONTEXT_NOISE = [r"\brocket\s*lab\b"]
+
+# Partnership words that are too generic on their own; they need a non-excluded context
+WEAK_PARTNERSHIP_KEYWORDS = ("agreement", "partner")
+
+PARTNERSHIP_EXCLUSION_PATTERNS = [
+    r"\bsettle(?:s|d|ment)?\b",
+    r"\b(?:merger|credit|loan|underwriting|sales|(?:securities|stock|share)\s+purchase|equity\s+distribution|"
+    r"lease|employment|separation|non-disclosure|plea|forbearance|indenture|license\s+termination)\s+agreements?\b",
+    r"\b(?:managing|general|senior|limited|founding)\s+partners?\b",
+    r"\bpartner\s+at\b"
+]
+
+# Known space-sector companies used to validate competitor rivalry phrases ('X beats Y')
+COMPETITOR_ALIASES: Dict[str, List[str]] = {
+    "rklb": ["rocket lab", "rklb", "electron", "neutron"],
+    "asts": ["ast spacemobile", "ast spacemobile inc", "spacemobile", "asts", "bluebird", "ast"],
+    "lunr": ["intuitive machines", "lunr", "nova-c"],
+    "spcx": ["spacex", "spcx", "starship", "falcon"],
+    "spce": ["virgin galactic", "spce"],
+    "satl": ["satellogic", "satl"],
+    "bksy": ["blacksky", "bksy"],
+    "pl": ["planet labs", "planet labs pbc", "planet labs inc", "planet", "pl"],
+    "rdw": ["redwire", "redwire space", "rdw"],
+    "mnts": ["momentus", "mnts"],
+    "llap": ["terran orbital", "llap"]
+}
+OTHER_SPACE_COMPANIES = [
+    "blue origin", "ula", "united launch alliance", "firefly", "relativity", "relativity space",
+    "boeing", "lockheed", "lockheed martin", "northrop", "northrop grumman", "kuiper", "amazon",
+    "oneweb", "eutelsat", "starlink", "viasat", "iridium", "globalstar", "maxar", "astra"
+]
+
+
+def _mentions_known_company(phrase: str) -> bool:
+    p = phrase.lower()
+    names = [a for aliases in COMPETITOR_ALIASES.values() for a in aliases] + OTHER_SPACE_COMPANIES
+    return any(re.search(r'\b' + re.escape(n) + r'\b', p) for n in names)
+
 FINANCIAL_CRASH_PATTERNS = [
-    r"\b(?:stock|shares?|market|price|valuation|equity)\s+crash(?:es|ed)?\b",
+    r"\b(?:stock|shares?|market|price|valuation|equity)\s+(?:[a-z0-9'-]+\s+){0,2}crash(?:es|ed|ing)?\b",
     r"\bcrash(?:es|ed)?\s+(?:after\s+earnings|post-earnings|following\s+earnings|in\s+trading|on\s+results|on\s+guidance)\b",
     r"\b(?:crashed|crashing)\s+(?:\d+%\s+|over\s+\d+%\s+|more\s+than\s+\d+%\s+)?(?:after|following|on|today|yesterday|this\s+week)\b",
     r"\bcrash(?:es|ed)?\s+\d+%\b"
@@ -324,28 +384,28 @@ def detect_catalysts(
     # 2. Detect if the text is historical retrospect (e.g. event from years ago)
     is_hist = any(re.search(p, clean_text) for p in HISTORICAL_PATTERNS)
 
-    # 3. Detect inter-company competitor rivalry (e.g. "NASA selects SpaceX over Rocket Lab", "Rocket Lab beats SpaceX")
+    # Government / contract context, shared by rivalry and contract detection
+    has_gov_entity = any(re.search(rf"\b{re.escape(g)}\b", clean_text) for g in GOV_AGENCIES)
+    has_contract_noun = any(re.search(rf"\b{re.escape(c)}\b", clean_text) for c in CONTRACT_TERMS)
+
+    # 3. Detect inter-company competitor rivalry (e.g. "NASA selects SpaceX over Rocket Lab", "Rocket Lab beats SpaceX for SDA contract")
+    # Rivalry is only scored as GOVERNMENT_CONTRACT when there is agency or contract context.
     winner = None
     defeated = None
+    has_award_context = has_gov_entity or has_contract_noun
 
     # Pattern A: "selects/wins/awarded [winner] over [defeated]"
     m_selects = re.search(r'\b(?:wins?|awarded|selects?|selected|picks?|picked|choos(?:es|ing)|chosen)\s+([a-z0-9\s]+?)\s+(?:over|instead of|against|beating)\s+([a-z0-9\s]+?)(?:\s+(?:for|on|in|to|with)\b|[.,;]|$)', clean_text)
-    if m_selects:
+    if m_selects and has_award_context:
         winner = m_selects.group(1).strip()
         defeated = m_selects.group(2).strip()
-    else:
-        # Pattern B: "[winner] beats/defeats/outcompetes [defeated]"
+    elif not m_selects and has_award_context:
+        # Pattern B: "[winner] beats/defeats/outcompetes [defeated]".
+        # Both sides must name known space companies, so 'beats the street' or 'beats estimates' never qualify.
         m_beats = re.search(r'\b([a-z0-9\s]+?)\s+(?:beats?|defeats?|outcompetes?)\s+([a-z0-9\s]+?)(?:\s+(?:for|on|in|to|with)\b|[.,;]|$)', clean_text)
-        if m_beats:
-            cand_defeated = m_beats.group(2).strip().lower()
-            financial_beat_terms = (
-                "earnings", "estimates", "expectations", "guidance", "consensus",
-                "forecasts", "wall street", "analysts", "projections", "targets",
-                "revenue", "loss", "profit", "views", "q1", "q2", "q3", "q4"
-            )
-            if not any(cand_defeated == term or cand_defeated.startswith(term + " ") for term in financial_beat_terms):
-                winner = m_beats.group(1).strip()
-                defeated = m_beats.group(2).strip()
+        if m_beats and _mentions_known_company(m_beats.group(1)) and _mentions_known_company(m_beats.group(2)):
+            winner = m_beats.group(1).strip()
+            defeated = m_beats.group(2).strip()
 
     if winner and defeated:
         def _match_phrase(phrase: str, target: Optional[str]) -> bool:
@@ -355,18 +415,7 @@ def detect_catalysts(
             p = phrase.lower()
             if re.search(r'\b' + re.escape(t) + r'\b', p):
                 return True
-            alias_map = {
-                "rklb": ["rocket lab", "rklb", "electron", "neutron"],
-                "asts": ["ast spacemobile", "ast spacemobile inc", "spacemobile", "asts", "bluebird", "ast"],
-                "lunr": ["intuitive machines", "lunr", "nova-c"],
-                "spcx": ["spacex", "spcx", "starship", "falcon"],
-                "bksy": ["blacksky", "bksy"],
-                "pl": ["planet labs", "planet labs pbc", "planet labs inc", "planet", "pl"],
-                "rdw": ["redwire", "redwire space", "rdw"],
-                "mnts": ["momentus", "mnts"],
-                "llap": ["terran orbital", "llap"]
-            }
-            for alias in alias_map.get(t, []):
+            for alias in COMPETITOR_ALIASES.get(t, []):
                 if re.search(r'\b' + re.escape(alias) + r'\b', p):
                     return True
             return False
@@ -393,8 +442,6 @@ def detect_catalysts(
 
     # 4. Government contract detection with contextual entity & cancellation decoupling
     has_contract_cancellation = any(re.search(p, clean_text) for p in CONTRACT_CANCELLATION_PATTERNS)
-    has_gov_entity = any(re.search(rf"\b{re.escape(g)}\b", clean_text) for g in GOV_AGENCIES)
-    has_contract_noun = any(re.search(rf"\b{re.escape(c)}\b", clean_text) for c in CONTRACT_TERMS)
     has_direct_gov_phrase = any(re.search(rf"\b{re.escape(p)}\b", clean_text) for p in [
         "government contract", "defense contract", "sda contract", "military contract", "federal contract"
     ])
@@ -428,7 +475,11 @@ def detect_catalysts(
 
     # 5. Partnership detection with cancellation handling
     if "PARTNERSHIP" not in seen_categories:
-        has_partnership_kw = any(re.search(rf"\b{re.escape(kw)}\b", clean_text) for kw in CATALYST_CONFIG["PARTNERSHIP"]["keywords"])
+        partnership_hits = [kw for kw in CATALYST_CONFIG["PARTNERSHIP"]["keywords"] if re.search(rf"\b{re.escape(kw)}\b", clean_text)]
+        has_strong_partnership_kw = any(kw not in WEAK_PARTNERSHIP_KEYWORDS for kw in partnership_hits)
+        has_partnership_exclusion = any(re.search(p, clean_text) for p in PARTNERSHIP_EXCLUSION_PATTERNS)
+        # 'agreement' / 'partner' alone in a settlement, financing or job-title context is not a commercial partnership
+        has_partnership_kw = bool(partnership_hits) and (has_strong_partnership_kw or not has_partnership_exclusion)
         if has_partnership_kw:
             has_partner_cancel = any(re.search(p, clean_text) for p in PARTNERSHIP_CANCELLATION_PATTERNS)
             if has_partner_cancel:
@@ -474,7 +525,7 @@ def detect_catalysts(
         has_milestone_kw = any(re.search(rf"\b{re.escape(kw)}\b", clean_text) for kw in CATALYST_CONFIG["TECHNICAL_MILESTONE"]["keywords"])
         if has_milestone_kw:
             is_fig_exp = any(re.search(p, clean_text) for p in FIGURATIVE_EXPLOSION_PATTERNS)
-            exp_failure = any(re.search(p, clean_text) for p in [r"\bexplosion\b", r"\bexplod(ed|ing)\b"]) and not is_fig_exp
+            exp_failure = any(re.search(p, clean_text) for p in [r"\bexplosion\b", r"\bexplod(es|ed|ing)\b", r"\b(?:blew|blows|blown)\s+up\b"]) and not is_fig_exp
             if any(re.search(p, clean_text) for p in [r"\bfail(ed|ure|s)?\b", r"\banomaly\b"]) or exp_failure:
                 matches.append({
                     "category": "TECHNICAL_MILESTONE",
@@ -520,7 +571,7 @@ def detect_catalysts(
                 continue
 
             # Guard against figurative explosion idioms (e.g. "explosion of demand")
-            if category == "LAUNCH_FAILURE" and kw in ("explosion", "exploded", "exploding"):
+            if category == "LAUNCH_FAILURE" and kw in EXPLOSION_KEYWORDS:
                 if any(re.search(p, clean_text) for p in FIGURATIVE_EXPLOSION_PATTERNS):
                     continue
 
@@ -532,6 +583,17 @@ def detect_catalysts(
             # Guard against analyst equity hold ratings (e.g. "analysts keep hold rating")
             if category == "LAUNCH_DELAY" and kw in ("hold", "launch hold", "countdown hold", "pad hold"):
                 if any(re.search(p, clean_text) for p in ANALYST_HOLD_PATTERNS):
+                    continue
+
+            # Generic delay words need launch/aerospace context and must not refer to corporate/financial events
+            if category == "LAUNCH_DELAY" and kw in GENERIC_DELAY_KEYWORDS:
+                if any(re.search(p, clean_text) for p in FINANCIAL_DELAY_PATTERNS):
+                    continue
+                context_text = clean_text
+                for noise in COMPANY_NAME_CONTEXT_NOISE:
+                    context_text = re.sub(noise, " ", context_text)
+                context_terms = AEROSPACE_CONTEXT_TERMS | DELAY_CONTEXT_EXTRA_TERMS
+                if not any(re.search(rf"\b{re.escape(term)}\b", context_text) for term in context_terms):
                     continue
 
             # Guard against non-aerospace launches and require space context for bare launch verbs
@@ -599,6 +661,63 @@ def detect_catalyst(text: str, ticker: Optional[str] = None) -> Tuple[Optional[s
         return None, None, None
     top = all_cats[0]
     return top["category"], top["direction"], top["importance"]
+
+
+# Sentiment prior implied by a detected catalyst, by importance (sign comes from the catalyst direction)
+CATALYST_SENTIMENT_PRIOR = {"CRITICAL": 0.60, "HIGH": 0.40}
+CATALYST_OVERRIDE_CONFIDENCE = {"CRITICAL": 0.80, "HIGH": 0.70}
+# Generic LAUNCH fires on any launch mention (including routine schedules), so it only affects weighting
+CATALYST_RECONCILE_EXCLUDED = {"LAUNCH"}
+
+
+def reconcile_sentiment_with_catalyst(
+    score: float,
+    label: str,
+    confidence: float,
+    catalyst: Optional[Dict[str, Any]]
+) -> Tuple[float, str, float]:
+    """
+    Aligns a classifier sentiment with the top detected catalyst of the same text.
+
+    Only CRITICAL/HIGH catalysts that are not hypothetical, historical or generic LAUNCH take part:
+      - Classifier NEUTRAL: the catalyst prior (+/-0.60 CRITICAL, +/-0.40 HIGH) replaces the score.
+      - Classifier opposite to the catalyst: score becomes the average of classifier and prior.
+      - Classifier already agrees: unchanged.
+    This keeps e.g. a 'prices $500M convertible notes offering' headline that FinBERT reads as neutral
+    from being amplified as a neutral item by the catalyst importance weight.
+    Returns (score, label, confidence).
+    """
+    if not catalyst:
+        return score, label, confidence
+    importance = catalyst.get("importance")
+    direction = catalyst.get("direction")
+    if importance not in CATALYST_SENTIMENT_PRIOR or direction not in ("BULLISH", "BEARISH"):
+        return score, label, confidence
+    if catalyst.get("is_hypothetical") or catalyst.get("is_historical"):
+        return score, label, confidence
+    if catalyst.get("category") in CATALYST_RECONCILE_EXCLUDED:
+        return score, label, confidence
+
+    sign = 1.0 if direction == "BULLISH" else -1.0
+    prior = sign * CATALYST_SENTIMENT_PRIOR[importance]
+
+    if label == "NEUTRAL":
+        new_score = prior
+        new_conf = CATALYST_OVERRIDE_CONFIDENCE[importance]
+    elif (score > 0) != (sign > 0):
+        new_score = (score + prior) / 2.0
+        new_conf = min(confidence, CATALYST_OVERRIDE_CONFIDENCE[importance])
+    else:
+        return score, label, confidence
+
+    new_score = round(max(-1.0, min(1.0, new_score)), 3)
+    if new_score >= 0.20:
+        new_label = "BULLISH"
+    elif new_score <= -0.20:
+        new_label = "BEARISH"
+    else:
+        new_label = "NEUTRAL"
+    return new_score, new_label, round(new_conf, 2)
 
 
 def calculate_news_score(

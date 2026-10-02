@@ -827,10 +827,10 @@ def calculate_calibrated_prediction_weight(
     )
 
     base_weights = {
-        "social": getattr(settings, "WEIGHT_SOCIAL", 0.30),
+        "social": getattr(settings, "WEIGHT_SOCIAL", 0.35),
         "prediction": base_pred_weight,
-        "news": getattr(settings, "WEIGHT_NEWS", 0.20),
-        "momentum": getattr(settings, "WEIGHT_MOMENTUM", 0.25),
+        "news": getattr(settings, "WEIGHT_NEWS", 0.30),
+        "momentum": getattr(settings, "WEIGHT_MOMENTUM", 0.10),
         "fundamental": getattr(settings, "WEIGHT_FUNDAMENTALS", 0.10),
         "risk": getattr(settings, "WEIGHT_RISK", 0.0)
     }
