@@ -31,3 +31,6 @@ data/x_cookies.json
 .DS_Store
 scratch/
 
+
+# Audit study outputs (may contain post data)
+audit/output/
