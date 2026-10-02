@@ -150,6 +150,7 @@ export const App: React.FC = () => {
         onTriggerAnalysis={handleTriggerAnalysis}
         onOpenAbout={() => setShowAboutModal(true)}
         onSelectTicker={(ticker) => setSelectedTicker(ticker)}
+        version={dashboard?.engine?.version}
       />
 
       {loading ? (
@@ -160,6 +161,7 @@ export const App: React.FC = () => {
         <Dashboard
           rankings={dashboard?.rankings || []}
           onSelectTicker={(ticker) => setSelectedTicker(ticker)}
+          engine={dashboard?.engine}
         />
       )}
 

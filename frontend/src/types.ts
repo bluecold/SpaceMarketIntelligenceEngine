@@ -27,8 +27,8 @@ export interface RankingItem {
   momentum_score: number | null;
   risk_score: number | null;
   technical_score: number | null;
-  signal: string;             // STRONG BUY, BUY, WATCH, HOLD, AVOID, STRONG AVOID (can include modifier)
-  base_signal?: string;       // STRONG BUY, BUY, WATCH, HOLD, AVOID, STRONG AVOID
+  signal: string;             // STRONG BUY, BUY, WATCH, HOLD, CAUTION, AVOID, STRONG AVOID (can include modifier)
+  base_signal?: string;       // STRONG BUY, BUY, WATCH, HOLD, CAUTION, AVOID, STRONG AVOID
   signal_modifier?: string | null; // OVEREXTENDED, NO MKT DATA, etc.
   divergence?: string;
   confidence: number;         // 0-100%
@@ -49,12 +49,26 @@ export interface RankingItem {
   is_stale?: boolean;
 }
 
+// Engine version and active SMI base weights (served by the API so UI labels follow app/config.py)
+export interface EngineInfo {
+  version: string;
+  rules_version: string;
+  weights: Record<string, number>;  // social, prediction, news, momentum, fundamental, risk (0-1)
+}
+
+export const formatWeight = (engine: EngineInfo | undefined, pillar: string): string => {
+  const w = engine?.weights?.[pillar];
+  if (w === undefined) return '';
+  return w > 0 ? `${Math.round(w * 100)}%` : 'gate';
+};
+
 export interface DashboardResponse {
   title: string;
   last_update: string | null;
   count: number;
   rankings: RankingItem[];
   alerts?: AlertItem[];
+  engine?: EngineInfo;
 }
 
 export interface SocialPost {
@@ -73,6 +87,10 @@ export interface SocialPost {
   relevance: number;
   catalyst: string | null;
   catalyst_importance?: string;
+  status?: 'counted' | 'excluded';                 // Whether the post feeds the SSI
+  excluded_reason?: 'low_relevance' | 'language' | 'spam' | 'duplicate' | null;
+  ssi_weight?: number;                             // Weight used in the SSI (relevance x recency x confidence x engagement)
+  vote_share?: number;                             // % of the opinion weight (0 for neutral posts, which do not vote)
 }
 
 export interface NewsItem {
@@ -143,6 +161,7 @@ export interface TechnicalData {
 export interface TickerDetailResponse {
   ticker: string;
   name: string;
+  engine?: EngineInfo;
   header: {
     smi: number;
     ssi: number;
@@ -183,6 +202,8 @@ export interface TickerDetailResponse {
     weighted_bullish_pct?: number;
     weighted_neutral_pct?: number;
     weighted_bearish_pct?: number;
+    counted_post_count?: number;
+    excluded_post_counts?: Record<string, number>;
   };
   technical_data: TechnicalData;
   catalysts: CatalystItem[];

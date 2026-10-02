@@ -1,19 +1,20 @@
 import React, { useState } from 'react';
-import { RankingItem } from '../types';
+import { RankingItem, EngineInfo, formatWeight } from '../types';
 import { TrendingUp, TrendingDown, Eye, AlertCircle, Zap, Shield, HelpCircle, Activity, Globe } from 'lucide-react';
 
 interface DashboardProps {
   rankings: RankingItem[];
   onSelectTicker: (ticker: string) => void;
+  engine?: EngineInfo;
 }
 
-export const Dashboard: React.FC<DashboardProps> = ({ rankings, onSelectTicker }) => {
+export const Dashboard: React.FC<DashboardProps> = ({ rankings, onSelectTicker, engine }) => {
   const [viewMode, setViewMode] = useState<'cards' | 'table'>('table');
 
   const getSignalClass = (signal: string) => {
     const s = signal.toUpperCase();
     if (s.includes('STRONG BUY') || s.includes('BUY')) return 'signal-buy';
-    if (s.includes('WATCH') || s.includes('HOLD')) return 'signal-watch';
+    if (s.includes('WATCH') || s.includes('HOLD') || s.includes('CAUTION')) return 'signal-watch';
     if (s.includes('AVOID')) return 'signal-avoid';
     return 'signal-na';
   };
@@ -61,7 +62,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ rankings, onSelectTicker }
             {avgSmi !== '--' ? `${avgSmi} / 100` : '--'}
           </div>
           <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-            Multi-Source: Social 30% | Prediction 15% | News 20% | Market 20%
+            {engine
+              ? `Multi-Source: Social ${formatWeight(engine, 'social')} | News ${formatWeight(engine, 'news')} | Prediction ${formatWeight(engine, 'prediction')} | Market ${formatWeight(engine, 'momentum')} | Fundamentals ${formatWeight(engine, 'fundamental')}`
+              : 'Multi-Source SMI'}
           </div>
         </div>
       </div>

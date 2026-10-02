@@ -10,6 +10,7 @@ interface HeaderProps {
   onTriggerAnalysis: () => void;
   onOpenAbout: () => void;
   onSelectTicker?: (ticker: string) => void;
+  version?: string;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -18,7 +19,8 @@ export const Header: React.FC<HeaderProps> = ({
   alerts,
   onTriggerAnalysis,
   onOpenAbout,
-  onSelectTicker
+  onSelectTicker,
+  version
 }) => {
   return (
     <header className="app-header">
@@ -73,7 +75,7 @@ export const Header: React.FC<HeaderProps> = ({
             </span>
           </div>
           <p className="brand-subtitle">
-            Multivariate Space Market Intelligence: Social (X) • Prediction Markets (Polymarket) • Technical • News (SMIE v2.1)
+            Multivariate Space Market Intelligence: Social (X) • Prediction Markets (Polymarket) • News • Technical context{version ? ` (SMIE v${version})` : ''}
           </p>
         </div>
       </div>

@@ -1,11 +1,21 @@
 import React, { useEffect, useState } from 'react';
-import { TickerDetailResponse, HistoryPoint } from '../types';
+import { TickerDetailResponse, HistoryPoint, formatWeight } from '../types';
 import { HistoryChart } from './HistoryChart';
 import {
   X, CheckCircle, AlertTriangle, MessageSquare, Newspaper,
   Zap, Layers, TrendingUp, DollarSign, Activity, Compass, ExternalLink, ShieldCheck,
   Target, Globe
 } from 'lucide-react';
+
+const FEED_PREVIEW_SIZE = 8;
+
+// Why a post does not feed the SSI (mirrors the exclusion reasons of calculate_social_score)
+const EXCLUDED_REASON_LABELS: Record<string, string> = {
+  language: 'language',
+  spam: 'promo/spam',
+  low_relevance: 'low relevance',
+  duplicate: 'duplicate'
+};
 
 interface TickerDetailProps {
   ticker: string;
@@ -19,6 +29,8 @@ export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose, las
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'prediction' | 'social' | 'news' | 'divergences' | 'technical'>('prediction');
   const [marketFilter, setMarketFilter] = useState<'ALL' | 'DIRECT' | 'SECTOR'>('ALL');
+  const [feedView, setFeedView] = useState<'influential' | 'latest' | 'excluded'>('influential');
+  const [showAllPosts, setShowAllPosts] = useState(false);
 
   useEffect(() => {
     let isCancelled = false;
@@ -76,7 +88,7 @@ export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose, las
   const getSignalClass = (signal: string) => {
     const s = signal.toUpperCase();
     if (s.includes('STRONG BUY') || s.includes('BUY')) return 'signal-buy';
-    if (s.includes('WATCH') || s.includes('HOLD')) return 'signal-watch';
+    if (s.includes('WATCH') || s.includes('HOLD') || s.includes('CAUTION')) return 'signal-watch';
     if (s.includes('AVOID')) return 'signal-avoid';
     return 'signal-na';
   };
@@ -162,37 +174,37 @@ export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose, las
           </div>
           <div className="tech-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
             <div className="tech-item">
-              <div className="tech-key">SOCIAL SSI (30%)</div>
+              <div className="tech-key">SOCIAL SSI ({formatWeight(detail.engine, 'social')})</div>
               <div className="tech-val" style={{ color: 'var(--bullish-green)' }}>
                 {detail.score_breakdown.social_score !== null && detail.score_breakdown.social_score !== undefined ? detail.score_breakdown.social_score.toFixed(1) : '—'}
               </div>
             </div>
             <div className="tech-item">
-              <div className="tech-key">POLYMARKET PMS (15%)</div>
+              <div className="tech-key">POLYMARKET PMS ({formatWeight(detail.engine, 'prediction')})</div>
               <div className="tech-val" style={{ color: 'var(--accent-cyan)' }}>
                 {detail.score_breakdown.prediction_score !== null && detail.score_breakdown.prediction_score !== undefined ? detail.score_breakdown.prediction_score.toFixed(1) : '—'}
               </div>
             </div>
             <div className="tech-item">
-              <div className="tech-key">NEWS / CATALYSTS (20%)</div>
+              <div className="tech-key">NEWS / CATALYSTS ({formatWeight(detail.engine, 'news')})</div>
               <div className="tech-val" style={{ color: '#f59e0b' }}>
                 {detail.score_breakdown.news_score !== null && detail.score_breakdown.news_score !== undefined ? detail.score_breakdown.news_score.toFixed(1) : '—'}
               </div>
             </div>
             <div className="tech-item">
-              <div className="tech-key">MARKET MOMENTUM (20%)</div>
+              <div className="tech-key">MARKET MOMENTUM ({formatWeight(detail.engine, 'momentum')})</div>
               <div className="tech-val" style={{ color: '#38bdf8' }}>
                 {detail.score_breakdown.momentum_score !== null && detail.score_breakdown.momentum_score !== undefined ? detail.score_breakdown.momentum_score.toFixed(1) : '—'}
               </div>
             </div>
-            <div className="tech-item" title="Pilar modular: al no haber feed fundamental conectado, su 10% se redistribuye proporcionalmente en el SMI">
-              <div className="tech-key">FUNDAMENTALS (10%)</div>
+            <div className="tech-item" title="Pilar modular: sin datos fundamentales, su peso se redistribuye proporcionalmente en el SMI">
+              <div className="tech-key">FUNDAMENTALS ({formatWeight(detail.engine, 'fundamental')})</div>
               <div className="tech-val" style={{ color: '#a78bfa', fontSize: detail.score_breakdown.fundamental_score ? undefined : '0.9rem' }}>
                 {detail.score_breakdown.fundamental_score !== null && detail.score_breakdown.fundamental_score !== undefined ? detail.score_breakdown.fundamental_score.toFixed(1) : '— (Modular)'}
               </div>
             </div>
             <div className="tech-item">
-              <div className="tech-key">RISK / SAFETY (5%)</div>
+              <div className="tech-key">RISK / SAFETY ({formatWeight(detail.engine, 'risk')})</div>
               <div className="tech-val" style={{ color: detail.score_breakdown.risk_score !== null && detail.score_breakdown.risk_score !== undefined ? (detail.score_breakdown.risk_score >= 60 ? 'var(--bullish-green)' : detail.score_breakdown.risk_score <= 35 ? 'var(--bearish-red)' : 'var(--neutral-yellow)') : 'var(--text-muted)' }}>
                 {detail.score_breakdown.risk_score !== null && detail.score_breakdown.risk_score !== undefined ? detail.score_breakdown.risk_score.toFixed(1) : '—'}
               </div>
@@ -227,7 +239,7 @@ export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose, las
               display: 'flex', alignItems: 'center', gap: '6px'
             }}
           >
-            <MessageSquare size={16} /> X Social Feed ({detail.recent_posts?.length || 0})
+            <MessageSquare size={16} /> X Social Feed ({detail.recent_posts?.filter((p) => p.status !== 'excluded').length || 0})
           </button>
 
           <button
@@ -559,30 +571,118 @@ export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose, las
               </div>
             )}
 
-            <div className="tweets-feed">
-              {detail.recent_posts && detail.recent_posts.length > 0 ? (
-                detail.recent_posts.slice(0, 8).map((post) => (
-                  <div key={post.id} className="tweet-card">
-                    <div className="tweet-header">
-                      <span>@{post.username}</span>
-                      <span style={{ color: post.sentiment_label === 'BULLISH' ? 'var(--bullish-green)' : post.sentiment_label === 'BEARISH' ? 'var(--bearish-red)' : 'var(--neutral-yellow)' }}>
-                        {post.sentiment_label} ({post.sentiment_score.toFixed(2)})
-                      </span>
+            {(() => {
+              const allPosts = detail.recent_posts || [];
+              // Posts without a status come from an older API: treat them as counted
+              const counted = allPosts.filter((p) => p.status !== 'excluded');
+              const excluded = allPosts.filter((p) => p.status === 'excluded');
+              const latest = [...counted].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+              const listByView = { influential: counted, latest, excluded };
+              const list = listByView[feedView];
+              const visible = showAllPosts ? list : list.slice(0, FEED_PREVIEW_SIZE);
+              const maxShare = Math.max(1, ...counted.map((p) => p.vote_share || 0));
+              const excludedCounts = detail.social_stats?.excluded_post_counts || {};
+              const excludedSummary = Object.entries(excludedCounts)
+                .map(([reason, n]) => `${n} ${EXCLUDED_REASON_LABELS[reason] || reason}`)
+                .join(', ');
+
+              const viewButton = (view: 'influential' | 'latest' | 'excluded', label: string) => (
+                <button
+                  key={view}
+                  onClick={() => { setFeedView(view); setShowAllPosts(false); }}
+                  style={{
+                    background: feedView === view ? 'rgba(56,189,248,0.15)' : 'transparent',
+                    border: `1px solid ${feedView === view ? 'var(--accent-cyan)' : 'var(--border-color)'}`,
+                    color: feedView === view ? 'var(--accent-cyan)' : 'var(--text-muted)',
+                    borderRadius: '6px', padding: '4px 10px', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer'
+                  }}
+                >
+                  {label}
+                </button>
+              );
+
+              return (
+                <>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '10px' }}>
+                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                      {viewButton('influential', 'Most influential')}
+                      {viewButton('latest', 'Latest')}
+                      {viewButton('excluded', `Excluded (${excluded.length})`)}
                     </div>
-                    <div className="tweet-text">{post.text}</div>
-                    {post.catalyst && (
-                      <div style={{ marginTop: '6px', fontSize: '0.72rem', color: 'var(--accent-cyan)' }}>
-                        ⚡ Catalyst: {post.catalyst}
+                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                      {counted.length} count toward the SSI{excluded.length > 0 ? ` · ${excluded.length} excluded${excludedSummary ? ` (${excludedSummary})` : ''}` : ''}
+                    </span>
+                  </div>
+
+                  <div
+                    className="tweets-feed"
+                    style={showAllPosts ? { maxHeight: '520px', overflowY: 'auto', paddingRight: '4px' } : undefined}
+                  >
+                    {visible.length > 0 ? (
+                      visible.map((post) => {
+                        const isExcluded = post.status === 'excluded';
+                        const isOpinion = post.sentiment_label === 'BULLISH' || post.sentiment_label === 'BEARISH';
+                        const labelColor = post.sentiment_label === 'BULLISH' ? 'var(--bullish-green)' : post.sentiment_label === 'BEARISH' ? 'var(--bearish-red)' : 'var(--neutral-yellow)';
+                        return (
+                          <div key={`${post.id}-${post.created_at}`} className="tweet-card" style={isExcluded ? { opacity: 0.55 } : undefined}>
+                            <div className="tweet-header">
+                              <span>@{post.username}</span>
+                              {isExcluded ? (
+                                <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>
+                                  Excluded: {EXCLUDED_REASON_LABELS[post.excluded_reason || ''] || post.excluded_reason}
+                                </span>
+                              ) : (
+                                <span style={{ color: labelColor }}>
+                                  {post.sentiment_label} ({post.sentiment_score.toFixed(2)})
+                                </span>
+                              )}
+                            </div>
+                            <div className="tweet-text">{post.text}</div>
+                            {!isExcluded && (
+                              isOpinion ? (
+                                <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' }} title="Share of the opinion weight behind the SSI">
+                                  <div style={{ flex: 1, height: '4px', background: 'rgba(255,255,255,0.08)', borderRadius: '2px' }}>
+                                    <div style={{ width: `${Math.min(100, ((post.vote_share || 0) / maxShare) * 100)}%`, height: '100%', background: labelColor, borderRadius: '2px' }} />
+                                  </div>
+                                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                                    {(post.vote_share || 0).toFixed(1)}% of SSI vote
+                                  </span>
+                                </div>
+                              ) : (
+                                <div style={{ marginTop: '6px', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                  Neutral · counts as a mention, does not vote
+                                </div>
+                              )
+                            )}
+                            {post.catalyst && !isExcluded && (
+                              <div style={{ marginTop: '6px', fontSize: '0.72rem', color: 'var(--accent-cyan)' }}>
+                                ⚡ Catalyst: {post.catalyst}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)' }}>
+                        {feedView === 'excluded' ? 'No posts were excluded in the analysis window.' : 'No recent social posts collected.'}
                       </div>
                     )}
                   </div>
-                ))
-              ) : (
-                <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)' }}>
-                  No recent social posts collected.
-                </div>
-              )}
-            </div>
+
+                  {list.length > FEED_PREVIEW_SIZE && (
+                    <button
+                      onClick={() => setShowAllPosts(!showAllPosts)}
+                      style={{
+                        marginTop: '10px', width: '100%', background: 'transparent', border: '1px solid var(--border-color)',
+                        color: 'var(--accent-cyan)', borderRadius: '6px', padding: '6px', fontSize: '0.78rem', cursor: 'pointer'
+                      }}
+                    >
+                      {showAllPosts ? 'Show less' : `Show all (${list.length})`}
+                    </button>
+                  )}
+                </>
+              );
+            })()}
           </div>
         )}
 

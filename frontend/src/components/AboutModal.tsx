@@ -52,7 +52,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
             </div>
             <div>
               <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.35rem', margin: 0, color: '#fff' }}>
-                Space Market Intelligence Engine (SMIE v2.1)
+                Space Market Intelligence Engine (SMIE v2.2)
               </h2>
               <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: '2px 0 0 0' }}>
                 Manual de Operaciones, Arquitectura Cuantitativa & Guía del Usuario
@@ -205,7 +205,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                 La industria aeroespacial es única en el mercado financiero: depende fuertemente de <strong>eventos binarios</strong> (lanzamientos de cohetes, despliegue de constelaciones satelitales, aprobaciones de espectro por la FCC, contratos de defensa con el DoD/NASA). Los modelos tradicionales de análisis técnico o fundamental a menudo fallan al no capturar a tiempo las expectativas de eventos ni la narrativa social.
               </p>
 
-              <h4 style={{ color: '#fff', fontSize: '0.95rem', marginBottom: '8px' }}>🧠 La Solución de SMIE v2.1: Seis Pilares Desacoplados</h4>
+              <h4 style={{ color: '#fff', fontSize: '0.95rem', marginBottom: '8px' }}>🧠 La Solución de SMIE v2.2: Seis Pilares Desacoplados</h4>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px', marginTop: '12px' }}>
                 <div style={{ background: 'rgba(255,255,255,0.03)', padding: '12px', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
                   <div style={{ color: 'var(--bullish-green)', fontWeight: 700, fontSize: '0.85rem' }}>1. Narrativa Social (X)</div>
@@ -271,11 +271,11 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                     </span>
                   </div>
                   <p style={{ margin: '8px 0 0 0', color: 'var(--text-main)', fontSize: '0.85rem' }}>
-                    Combina todas las fuentes disponibles mediante <strong>pesos adaptativos normalizados</strong> (Social 30%, Polymarket 15%, News 20%, Momentum 25%, Fundamentales 10%). El <em>Risk Score</em> actúa como compuerta de preservación de capital para no penalizar el alpha direccional.
+                    Combina todas las fuentes disponibles mediante <strong>pesos adaptativos normalizados</strong> (Social 35%, Noticias 30%, Polymarket 15%, Momentum 10%, Fundamentales 10%): el sentimiento mueve el índice y el técnico lo enmarca. El <em>Risk Score</em> actúa como compuerta de preservación de capital para no penalizar el alpha direccional.
                     <br />
-                    • <strong>Escala Cuantitativa Simétrica:</strong> <code>≥ 85</code> STRONG BUY | <code>70–84</code> BUY | <code>55–69</code> WATCH | <code>45–54</code> HOLD | <code>20–44</code> AVOID | <code>&lt; 20</code> STRONG AVOID.
+                    • <strong>Escala Cuantitativa Simétrica:</strong> <code>≥ 85</code> STRONG BUY | <code>70–84</code> BUY | <code>55–69</code> WATCH | <code>46–54</code> HOLD | <code>31–45</code> CAUTION | <code>16–30</code> AVOID | <code>≤ 15</code> STRONG AVOID.
                     <br />
-                    • <strong>Señales Canónicas Desacopladas & Bloqueo Operativo:</strong> Separa la señal base (<code>base_signal</code>) de modificadores de riesgo (<code>OVEREXTENDED / DILUTION RISK / HIGH RISK / NO MKT DATA</code>). Ante ausencia de precio cotizado en vivo, restringe compras a <code>WATCH (NO MKT DATA)</code> para impedir órdenes no operables.
+                    • <strong>Señales Canónicas Desacopladas & Bloqueo Operativo:</strong> Separa la señal base (<code>base_signal</code>) de modificadores de riesgo (<code>OVEREXTENDED / DILUTION RISK / HIGH RISK / NO MKT DATA / CATALYST RISK</code>). Ante ausencia de precio cotizado en vivo, restringe compras a <code>WATCH (NO MKT DATA)</code> para impedir órdenes no operables.
                   </p>
                 </div>
 
@@ -538,7 +538,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
           }}
         >
           <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-            SMIE v2.1 • Aerospace Market Intelligence Architecture
+            SMIE v2.2 • Aerospace Market Intelligence Architecture
           </span>
           <button
             onClick={onClose}
