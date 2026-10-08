@@ -1,7 +1,6 @@
-from typing import Dict, Any, List
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from app.database.connection import get_db
+from typing import Dict, Any, List, Annotated
+from fastapi import APIRouter, HTTPException, Path
+from app.database.connection import DbSession
 from app.database.repository import (
     get_latest_ssi_snapshot, get_latest_market_snapshot,
     get_recent_social_posts, get_recent_news_items,
@@ -12,11 +11,14 @@ from app.scoring.social import calculate_social_score
 from app.scoring.smi import describe_engine
 from app.config import INITIAL_TICKERS, DEFAULT_EVENT_COMPANY_MAPPINGS, settings
 
-router = APIRouter(tags=["Tickers"])
+router = APIRouter(prefix="/api/tickers", tags=["Tickers"])
 
 
-@router.get("/api/tickers/{ticker}")
-def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, Any]:
+@router.get("/{ticker}")
+def get_ticker_detail(
+    ticker: Annotated[str, Path(description="Ticker symbol (e.g. ASTS, RKLB)")],
+    db: DbSession
+) -> Dict[str, Any]:
     ticker_sym = ticker.upper()
     ticker_cfg = next((t for t in INITIAL_TICKERS if t.symbol == ticker_sym), None)
 
@@ -27,7 +29,7 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
     mkt_snap = get_latest_market_snapshot(db, ticker_sym)
     posts = get_recent_social_posts(db, ticker_sym, hours=settings.SOCIAL_LOOKBACK_HOURS)
     news_items = get_recent_news_items(db, ticker_sym, days=3)
-    markets = get_recent_prediction_markets(db, ticker_sym)
+    markets = get_recent_prediction_markets(db, ticker_sym, direct_only=True)
     divergences = get_active_divergences(db, ticker_sym, hours=48)
     # Same pass as the SSI: every post is tagged counted/excluded with its weight, so the feed matches the score
     post_details: Dict[int, Dict[str, Any]] = {}
@@ -84,9 +86,13 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
     social_stats["counted_post_count"] = sum(1 for x in posts_payload if x["status"] == "counted")
     social_stats["excluded_post_counts"] = excluded_counts
 
-    # News serialization
+    # News serialization (filtered by relevance so other tickers don't bleed into feed)
     news_payload = []
+    min_news_rel = getattr(settings, "NEWS_MIN_RELEVANCE", 0.40)
     for n in news_items:
+        if n.relevance_score is not None and n.relevance_score < min_news_rel:
+            continue
+
         if n.catalyst and n.catalyst not in [c["category"] for c in catalysts_payload]:
             catalysts_payload.append({
                 "category": n.catalyst,
@@ -173,7 +179,7 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
     }
 
     reasons = [line for line in (ssi_snap.explanation.split("\n") if ssi_snap and ssi_snap.explanation else [])]
-    smi_val = ssi_snap.smi if (ssi_snap and ssi_snap.smi is not None) else (ssi_snap.ssi if ssi_snap else None)
+    smi_val = ssi_snap.smi if ssi_snap else None  # Never substitute the social index for a missing SMI
 
     # Stale calculation for ticker header
     age_hours = None
@@ -242,10 +248,14 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)) -> Dict[str, A
     }
 
 
-@router.get("/api/tickers/{ticker}/prediction-markets")
-def get_ticker_prediction_markets(ticker: str, db: Session = Depends(get_db)) -> List[Dict[str, Any]]:
+@router.get("/{ticker}/prediction-markets")
+def get_ticker_prediction_markets(
+    ticker: Annotated[str, Path(description="Ticker symbol (e.g. ASTS, RKLB)")],
+    db: DbSession,
+    direct_only: bool = True
+) -> List[Dict[str, Any]]:
     ticker_sym = ticker.upper()
-    markets = get_recent_prediction_markets(db, ticker_sym)
+    markets = get_recent_prediction_markets(db, ticker_sym, direct_only=direct_only)
     return [
         {
             "id": m.external_id,
@@ -269,8 +279,11 @@ def get_ticker_prediction_markets(ticker: str, db: Session = Depends(get_db)) ->
     ]
 
 
-@router.get("/api/tickers/{ticker}/divergences")
-def get_ticker_divergences(ticker: str, db: Session = Depends(get_db)) -> List[Dict[str, Any]]:
+@router.get("/{ticker}/divergences")
+def get_ticker_divergences(
+    ticker: Annotated[str, Path(description="Ticker symbol (e.g. ASTS, RKLB)")],
+    db: DbSession
+) -> List[Dict[str, Any]]:
     ticker_sym = ticker.upper()
     divs = get_active_divergences(db, ticker_sym, hours=72)
     return [

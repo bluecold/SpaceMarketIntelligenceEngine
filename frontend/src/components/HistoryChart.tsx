@@ -15,7 +15,7 @@ export const HistoryChart: React.FC<HistoryChartProps> = ({ data }) => {
   const [showSSI, setShowSSI] = useState(true);
   const [showPMS, setShowPMS] = useState(true);
 
-  const safeData = data || [];
+  const safeData = useMemo(() => data || [], [data]);
 
   const width = 800;
   const height = 240;
@@ -151,12 +151,12 @@ export const HistoryChart: React.FC<HistoryChartProps> = ({ data }) => {
     return fullArea;
   };
 
-  // Segmented Paths bridging over normal weekend gaps (up to 96h)
-  const smiPath = useMemo(() => buildSegmentedPath((d) => getY_Score(d.smi ?? d.ssi), 96), [safeData, minTime, maxTime]);
-  const smiAreaPath = useMemo(() => buildSegmentedArea((d) => getY_Score(d.smi ?? d.ssi), 96), [safeData, minTime, maxTime]);
-  const ssiPath = useMemo(() => buildSegmentedPath((d) => getY_Score(d.ssi ?? d.social_score), 96), [safeData, minTime, maxTime]);
-  const pmsPath = useMemo(() => buildSegmentedPath((d) => getY_Score(d.pms), 96), [safeData, minTime, maxTime]);
-  const pricePath = useMemo(() => buildSegmentedPath((d) => getY_Price(d.price), 96), [safeData, minTime, maxTime, validPrices]);
+  // Segmented paths bridging over normal weekend gaps (up to 96h); cheap enough to rebuild each render
+  const smiPath = buildSegmentedPath((d) => getY_Score(d.smi), 96);
+  const smiAreaPath = buildSegmentedArea((d) => getY_Score(d.smi), 96);
+  const ssiPath = buildSegmentedPath((d) => getY_Score(d.ssi ?? d.social_score), 96);
+  const pmsPath = buildSegmentedPath((d) => getY_Score(d.pms), 96);
+  const pricePath = buildSegmentedPath((d) => getY_Price(d.price), 96);
 
   // Compute weekend spans (Saturday 00:00 to Sunday 23:59) within [minTime, maxTime]
   const weekendBands = useMemo(() => {
@@ -205,13 +205,6 @@ export const HistoryChart: React.FC<HistoryChartProps> = ({ data }) => {
     return ticks;
   }, [minTime, maxTime, timeSpan, chartW, padding.left]);
 
-  // Date formatters for continuous timeline tooltip
-  const formatTimeLabel = (timestampMs: number): string => {
-    if (!timestampMs || isNaN(timestampMs)) return '';
-    const d = new Date(timestampMs);
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
-  };
-
   if (!data || data.length === 0) {
     return (
       <div style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)', background: 'rgba(0,0,0,0.2)', borderRadius: '12px' }}>
@@ -233,6 +226,7 @@ export const HistoryChart: React.FC<HistoryChartProps> = ({ data }) => {
           {/* Price Toggle */}
           <button
             onClick={() => setShowPrice(!showPrice)}
+            aria-pressed={showPrice}
             style={{
               background: showPrice ? 'rgba(245, 158, 11, 0.15)' : 'transparent',
               border: `1px solid ${showPrice ? '#f59e0b' : 'var(--border-color)'}`,
@@ -248,6 +242,7 @@ export const HistoryChart: React.FC<HistoryChartProps> = ({ data }) => {
           {/* SMI Toggle */}
           <button
             onClick={() => setShowSMI(!showSMI)}
+            aria-pressed={showSMI}
             style={{
               background: showSMI ? 'rgba(168, 85, 247, 0.15)' : 'transparent',
               border: `1px solid ${showSMI ? '#a855f7' : 'var(--border-color)'}`,
@@ -263,6 +258,7 @@ export const HistoryChart: React.FC<HistoryChartProps> = ({ data }) => {
           {/* SSI Toggle */}
           <button
             onClick={() => setShowSSI(!showSSI)}
+            aria-pressed={showSSI}
             style={{
               background: showSSI ? 'rgba(16, 185, 129, 0.15)' : 'transparent',
               border: `1px solid ${showSSI ? 'var(--bullish-green)' : 'var(--border-color)'}`,
@@ -278,6 +274,7 @@ export const HistoryChart: React.FC<HistoryChartProps> = ({ data }) => {
           {/* PMS Toggle */}
           <button
             onClick={() => setShowPMS(!showPMS)}
+            aria-pressed={showPMS}
             style={{
               background: showPMS ? 'rgba(0, 229, 255, 0.15)' : 'transparent',
               border: `1px solid ${showPMS ? 'var(--accent-cyan)' : 'var(--border-color)'}`,
@@ -400,7 +397,7 @@ export const HistoryChart: React.FC<HistoryChartProps> = ({ data }) => {
         {/* Data Point Hover Hotspots */}
         {data.map((pt, i) => {
           const x = getX(pt, i);
-          const ySmi = getY_Score(pt.smi ?? pt.ssi);
+          const ySmi = getY_Score(pt.smi);
           return (
             <g key={i}>
               {ySmi !== null && (
@@ -466,16 +463,16 @@ export const HistoryChart: React.FC<HistoryChartProps> = ({ data }) => {
             {new Date(hoveredPoint.timestamp).toLocaleString([], { hour12: false })}
           </div>
           <div style={{ color: '#a855f7', fontWeight: 700 }}>
-            SMI (Integral): {hoveredPoint.smi !== null && hoveredPoint.smi !== undefined ? `${hoveredPoint.smi.toFixed(1)}/100` : (hoveredPoint.ssi !== null && hoveredPoint.ssi !== undefined ? `${hoveredPoint.ssi.toFixed(1)}/100 (SSI Fallback)` : 'N/A')}
+            SMI (Integral): {hoveredPoint.smi !== null && hoveredPoint.smi !== undefined ? `${hoveredPoint.smi.toFixed(1)}/100` : 'N/A'}
           </div>
           <div style={{ color: 'var(--bullish-green)', fontWeight: 600 }}>
-            SSI (Social): {hoveredPoint.ssi !== null && hoveredPoint.ssi !== undefined ? `${hoveredPoint.ssi.toFixed(1)}/100` : (hoveredPoint.social_score !== null && hoveredPoint.social_score !== undefined ? `${hoveredPoint.social_score.toFixed(1)}/100` : 'N/A (Sin cobertura)')}
+            SSI (Social): {hoveredPoint.ssi !== null && hoveredPoint.ssi !== undefined ? `${hoveredPoint.ssi.toFixed(1)}/100` : (hoveredPoint.social_score !== null && hoveredPoint.social_score !== undefined ? `${hoveredPoint.social_score.toFixed(1)}/100` : 'N/A (no coverage)')}
           </div>
           <div style={{ color: 'var(--accent-cyan)', fontWeight: 600 }}>
-            PMS (Polymarket): {hoveredPoint.pms !== null && hoveredPoint.pms !== undefined ? `${hoveredPoint.pms.toFixed(1)}/100` : 'N/A (Sin predicciones)'}
+            PMS (Polymarket): {hoveredPoint.pms !== null && hoveredPoint.pms !== undefined ? `${hoveredPoint.pms.toFixed(1)}/100` : 'N/A (no markets)'}
           </div>
           <div style={{ color: '#f59e0b', fontWeight: 600 }}>
-            Price: {hoveredPoint.price !== null && hoveredPoint.price !== undefined && hoveredPoint.price > 0 ? `$${hoveredPoint.price.toFixed(2)}` : 'N/A (Sin cotización)'}
+            Price: {hoveredPoint.price !== null && hoveredPoint.price !== undefined && hoveredPoint.price > 0 ? `$${hoveredPoint.price.toFixed(2)}` : 'N/A (no quote)'}
           </div>
           <div style={{ color: '#fff', fontSize: '0.7rem', marginTop: '3px' }}>
             Signal: <b>{hoveredPoint.signal || 'N/A'}</b>

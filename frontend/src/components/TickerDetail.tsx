@@ -1,13 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { TickerDetailResponse, HistoryPoint, formatWeight } from '../types';
+import { TickerDetailResponse, HistoryPoint, PredictionMarketItem, formatWeight } from '../types';
 import { HistoryChart } from './HistoryChart';
-import {
-  X, CheckCircle, AlertTriangle, MessageSquare, Newspaper,
-  Zap, Layers, TrendingUp, DollarSign, Activity, Compass, ExternalLink, ShieldCheck,
-  Target, Globe
-} from 'lucide-react';
+import { MessageSquare, Newspaper, Zap, Activity, Compass, ExternalLink, Target, Globe } from 'lucide-react';
+import { fmt, fmtPrice, isNum, riskTone, Tone, useThresholds } from '../lib/scale';
+import { Badge, DataFlags, EmptyState, Modal, Notice, ScoreValue, SignalPill } from './ui';
 
 const FEED_PREVIEW_SIZE = 8;
+const DESCRIPTION_CLAMP_CHARS = 220;
 
 // Why a post does not feed the SSI (mirrors the exclusion reasons of calculate_social_score)
 const EXCLUDED_REASON_LABELS: Record<string, string> = {
@@ -16,6 +15,13 @@ const EXCLUDED_REASON_LABELS: Record<string, string> = {
   low_relevance: 'low relevance',
   duplicate: 'duplicate'
 };
+
+type TabId = 'prediction' | 'social' | 'news' | 'divergences' | 'technical';
+type MarketFilter = 'ALL' | 'DIRECT' | 'SECTOR';
+type FeedView = 'influential' | 'latest' | 'excluded';
+
+const sentimentTone = (label: string): Tone =>
+  label === 'BULLISH' ? 'strong-bull' : label === 'BEARISH' ? 'strong-bear' : 'neutral';
 
 interface TickerDetailProps {
   ticker: string;
@@ -27,789 +33,497 @@ export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose, las
   const [detail, setDetail] = useState<TickerDetailResponse | null>(null);
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'prediction' | 'social' | 'news' | 'divergences' | 'technical'>('prediction');
-  const [marketFilter, setMarketFilter] = useState<'ALL' | 'DIRECT' | 'SECTOR'>('ALL');
-  const [feedView, setFeedView] = useState<'influential' | 'latest' | 'excluded'>('influential');
+  const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [activeTab, setActiveTab] = useState<TabId>('social');
+  const [feedView, setFeedView] = useState<FeedView>('influential');
   const [showAllPosts, setShowAllPosts] = useState(false);
+  const thresholds = useThresholds();
 
   useEffect(() => {
     let isCancelled = false;
     const controller = new AbortController();
     setLoading(true);
+    setError(null);
 
-    Promise.all([
-      fetch(`/api/tickers/${ticker}`, { signal: controller.signal }).then((res) => {
+    const getJson = (url: string) =>
+      fetch(url, { signal: controller.signal }).then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
-      }),
-      fetch(`/api/tickers/${ticker}/history`, { signal: controller.signal }).then((res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
-    ])
+      });
+
+    Promise.all([getJson(`/api/tickers/${ticker}`), getJson(`/api/tickers/${ticker}/history`)])
       .then(([detailData, historyData]) => {
-        if (!isCancelled) {
-          setDetail(detailData);
-          setHistory(historyData.history || []);
-          setLoading(false);
-        }
+        if (isCancelled) return;
+        setDetail(detailData);
+        setHistory(historyData.history || []);
       })
-      .catch((err) => {
-        if (!isCancelled) {
-          if (err.name !== 'AbortError') {
-            console.error('Failed to load ticker details', err);
-          }
-          setLoading(false);
-        }
+      .catch((err: Error) => {
+        if (isCancelled || err.name === 'AbortError') return;
+        console.error('Failed to load ticker details', err);
+        setError(err.message || 'Network error');
+      })
+      .finally(() => {
+        if (!isCancelled) setLoading(false);
       });
 
     return () => {
       isCancelled = true;
       controller.abort();
     };
-  }, [ticker, lastUpdate]);
+  }, [ticker, lastUpdate, reloadKey]);
 
-  if (loading) {
+  if (!detail) {
     return (
-      <div className="modal-overlay">
-        <div className="modal-content" style={{ textAlign: 'center', padding: '60px' }}>
-          <p>Loading SMIE multi-source intelligence for ${ticker}...</p>
-        </div>
-      </div>
+      <Modal onClose={onClose} labelledBy="ticker-detail-title" className="modal-sm">
+        <h2 id="ticker-detail-title" className="dialog-title">${ticker}</h2>
+        {loading ? (
+          <p className="page-status" role="status">Loading SMIE multi-source intelligence for ${ticker}...</p>
+        ) : (
+          <Notice kind="error" action={{ label: 'Retry', onClick: () => setReloadKey((k) => k + 1) }}>
+            Could not load the details for ${ticker}{error ? ` (${error})` : ''}.
+          </Notice>
+        )}
+      </Modal>
     );
   }
 
-  if (!detail) return null;
+  const { header, score_breakdown: breakdown } = detail;
+  const tickerUpper = detail.ticker.toUpperCase();
+  const isDirectMarket = (m: PredictionMarketItem) => !!(m.is_direct || (m.ticker && m.ticker.toUpperCase() === tickerUpper));
+  const directMarkets = (detail.prediction_markets || []).filter(isDirectMarket);
+  const countedPosts = (detail.recent_posts || []).filter((p) => p.status !== 'excluded');
 
-  const smiVal = detail.header.smi ?? detail.header.ssi;
-  const ssiVal = detail.header.ssi;
-  const pmsVal = detail.header.pms;
+  const tabs: { id: TabId; icon: React.ReactNode; label: string }[] = [
+    { id: 'social', icon: <MessageSquare size={16} />, label: `X Social Feed (${countedPosts.length})` },
+    { id: 'news', icon: <Newspaper size={16} />, label: `News & Catalysts (${detail.recent_news?.length || 0})` },
+    { id: 'prediction', icon: <Compass size={16} />, label: `Prediction Markets (${directMarkets.length})` },
+    { id: 'divergences', icon: <Zap size={16} />, label: `Divergences & WHY (${detail.divergences?.length || 0})` },
+    { id: 'technical', icon: <Activity size={16} />, label: 'Technicals' }
+  ];
 
-  const getSignalClass = (signal: string) => {
-    const s = signal.toUpperCase();
-    if (s.includes('STRONG BUY') || s.includes('BUY')) return 'signal-buy';
-    if (s.includes('WATCH') || s.includes('HOLD') || s.includes('CAUTION')) return 'signal-watch';
-    if (s.includes('AVOID')) return 'signal-avoid';
-    return 'signal-na';
-  };
+  const pillars: { key: string; label: string; value: number | null | undefined; tone?: Tone; empty?: string; title?: string }[] = [
+    { key: 'social', label: 'Social SSI', value: breakdown.social_score },
+    { key: 'prediction', label: 'Polymarket PMS', value: breakdown.prediction_score },
+    { key: 'news', label: 'News / Catalysts', value: breakdown.news_score },
+    { key: 'momentum', label: 'Market Momentum', value: breakdown.momentum_score },
+    {
+      key: 'fundamental',
+      label: 'Fundamentals',
+      value: breakdown.fundamental_score,
+      empty: '— (no data)',
+      title: 'Without fundamental data this pillar is excluded and its weight is redistributed across the SMI'
+    },
+    { key: 'risk', label: 'Risk / Safety', value: breakdown.risk_score, tone: riskTone(breakdown.risk_score, thresholds) }
+  ];
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '960px', width: '95%' }}>
-        <button className="btn-close" onClick={onClose}><X size={20} /></button>
+    <Modal onClose={onClose} labelledBy="ticker-detail-title" className="modal-lg">
+      {/* Header */}
+      <div className="detail-header">
+        <div>
+          <div className="detail-title-row">
+            <h2 id="ticker-detail-title" className="detail-ticker">${detail.ticker}</h2>
+            <SignalPill signal={header.signal} baseSignal={header.base_signal} className="pill-lg" />
+            <DataFlags isStale={header.is_stale} ageHours={header.data_age_hours} ageDigits={1} />
+          </div>
+          <p className="text-muted">{detail.name}</p>
+        </div>
 
-        {/* Modal Header */}
-        <div className="detail-header" style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '16px', marginBottom: '20px' }}>
+        <div className="detail-scores">
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-              <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '2.2rem', margin: 0 }}>${detail.ticker}</h2>
-              <span className={`signal-pill ${getSignalClass(detail.header.signal)}`} style={{ fontSize: '0.85rem' }}>
-                {detail.header.signal}
+            <div className="micro-label">SMI</div>
+            <div className="detail-score-main">
+              <ScoreValue value={header.smi} />
+              {isNum(header.smi) && <span className="detail-score-unit">/100</span>}
+            </div>
+          </div>
+          <div className="detail-score-divider">
+            <div className="micro-label">SSI (Social)</div>
+            <ScoreValue value={header.ssi} className="detail-score-sub" />
+          </div>
+          <div className="detail-score-divider">
+            <div className="micro-label">PMS (Polymarket)</div>
+            <ScoreValue value={header.pms} className="detail-score-sub" />
+          </div>
+        </div>
+      </div>
+
+      <div className="detail-section">
+        <HistoryChart data={history} />
+      </div>
+
+      {/* Pillars */}
+      <div className="detail-section">
+        <div className="pillars-header">
+          <span className="eyebrow">SMIE Multi-Factor Pillars</span>
+          <div className="pillars-meta">
+            <span>Confidence: <strong className="text-strong">{fmt(header.confidence, 0, '0')}%</strong></span>
+            <span>Data Quality: <strong className="tone-accent">{fmt(header.data_quality, 0, '0')}%</strong></span>
+            {detail.sample_counts && (
+              <span title="Posts / News / Markets used">
+                Data Depth: <strong className="text-strong">{detail.sample_counts.post_count}P / {detail.sample_counts.news_count}N / {detail.sample_counts.prediction_count}M</strong>
               </span>
-              {detail.header.is_stale && (
-                <span
-                  style={{
-                    fontSize: '0.72rem',
-                    fontWeight: 600,
-                    color: 'var(--neutral-yellow)',
-                    background: 'rgba(255, 179, 0, 0.12)',
-                    border: '1px solid rgba(255, 179, 0, 0.3)',
-                    padding: '3px 8px',
-                    borderRadius: '6px'
-                  }}
-                >
-                  ⏳ Data Age: {detail.header.data_age_hours ? `${detail.header.data_age_hours.toFixed(1)}h` : 'Stale'}
-                </span>
-              )}
-            </div>
-            <p style={{ color: 'var(--text-muted)', margin: '4px 0 0 0' }}>{detail.name}</p>
-          </div>
-
-          <div style={{ display: 'flex', gap: '20px', alignItems: 'center', textAlign: 'right' }}>
-            <div>
-              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>SMI (INTEGRAL)</div>
-              <div style={{ fontSize: '2rem', fontFamily: 'var(--font-heading)', fontWeight: 800, color: smiVal !== null && smiVal !== undefined ? 'var(--accent-cyan)' : 'var(--text-muted)' }}>
-                {smiVal !== null && smiVal !== undefined ? (
-                  <>{smiVal.toFixed(1)} <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>/100</span></>
-                ) : (
-                  '—'
-                )}
-              </div>
-            </div>
-
-            <div style={{ borderLeft: '1px solid var(--border-color)', paddingLeft: '16px' }}>
-              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>SSI (SOCIAL)</div>
-              <div style={{ fontSize: '1.4rem', fontWeight: 700, color: ssiVal !== null && ssiVal !== undefined ? 'var(--bullish-green)' : 'var(--text-muted)' }}>
-                {ssiVal !== null && ssiVal !== undefined ? ssiVal.toFixed(1) : '—'}
-              </div>
-            </div>
-
-            <div style={{ borderLeft: '1px solid var(--border-color)', paddingLeft: '16px' }}>
-              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>PMS (POLYMARKET)</div>
-              <div style={{ fontSize: '1.4rem', fontWeight: 700, color: pmsVal !== null ? 'var(--accent-cyan)' : 'var(--text-muted)' }}>
-                {pmsVal !== null ? `${pmsVal.toFixed(1)}` : '--'}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Historical Interactive Multi-Series Chart */}
-        <div style={{ marginBottom: '24px' }}>
-          <HistoryChart data={history} />
-        </div>
-
-        {/* Multivariable 6 Pillars Grid */}
-        <div style={{ marginBottom: '20px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
-            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              SMIE Multi-Factor 6 Pillars Architecture
-            </span>
-            <div style={{ display: 'flex', gap: '14px', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-              <span>Confidence: <strong style={{ color: '#fff' }}>{detail.header.confidence ? `${detail.header.confidence.toFixed(0)}%` : '0%'}</strong></span>
-              <span>Data Quality: <strong style={{ color: 'var(--accent-cyan)' }}>{detail.header.data_quality ? `${detail.header.data_quality.toFixed(0)}%` : '0%'}</strong></span>
-              {detail.sample_counts && (
-                <span>Data Depth: <strong style={{ color: '#e2e8f0' }}>{detail.sample_counts.post_count}P / {detail.sample_counts.news_count}N / {detail.sample_counts.prediction_count}M</strong></span>
-              )}
-            </div>
-          </div>
-          <div className="tech-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
-            <div className="tech-item">
-              <div className="tech-key">SOCIAL SSI ({formatWeight(detail.engine, 'social')})</div>
-              <div className="tech-val" style={{ color: 'var(--bullish-green)' }}>
-                {detail.score_breakdown.social_score !== null && detail.score_breakdown.social_score !== undefined ? detail.score_breakdown.social_score.toFixed(1) : '—'}
-              </div>
-            </div>
-            <div className="tech-item">
-              <div className="tech-key">POLYMARKET PMS ({formatWeight(detail.engine, 'prediction')})</div>
-              <div className="tech-val" style={{ color: 'var(--accent-cyan)' }}>
-                {detail.score_breakdown.prediction_score !== null && detail.score_breakdown.prediction_score !== undefined ? detail.score_breakdown.prediction_score.toFixed(1) : '—'}
-              </div>
-            </div>
-            <div className="tech-item">
-              <div className="tech-key">NEWS / CATALYSTS ({formatWeight(detail.engine, 'news')})</div>
-              <div className="tech-val" style={{ color: '#f59e0b' }}>
-                {detail.score_breakdown.news_score !== null && detail.score_breakdown.news_score !== undefined ? detail.score_breakdown.news_score.toFixed(1) : '—'}
-              </div>
-            </div>
-            <div className="tech-item">
-              <div className="tech-key">MARKET MOMENTUM ({formatWeight(detail.engine, 'momentum')})</div>
-              <div className="tech-val" style={{ color: '#38bdf8' }}>
-                {detail.score_breakdown.momentum_score !== null && detail.score_breakdown.momentum_score !== undefined ? detail.score_breakdown.momentum_score.toFixed(1) : '—'}
-              </div>
-            </div>
-            <div className="tech-item" title="Pilar modular: sin datos fundamentales, su peso se redistribuye proporcionalmente en el SMI">
-              <div className="tech-key">FUNDAMENTALS ({formatWeight(detail.engine, 'fundamental')})</div>
-              <div className="tech-val" style={{ color: '#a78bfa', fontSize: detail.score_breakdown.fundamental_score ? undefined : '0.9rem' }}>
-                {detail.score_breakdown.fundamental_score !== null && detail.score_breakdown.fundamental_score !== undefined ? detail.score_breakdown.fundamental_score.toFixed(1) : '— (Modular)'}
-              </div>
-            </div>
-            <div className="tech-item">
-              <div className="tech-key">RISK / SAFETY ({formatWeight(detail.engine, 'risk')})</div>
-              <div className="tech-val" style={{ color: detail.score_breakdown.risk_score !== null && detail.score_breakdown.risk_score !== undefined ? (detail.score_breakdown.risk_score >= 60 ? 'var(--bullish-green)' : detail.score_breakdown.risk_score <= 35 ? 'var(--bearish-red)' : 'var(--neutral-yellow)') : 'var(--text-muted)' }}>
-                {detail.score_breakdown.risk_score !== null && detail.score_breakdown.risk_score !== undefined ? detail.score_breakdown.risk_score.toFixed(1) : '—'}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Navigation Tabs */}
-        <div style={{ display: 'flex', gap: '8px', borderBottom: '1px solid var(--border-color)', marginBottom: '16px', overflowX: 'auto' }}>
-          <button
-            onClick={() => setActiveTab('prediction')}
-            className={`tab-btn ${activeTab === 'prediction' ? 'active' : ''}`}
-            style={{
-              background: 'none', border: 'none',
-              borderBottom: activeTab === 'prediction' ? '2px solid var(--accent-cyan)' : '2px solid transparent',
-              color: activeTab === 'prediction' ? 'var(--accent-cyan)' : 'var(--text-muted)',
-              padding: '8px 14px', fontSize: '0.88rem', fontWeight: 600, cursor: 'pointer',
-              display: 'flex', alignItems: 'center', gap: '6px'
-            }}
-          >
-            <Compass size={16} /> Prediction Markets ({detail.prediction_markets?.length || 0})
-          </button>
-
-          <button
-            onClick={() => setActiveTab('social')}
-            className={`tab-btn ${activeTab === 'social' ? 'active' : ''}`}
-            style={{
-              background: 'none', border: 'none',
-              borderBottom: activeTab === 'social' ? '2px solid var(--accent-cyan)' : '2px solid transparent',
-              color: activeTab === 'social' ? 'var(--accent-cyan)' : 'var(--text-muted)',
-              padding: '8px 14px', fontSize: '0.88rem', fontWeight: 600, cursor: 'pointer',
-              display: 'flex', alignItems: 'center', gap: '6px'
-            }}
-          >
-            <MessageSquare size={16} /> X Social Feed ({detail.recent_posts?.filter((p) => p.status !== 'excluded').length || 0})
-          </button>
-
-          <button
-            onClick={() => setActiveTab('news')}
-            className={`tab-btn ${activeTab === 'news' ? 'active' : ''}`}
-            style={{
-              background: 'none', border: 'none',
-              borderBottom: activeTab === 'news' ? '2px solid var(--accent-cyan)' : '2px solid transparent',
-              color: activeTab === 'news' ? 'var(--accent-cyan)' : 'var(--text-muted)',
-              padding: '8px 14px', fontSize: '0.88rem', fontWeight: 600, cursor: 'pointer',
-              display: 'flex', alignItems: 'center', gap: '6px'
-            }}
-          >
-            <Newspaper size={16} /> News & Catalysts ({detail.recent_news?.length || 0})
-          </button>
-
-          <button
-            onClick={() => setActiveTab('divergences')}
-            className={`tab-btn ${activeTab === 'divergences' ? 'active' : ''}`}
-            style={{
-              background: 'none', border: 'none',
-              borderBottom: activeTab === 'divergences' ? '2px solid var(--accent-cyan)' : '2px solid transparent',
-              color: activeTab === 'divergences' ? 'var(--accent-cyan)' : 'var(--text-muted)',
-              padding: '8px 14px', fontSize: '0.88rem', fontWeight: 600, cursor: 'pointer',
-              display: 'flex', alignItems: 'center', gap: '6px'
-            }}
-          >
-            <Zap size={16} /> Divergences & WHY ({detail.divergences?.length || 0})
-          </button>
-
-          <button
-            onClick={() => setActiveTab('technical')}
-            className={`tab-btn ${activeTab === 'technical' ? 'active' : ''}`}
-            style={{
-              background: 'none', border: 'none',
-              borderBottom: activeTab === 'technical' ? '2px solid var(--accent-cyan)' : '2px solid transparent',
-              color: activeTab === 'technical' ? 'var(--accent-cyan)' : 'var(--text-muted)',
-              padding: '8px 14px', fontSize: '0.88rem', fontWeight: 600, cursor: 'pointer',
-              display: 'flex', alignItems: 'center', gap: '6px'
-            }}
-          >
-            <Activity size={16} /> Technicals
-          </button>
-        </div>
-
-        {/* TAB 1: Prediction Markets (Polymarket) */}
-        {activeTab === 'prediction' && (() => {
-          const allMarkets = detail.prediction_markets || [];
-          const directMarkets = allMarkets.filter((m) => m.is_direct || (m.ticker && m.ticker.toUpperCase() === detail.ticker.toUpperCase()));
-          const sectorMarkets = allMarkets.filter((m) => !m.is_direct && (!m.ticker || m.ticker.toUpperCase() !== detail.ticker.toUpperCase()));
-
-          const displayedMarkets = marketFilter === 'DIRECT'
-            ? directMarkets
-            : marketFilter === 'SECTOR'
-            ? sectorMarkets
-            : allMarkets;
-
-          return (
-            <div>
-              {/* Prediction Sub-Filter Pills & PMS Header */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  <button
-                    onClick={() => setMarketFilter('ALL')}
-                    style={{
-                      background: marketFilter === 'ALL' ? 'rgba(0, 242, 254, 0.15)' : 'rgba(255, 255, 255, 0.04)',
-                      border: marketFilter === 'ALL' ? '1px solid var(--accent-cyan)' : '1px solid rgba(255, 255, 255, 0.08)',
-                      color: marketFilter === 'ALL' ? 'var(--accent-cyan)' : 'var(--text-muted)',
-                      borderRadius: '20px',
-                      padding: '4px 12px',
-                      fontSize: '0.72rem',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                      transition: 'all 0.15s ease'
-                    }}
-                  >
-                    Todos ({allMarkets.length})
-                  </button>
-
-                  <button
-                    onClick={() => setMarketFilter('DIRECT')}
-                    style={{
-                      background: marketFilter === 'DIRECT' ? 'rgba(16, 185, 129, 0.18)' : 'rgba(255, 255, 255, 0.04)',
-                      border: marketFilter === 'DIRECT' ? '1px solid var(--bullish-green)' : '1px solid rgba(255, 255, 255, 0.08)',
-                      color: marketFilter === 'DIRECT' ? 'var(--bullish-green)' : 'var(--text-muted)',
-                      borderRadius: '20px',
-                      padding: '4px 12px',
-                      fontSize: '0.72rem',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '4px',
-                      transition: 'all 0.15s ease'
-                    }}
-                  >
-                    <Target size={12} />
-                    <span>Directos ${detail.ticker} ({directMarkets.length})</span>
-                  </button>
-
-                  <button
-                    onClick={() => setMarketFilter('SECTOR')}
-                    style={{
-                      background: marketFilter === 'SECTOR' ? 'rgba(168, 85, 247, 0.18)' : 'rgba(255, 255, 255, 0.04)',
-                      border: marketFilter === 'SECTOR' ? '1px solid #c084fc' : '1px solid rgba(255, 255, 255, 0.08)',
-                      color: marketFilter === 'SECTOR' ? '#c084fc' : 'var(--text-muted)',
-                      borderRadius: '20px',
-                      padding: '4px 12px',
-                      fontSize: '0.72rem',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '4px',
-                      transition: 'all 0.15s ease'
-                    }}
-                  >
-                    <Globe size={12} />
-                    <span>Sectoriales / SpaceX ({sectorMarkets.length})</span>
-                  </button>
-                </div>
-
-                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                  PMS Ponderado: <strong style={{ color: 'var(--accent-cyan)' }}>{detail.header.pms ? `${detail.header.pms.toFixed(1)}/100` : '—'}</strong>
-                </div>
-              </div>
-
-              {/* Markets List */}
-              {displayedMarkets.length > 0 ? (
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '12px' }}>
-                  {displayedMarkets.map((m) => {
-                    const isDirect = m.is_direct || (m.ticker && m.ticker.toUpperCase() === detail.ticker.toUpperCase());
-                    const impactBeta = m.impact_weight !== undefined && m.impact_weight !== null ? m.impact_weight : null;
-
-                    return (
-                      <div
-                        key={m.id}
-                        style={{
-                          background: isDirect ? 'rgba(16, 185, 129, 0.04)' : 'rgba(255, 255, 255, 0.03)',
-                          border: isDirect ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid var(--border-color)',
-                          borderLeft: isDirect ? '4px solid var(--bullish-green)' : '4px solid #a855f7',
-                          borderRadius: '10px',
-                          padding: '16px',
-                          transition: 'all 0.15s ease'
-                        }}
-                      >
-                        {/* Top Tagging & Quality Bar */}
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px', marginBottom: '6px' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                            {/* Role Badge */}
-                            {isDirect ? (
-                              <span
-                                style={{
-                                  fontSize: '0.68rem',
-                                  fontWeight: 800,
-                                  background: 'rgba(16, 185, 129, 0.15)',
-                                  color: 'var(--bullish-green)',
-                                  border: '1px solid rgba(16, 185, 129, 0.4)',
-                                  padding: '2px 7px',
-                                  borderRadius: '4px',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: '4px'
-                                }}
-                              >
-                                <Target size={11} /> CONTRATO DIRECTO ${detail.ticker}
-                              </span>
-                            ) : (
-                              <span
-                                style={{
-                                  fontSize: '0.68rem',
-                                  fontWeight: 800,
-                                  background: 'rgba(168, 85, 247, 0.15)',
-                                  color: '#c084fc',
-                                  border: '1px solid rgba(168, 85, 247, 0.4)',
-                                  padding: '2px 7px',
-                                  borderRadius: '4px',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: '4px'
-                                }}
-                              >
-                                <Globe size={11} /> CATALIZADOR SECTORIAL ({m.ticker || 'SPCX / Macro'})
-                              </span>
-                            )}
-
-                            {/* Impact Beta pill if sector catalyst */}
-                            {!isDirect && impactBeta !== null && (
-                              <span
-                                style={{
-                                  fontSize: '0.68rem',
-                                  fontWeight: 600,
-                                  background: impactBeta >= 0 ? 'rgba(0, 242, 254, 0.1)' : 'rgba(239, 68, 68, 0.1)',
-                                  color: impactBeta >= 0 ? 'var(--accent-cyan)' : 'var(--bearish-red)',
-                                  border: `1px solid ${impactBeta >= 0 ? 'rgba(0, 242, 254, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
-                                  padding: '2px 6px',
-                                  borderRadius: '4px'
-                                }}
-                              >
-                                Beta en ${detail.ticker}: {impactBeta >= 0 ? `+${(impactBeta * 100).toFixed(0)}%` : `${(impactBeta * 100).toFixed(0)}%`}
-                              </span>
-                            )}
-
-                            <span style={{ fontSize: '0.68rem', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 600 }}>
-                              {m.category}
-                            </span>
-                          </div>
-
-                          <div style={{ textAlign: 'right' }}>
-                            <span
-                              style={{
-                                fontSize: '0.72rem',
-                                fontWeight: 700,
-                                padding: '3px 8px',
-                                borderRadius: '6px',
-                                background: m.quality_score >= 50 ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
-                                color: m.quality_score >= 50 ? 'var(--bullish-green)' : 'var(--bearish-red)',
-                                border: `1px solid ${m.quality_score >= 50 ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)'}`
-                              }}
-                            >
-                              Calidad: {m.quality_score.toFixed(0)}/100
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Title & Description */}
-                        <h4 style={{ margin: '6px 0 6px 0', fontSize: '0.96rem', color: '#fff', lineHeight: '1.4' }}>
-                          {m.title}
-                        </h4>
-                        {m.description && (
-                          <p style={{ margin: '0 0 10px 0', fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.35' }}>
-                            {m.description}
-                          </p>
-                        )}
-
-                        {/* Probability Bar */}
-                        <div style={{ margin: '10px 0 8px 0' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', fontWeight: 700, marginBottom: '4px' }}>
-                            <span style={{ color: 'var(--bullish-green)' }}>YES: {m.yes_probability.toFixed(1)}%</span>
-                            <span style={{ color: 'var(--bearish-red)' }}>NO: {m.no_probability.toFixed(1)}%</span>
-                          </div>
-                          <div style={{ height: '8px', width: '100%', background: 'rgba(239,68,68,0.4)', borderRadius: '4px', overflow: 'hidden' }}>
-                            <div
-                              style={{
-                                height: '100%',
-                                width: `${m.yes_probability}%`,
-                                background: 'var(--bullish-green)',
-                                borderRadius: '4px 0 0 4px',
-                                transition: 'width 0.5s ease'
-                              }}
-                            />
-                          </div>
-                        </div>
-
-                        {/* Market Depth Metrics */}
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '10px', flexWrap: 'wrap', gap: '8px' }}>
-                          <span>Vol: <b style={{ color: '#fff' }}>${(m.volume / 1000).toFixed(1)}k</b></span>
-                          <span>Liquidity: <b style={{ color: '#fff' }}>${(m.liquidity / 1000).toFixed(1)}k</b></span>
-                          <span>Spread: <b style={{ color: '#fff' }}>{(m.spread * 100).toFixed(1)}¢</b></span>
-                          {m.url && (
-                            <a href={m.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-cyan)', display: 'flex', alignItems: 'center', gap: '3px', textDecoration: 'none', fontWeight: 600 }}>
-                              Ver en Polymarket <ExternalLink size={12} />
-                            </a>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div style={{ textAlign: 'center', padding: '36px 16px', color: 'var(--text-muted)', background: 'rgba(0,0,0,0.2)', borderRadius: '10px', border: '1px dashed rgba(255,255,255,0.08)' }}>
-                  <p style={{ margin: '0 0 8px 0', fontSize: '0.88rem', color: 'var(--text-dim)' }}>
-                    {marketFilter === 'DIRECT'
-                      ? `Actualmente no hay apuestas directas en Polymarket con ticker específico $${detail.ticker}.`
-                      : 'No hay contratos de predicción para el filtro seleccionado.'}
-                  </p>
-                  {marketFilter === 'DIRECT' && sectorMarkets.length > 0 && (
-                    <button
-                      onClick={() => setMarketFilter('SECTOR')}
-                      style={{
-                        background: 'rgba(168, 85, 247, 0.15)',
-                        border: '1px solid #c084fc',
-                        color: '#c084fc',
-                        borderRadius: '6px',
-                        padding: '6px 14px',
-                        fontSize: '0.78rem',
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        marginTop: '6px'
-                      }}
-                    >
-                      Ver {sectorMarkets.length} Catalizadores Sectoriales (SpaceX / NASA / Space Force)
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })()}
-
-        {/* TAB 2: Social Feed */}
-        {activeTab === 'social' && (
-          <div>
-            {/* Sentiment Summary Bar */}
-            {detail.social_stats && detail.social_stats.total_posts > 0 ? (
-              <div style={{ display: 'flex', justifyContent: 'space-around', background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '8px', marginBottom: '16px' }}>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>BULLISH</div>
-                  <div style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--bullish-green)' }}>
-                    {detail.social_stats.bullish_pct}%
-                  </div>
-                </div>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>NEUTRAL</div>
-                  <div style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--neutral-yellow)' }}>
-                    {detail.social_stats.neutral_pct}%
-                  </div>
-                </div>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>BEARISH</div>
-                  <div style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--bearish-red)' }}>
-                    {detail.social_stats.bearish_pct}%
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div style={{ textAlign: 'center', background: 'rgba(0,0,0,0.2)', padding: '10px', borderRadius: '8px', marginBottom: '16px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                No recent social posts collected in the analysis window (Anchor Baseline: 50.0)
-              </div>
             )}
-
-            {(() => {
-              const allPosts = detail.recent_posts || [];
-              // Posts without a status come from an older API: treat them as counted
-              const counted = allPosts.filter((p) => p.status !== 'excluded');
-              const excluded = allPosts.filter((p) => p.status === 'excluded');
-              const latest = [...counted].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-              const listByView = { influential: counted, latest, excluded };
-              const list = listByView[feedView];
-              const visible = showAllPosts ? list : list.slice(0, FEED_PREVIEW_SIZE);
-              const maxShare = Math.max(1, ...counted.map((p) => p.vote_share || 0));
-              const excludedCounts = detail.social_stats?.excluded_post_counts || {};
-              const excludedSummary = Object.entries(excludedCounts)
-                .map(([reason, n]) => `${n} ${EXCLUDED_REASON_LABELS[reason] || reason}`)
-                .join(', ');
-
-              const viewButton = (view: 'influential' | 'latest' | 'excluded', label: string) => (
-                <button
-                  key={view}
-                  onClick={() => { setFeedView(view); setShowAllPosts(false); }}
-                  style={{
-                    background: feedView === view ? 'rgba(56,189,248,0.15)' : 'transparent',
-                    border: `1px solid ${feedView === view ? 'var(--accent-cyan)' : 'var(--border-color)'}`,
-                    color: feedView === view ? 'var(--accent-cyan)' : 'var(--text-muted)',
-                    borderRadius: '6px', padding: '4px 10px', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer'
-                  }}
-                >
-                  {label}
-                </button>
-              );
-
-              return (
-                <>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '10px' }}>
-                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                      {viewButton('influential', 'Most influential')}
-                      {viewButton('latest', 'Latest')}
-                      {viewButton('excluded', `Excluded (${excluded.length})`)}
-                    </div>
-                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                      {counted.length} count toward the SSI{excluded.length > 0 ? ` · ${excluded.length} excluded${excludedSummary ? ` (${excludedSummary})` : ''}` : ''}
-                    </span>
-                  </div>
-
-                  <div
-                    className="tweets-feed"
-                    style={showAllPosts ? { maxHeight: '520px', overflowY: 'auto', paddingRight: '4px' } : undefined}
-                  >
-                    {visible.length > 0 ? (
-                      visible.map((post) => {
-                        const isExcluded = post.status === 'excluded';
-                        const isOpinion = post.sentiment_label === 'BULLISH' || post.sentiment_label === 'BEARISH';
-                        const labelColor = post.sentiment_label === 'BULLISH' ? 'var(--bullish-green)' : post.sentiment_label === 'BEARISH' ? 'var(--bearish-red)' : 'var(--neutral-yellow)';
-                        return (
-                          <div key={`${post.id}-${post.created_at}`} className="tweet-card" style={isExcluded ? { opacity: 0.55 } : undefined}>
-                            <div className="tweet-header">
-                              <span>@{post.username}</span>
-                              {isExcluded ? (
-                                <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>
-                                  Excluded: {EXCLUDED_REASON_LABELS[post.excluded_reason || ''] || post.excluded_reason}
-                                </span>
-                              ) : (
-                                <span style={{ color: labelColor }}>
-                                  {post.sentiment_label} ({post.sentiment_score.toFixed(2)})
-                                </span>
-                              )}
-                            </div>
-                            <div className="tweet-text">{post.text}</div>
-                            {!isExcluded && (
-                              isOpinion ? (
-                                <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' }} title="Share of the opinion weight behind the SSI">
-                                  <div style={{ flex: 1, height: '4px', background: 'rgba(255,255,255,0.08)', borderRadius: '2px' }}>
-                                    <div style={{ width: `${Math.min(100, ((post.vote_share || 0) / maxShare) * 100)}%`, height: '100%', background: labelColor, borderRadius: '2px' }} />
-                                  </div>
-                                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                                    {(post.vote_share || 0).toFixed(1)}% of SSI vote
-                                  </span>
-                                </div>
-                              ) : (
-                                <div style={{ marginTop: '6px', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                                  Neutral · counts as a mention, does not vote
-                                </div>
-                              )
-                            )}
-                            {post.catalyst && !isExcluded && (
-                              <div style={{ marginTop: '6px', fontSize: '0.72rem', color: 'var(--accent-cyan)' }}>
-                                ⚡ Catalyst: {post.catalyst}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })
-                    ) : (
-                      <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)' }}>
-                        {feedView === 'excluded' ? 'No posts were excluded in the analysis window.' : 'No recent social posts collected.'}
-                      </div>
-                    )}
-                  </div>
-
-                  {list.length > FEED_PREVIEW_SIZE && (
-                    <button
-                      onClick={() => setShowAllPosts(!showAllPosts)}
-                      style={{
-                        marginTop: '10px', width: '100%', background: 'transparent', border: '1px solid var(--border-color)',
-                        color: 'var(--accent-cyan)', borderRadius: '6px', padding: '6px', fontSize: '0.78rem', cursor: 'pointer'
-                      }}
-                    >
-                      {showAllPosts ? 'Show less' : `Show all (${list.length})`}
-                    </button>
-                  )}
-                </>
-              );
-            })()}
           </div>
+        </div>
+        <div className="tech-grid">
+          {pillars.map((p) => (
+            <div key={p.key} className="tech-item" title={p.title}>
+              <div className="tech-key">{p.label} ({formatWeight(detail.engine, p.key)})</div>
+              <div className="tech-val">
+                {isNum(p.value) || !p.empty ? <ScoreValue value={p.value} tone={p.tone} /> : <span className="tone-none text-sm">{p.empty}</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="tabs" role="tablist" aria-label={`${detail.ticker} detail sections`}>
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            id={`tab-${tab.id}`}
+            aria-selected={activeTab === tab.id}
+            aria-controls={`panel-${tab.id}`}
+            className={`tab-btn ${activeTab === tab.id ? 'active' : ''}`}
+            onClick={() => setActiveTab(tab.id)}
+          >
+            {tab.icon} {tab.label}
+          </button>
+        ))}
+      </div>
+
+      <div role="tabpanel" id={`panel-${activeTab}`} aria-labelledby={`tab-${activeTab}`}>
+        {activeTab === 'prediction' && (
+          <PredictionTab
+            detail={detail}
+            isDirectMarket={isDirectMarket}
+          />
         )}
 
-        {/* TAB 3: News Feed */}
+        {activeTab === 'social' && (
+          <SocialTab
+            detail={detail}
+            feedView={feedView}
+            onFeedViewChange={(view) => { setFeedView(view); setShowAllPosts(false); }}
+            showAll={showAllPosts}
+            onToggleShowAll={() => setShowAllPosts(!showAllPosts)}
+          />
+        )}
+
         {activeTab === 'news' && (
           <div className="tweets-feed">
             {detail.recent_news && detail.recent_news.length > 0 ? (
               detail.recent_news.map((item) => (
                 <div key={item.id} className="tweet-card">
                   <div className="tweet-header">
-                    <span style={{ fontWeight: 600, color: 'var(--accent-cyan)' }}>{item.source || 'News Source'}</span>
-                    <span style={{ color: item.sentiment_label === 'BULLISH' ? 'var(--bullish-green)' : item.sentiment_label === 'BEARISH' ? 'var(--bearish-red)' : 'var(--neutral-yellow)' }}>
-                      {item.sentiment_label}
-                    </span>
+                    <span className="strong tone-accent">{item.source || 'News Source'}</span>
+                    <span className={`tone-${sentimentTone(item.sentiment_label)}`}>{item.sentiment_label}</span>
                   </div>
-                  <a
-                    href={item.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ color: '#fff', textDecoration: 'none', fontWeight: 500, fontSize: '0.9rem', display: 'block', margin: '4px 0' }}
-                  >
+                  <a href={item.url} target="_blank" rel="noopener noreferrer" className="news-link">
                     {item.title}
                   </a>
-                  <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                    Published: {new Date(item.published_at).toLocaleDateString()}
-                  </span>
+                  <span className="text-muted text-xs">Published: {new Date(item.published_at).toLocaleDateString()}</span>
                 </div>
               ))
             ) : (
-              <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)' }}>
-                No recent news recorded for this ticker.
-              </div>
+              <EmptyState>No recent news recorded for this ticker.</EmptyState>
             )}
           </div>
         )}
 
-        {/* TAB 4: Active Divergences & WHY Explanations */}
         {activeTab === 'divergences' && (
           <div>
-            {/* Active Divergences List */}
             {detail.divergences && detail.divergences.length > 0 ? (
-              <div style={{ marginBottom: '16px' }}>
-                <h4 style={{ fontSize: '0.9rem', color: 'var(--accent-cyan)', marginBottom: '8px' }}>Active Market Divergences</h4>
+              <div className="detail-section">
+                <h4 className="subsection-title">Active Market Divergences</h4>
                 {detail.divergences.map((d) => (
-                  <div
-                    key={d.id}
-                    style={{
-                      background: d.direction === 'BULLISH' ? 'var(--bullish-bg)' : 'var(--bearish-bg)',
-                      border: `1px solid ${d.direction === 'BULLISH' ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)'}`,
-                      padding: '12px',
-                      borderRadius: '8px',
-                      marginBottom: '8px'
-                    }}
-                  >
-                    <div style={{ fontWeight: 700, fontSize: '0.85rem', color: d.direction === 'BULLISH' ? 'var(--bullish-green)' : 'var(--bearish-red)' }}>
-                      [{d.type}] {d.direction}
-                    </div>
-                    <div style={{ fontSize: '0.8rem', color: '#fff', marginTop: '4px' }}>
-                      {d.description}
-                    </div>
+                  <div key={d.id} className={`divergence-card ${d.direction === 'BULLISH' ? 'is-bull' : 'is-bear'}`}>
+                    <div className="divergence-title">[{d.type}] {d.direction}</div>
+                    <div className="divergence-desc">{d.description}</div>
                   </div>
                 ))}
               </div>
             ) : (
-              <div style={{ padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', marginBottom: '16px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+              <EmptyState className="detail-section">
                 No conflicting divergences detected. Social, Prediction, and Price indicators are currently in structural alignment.
-              </div>
+              </EmptyState>
             )}
 
-            {/* WHY? Reasons Box */}
             <div className="reasons-box">
-              <h3 style={{ fontSize: '1rem', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <h3 className="reasons-title">
                 <Zap size={18} color="var(--accent-cyan)" /> WHY THIS SIGNAL?
               </h3>
-              {detail.reasons && detail.reasons.map((r, i) => {
-                const isPos = r.startsWith('+');
-                const isNeg = r.startsWith('-');
-                return (
-                  <div key={i} className={`reason-item ${isPos ? 'pos' : isNeg ? 'neg' : 'info'}`}>
-                    {r}
-                  </div>
-                );
-              })}
+              {detail.reasons?.map((r, i) => (
+                <div key={i} className={`reason-item ${r.startsWith('+') ? 'pos' : r.startsWith('-') ? 'neg' : 'info'}`}>
+                  {r}
+                </div>
+              ))}
             </div>
           </div>
         )}
 
-        {/* TAB 5: Technical Data */}
         {activeTab === 'technical' && (
-          <div className="tech-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
+          <div className="tech-grid">
+            <TechItem label="Price" value={fmtPrice(detail.technical_data.price, 'N/A')} />
+            <TechItem label="EMA 200" value={fmtPrice(detail.technical_data.ema200, 'N/A')} />
+            <TechItem label="RSI (14)" value={fmt(detail.technical_data.rsi14, 1, 'N/A')} />
+            <TechItem label="MACD Hist" value={fmt(detail.technical_data.macd_histogram, 2, 'N/A')} />
+            <TechItem label="ATR (14)" value={isNum(detail.technical_data.atr) ? `$${detail.technical_data.atr.toFixed(2)}` : 'N/A'} />
+            <TechItem label="Vol Ratio" value={isNum(detail.technical_data.volume_ratio) ? `${detail.technical_data.volume_ratio.toFixed(2)}x` : 'N/A'} />
+            <TechItem label="Tech Score" value={isNum(detail.technical_data.technical_score) ? `${detail.technical_data.technical_score}/40` : 'N/A'} />
             <div className="tech-item">
-              <div className="tech-key">PRICE</div>
-              <div className="tech-val">{detail.technical_data.price ? `$${detail.technical_data.price.toFixed(2)}` : 'N/A'}</div>
-            </div>
-            <div className="tech-item">
-              <div className="tech-key">EMA 200</div>
-              <div className="tech-val">{detail.technical_data.ema200 ? `$${detail.technical_data.ema200.toFixed(2)}` : 'N/A'}</div>
-            </div>
-            <div className="tech-item">
-              <div className="tech-key">RSI (14)</div>
-              <div className="tech-val">{detail.technical_data.rsi14 ? detail.technical_data.rsi14.toFixed(1) : 'N/A'}</div>
-            </div>
-            <div className="tech-item">
-              <div className="tech-key">MACD HIST</div>
-              <div className="tech-val">{detail.technical_data.macd_histogram ? detail.technical_data.macd_histogram.toFixed(2) : 'N/A'}</div>
-            </div>
-            <div className="tech-item">
-              <div className="tech-key">ATR (14)</div>
-              <div className="tech-val">{detail.technical_data.atr !== null && detail.technical_data.atr !== undefined ? `$${detail.technical_data.atr.toFixed(2)}` : 'N/A'}</div>
-            </div>
-            <div className="tech-item">
-              <div className="tech-key">VOL RATIO</div>
-              <div className="tech-val">{detail.technical_data.volume_ratio ? `${detail.technical_data.volume_ratio.toFixed(2)}x` : 'N/A'}</div>
-            </div>
-            <div className="tech-item">
-              <div className="tech-key">TECH SCORE</div>
-              <div className="tech-val">{detail.technical_data.technical_score !== null ? `${detail.technical_data.technical_score}/40` : 'N/A'}</div>
-            </div>
-            <div className="tech-item">
-              <div className="tech-key">RISK / SAFETY</div>
-              <div className="tech-val" style={{ color: detail.score_breakdown.risk_score !== null && detail.score_breakdown.risk_score !== undefined ? (detail.score_breakdown.risk_score >= 60 ? 'var(--bullish-green)' : detail.score_breakdown.risk_score <= 35 ? 'var(--bearish-red)' : 'var(--neutral-yellow)') : 'var(--text-muted)' }}>
-                {detail.score_breakdown.risk_score !== null && detail.score_breakdown.risk_score !== undefined ? `${detail.score_breakdown.risk_score.toFixed(1)}/100` : 'N/A'}
+              <div className="tech-key">Risk / Safety</div>
+              <div className="tech-val">
+                <ScoreValue value={breakdown.risk_score} suffix="/100" tone={riskTone(breakdown.risk_score, thresholds)} />
               </div>
             </div>
           </div>
         )}
       </div>
+    </Modal>
+  );
+};
+
+const TechItem: React.FC<{ label: string; value: string }> = ({ label, value }) => (
+  <div className="tech-item">
+    <div className="tech-key">{label}</div>
+    <div className="tech-val">{value}</div>
+  </div>
+);
+
+// --- Prediction markets tab -------------------------------------------------
+
+interface PredictionTabProps {
+  detail: TickerDetailResponse;
+  isDirectMarket: (m: PredictionMarketItem) => boolean;
+}
+
+const PredictionTab: React.FC<PredictionTabProps> = ({ detail, isDirectMarket }) => {
+  const directMarkets = (detail.prediction_markets || []).filter(isDirectMarket);
+
+  return (
+    <div>
+      <div className="toolbar">
+        <div className="chip-group" role="group" aria-label="Market filter">
+          <button
+            type="button"
+            className="chip chip-bull active"
+          >
+            <Target size={12} />
+            <span>Direct Contracts ${detail.ticker} ({directMarkets.length})</span>
+          </button>
+        </div>
+        <div className="text-muted text-xs">
+          Weighted PMS: <ScoreValue value={detail.header.pms} suffix="/100" className="strong" />
+        </div>
+      </div>
+
+      {directMarkets.length > 0 ? (
+        <div className="market-list">
+          {directMarkets.map((m) => (
+            <MarketCard key={m.id} market={m} ticker={detail.ticker} isDirect={true} />
+          ))}
+        </div>
+      ) : (
+        <EmptyState className="empty-dashed">
+          <p>
+            There are currently no Polymarket contracts specific to ${detail.ticker}.
+          </p>
+          <p className="text-muted text-xs" style={{ marginTop: '0.5rem' }}>
+            Polymarket prediction score (PMS) is excluded from the SMI calculation and its weight is redistributed across other active pillars.
+          </p>
+        </EmptyState>
+      )}
+    </div>
+  );
+};
+
+const MarketCard: React.FC<{ market: PredictionMarketItem; ticker: string; isDirect: boolean }> = ({ market: m, ticker, isDirect }) => {
+  const [expanded, setExpanded] = useState(false);
+  const impactBeta = isNum(m.impact_weight) ? m.impact_weight : null;
+  const isLong = (m.description?.length ?? 0) > DESCRIPTION_CLAMP_CHARS;
+
+  return (
+    <div className={`market-card ${isDirect ? 'is-direct' : 'is-sector'}`}>
+      <div className="market-card-top">
+        <div className="badge-row">
+          {isDirect ? (
+            <Badge variant="bull" className="strong"><Target size={11} /> DIRECT CONTRACT ${ticker}</Badge>
+          ) : (
+            <Badge variant="purple" className="strong"><Globe size={11} /> SECTOR CATALYST ({m.ticker || 'SPCX / Macro'})</Badge>
+          )}
+          {!isDirect && impactBeta !== null && (
+            <Badge variant={impactBeta >= 0 ? 'info' : 'bear'} title="Estimated impact of this event on the ticker">
+              Beta on ${ticker}: {impactBeta >= 0 ? '+' : ''}{(impactBeta * 100).toFixed(0)}%
+            </Badge>
+          )}
+          <span className="micro-label">{m.category}</span>
+        </div>
+        <Badge variant={m.quality_score >= 50 ? 'muted' : 'degraded'} title="Market quality: liquidity, volume and spread">
+          Quality: {m.quality_score.toFixed(0)}/100
+        </Badge>
+      </div>
+
+      <h4 className="market-title">{m.title}</h4>
+      {m.description && (
+        <>
+          <p className={`market-desc ${isLong && !expanded ? 'clamped' : ''}`}>{m.description}</p>
+          {isLong && (
+            <button type="button" className="link-btn" onClick={() => setExpanded(!expanded)} aria-expanded={expanded}>
+              {expanded ? 'Show less' : 'Show more'}
+            </button>
+          )}
+        </>
+      )}
+
+      <div className="prob">
+        <div className="prob-labels">
+          <span className="tone-strong-bull">YES: {m.yes_probability.toFixed(1)}%</span>
+          <span className="tone-strong-bear">NO: {m.no_probability.toFixed(1)}%</span>
+        </div>
+        <div
+          className="prob-track"
+          role="meter"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={m.yes_probability}
+          aria-label="YES probability"
+        >
+          <div className="prob-fill" style={{ width: `${m.yes_probability}%` }} />
+        </div>
+      </div>
+
+      <div className="market-metrics">
+        <span>Vol: <b className="text-strong">${(m.volume / 1000).toFixed(1)}k</b></span>
+        <span>Liquidity: <b className="text-strong">${(m.liquidity / 1000).toFixed(1)}k</b></span>
+        <span>Spread: <b className="text-strong">{(m.spread * 100).toFixed(1)}¢</b></span>
+        {m.url && (
+          <a href={m.url} target="_blank" rel="noopener noreferrer" className="ext-link">
+            View on Polymarket <ExternalLink size={12} />
+          </a>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// --- Social feed tab --------------------------------------------------------
+
+interface SocialTabProps {
+  detail: TickerDetailResponse;
+  feedView: FeedView;
+  onFeedViewChange: (view: FeedView) => void;
+  showAll: boolean;
+  onToggleShowAll: () => void;
+}
+
+const SocialTab: React.FC<SocialTabProps> = ({ detail, feedView, onFeedViewChange, showAll, onToggleShowAll }) => {
+  const stats = detail.social_stats;
+  const allPosts = detail.recent_posts || [];
+  // Posts without a status come from an older API: treat them as counted
+  const counted = allPosts.filter((p) => p.status !== 'excluded');
+  const excluded = allPosts.filter((p) => p.status === 'excluded');
+  const latest = [...counted].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  const list = { influential: counted, latest, excluded }[feedView];
+  const visible = showAll ? list : list.slice(0, FEED_PREVIEW_SIZE);
+  const maxShare = Math.max(1, ...counted.map((p) => p.vote_share || 0));
+  const excludedSummary = Object.entries(stats?.excluded_post_counts || {})
+    .map(([reason, n]) => `${n} ${EXCLUDED_REASON_LABELS[reason] || reason}`)
+    .join(', ');
+
+  const views: { id: FeedView; label: string }[] = [
+    { id: 'influential', label: 'Most influential' },
+    { id: 'latest', label: 'Latest' },
+    { id: 'excluded', label: `Excluded (${excluded.length})` }
+  ];
+
+  return (
+    <div>
+      {stats && stats.total_posts > 0 ? (
+        <div className="sentiment-summary">
+          <div><div className="micro-label">Bullish</div><div className="sentiment-pct tone-strong-bull">{stats.bullish_pct}%</div></div>
+          <div><div className="micro-label">Neutral</div><div className="sentiment-pct tone-neutral">{stats.neutral_pct}%</div></div>
+          <div><div className="micro-label">Bearish</div><div className="sentiment-pct tone-strong-bear">{stats.bearish_pct}%</div></div>
+        </div>
+      ) : (
+        <EmptyState className="detail-section">
+          No recent social posts collected in the analysis window (SSI anchors to its 14-day baseline, 50 = normal).
+        </EmptyState>
+      )}
+
+      <div className="toolbar">
+        <div className="chip-group" role="group" aria-label="Feed view">
+          {views.map((v) => (
+            <button
+              key={v.id}
+              type="button"
+              aria-pressed={feedView === v.id}
+              className={`chip chip-accent ${feedView === v.id ? 'active' : ''}`}
+              onClick={() => onFeedViewChange(v.id)}
+            >
+              {v.label}
+            </button>
+          ))}
+        </div>
+        <span className="text-muted text-xs">
+          {counted.length} count toward the SSI
+          {excluded.length > 0 ? ` · ${excluded.length} excluded${excludedSummary ? ` (${excludedSummary})` : ''}` : ''}
+        </span>
+      </div>
+
+      <div className={`tweets-feed ${showAll ? 'scrollable' : ''}`}>
+        {visible.length > 0 ? (
+          visible.map((post) => {
+            const isExcluded = post.status === 'excluded';
+            const isOpinion = post.sentiment_label === 'BULLISH' || post.sentiment_label === 'BEARISH';
+            const tone = sentimentTone(post.sentiment_label);
+            return (
+              <div key={`${post.id}-${post.created_at}`} className={`tweet-card ${isExcluded ? 'is-excluded' : ''}`}>
+                <div className="tweet-header">
+                  <span>@{post.username}</span>
+                  {isExcluded ? (
+                    <span className="strong">Excluded: {EXCLUDED_REASON_LABELS[post.excluded_reason || ''] || post.excluded_reason}</span>
+                  ) : (
+                    <span className={`tone-${tone}`}>{post.sentiment_label} ({post.sentiment_score.toFixed(2)})</span>
+                  )}
+                </div>
+                <div className="tweet-text">{post.text}</div>
+                {!isExcluded && (isOpinion ? (
+                  <div className="vote-share" title="Share of the opinion weight behind the SSI">
+                    <div className="vote-share-track">
+                      <div
+                        className={`vote-share-fill bg-${tone}`}
+                        style={{ width: `${Math.min(100, ((post.vote_share || 0) / maxShare) * 100)}%` }}
+                      />
+                    </div>
+                    <span className="text-muted text-2xs nowrap">{(post.vote_share || 0).toFixed(1)}% of SSI vote</span>
+                  </div>
+                ) : (
+                  <div className="text-muted text-2xs tweet-note">Neutral · counts as a mention, does not vote</div>
+                ))}
+                {post.catalyst && !isExcluded && (
+                  <div className="tone-accent text-xs tweet-note">⚡ Catalyst: {post.catalyst}</div>
+                )}
+              </div>
+            );
+          })
+        ) : (
+          <EmptyState>
+            {feedView === 'excluded' ? 'No posts were excluded in the analysis window.' : 'No recent social posts collected.'}
+          </EmptyState>
+        )}
+      </div>
+
+      {list.length > FEED_PREVIEW_SIZE && (
+        <button type="button" className="btn-outline-full" onClick={onToggleShowAll}>
+          {showAll ? 'Show less' : `Show all (${list.length})`}
+        </button>
+      )}
     </div>
   );
 };

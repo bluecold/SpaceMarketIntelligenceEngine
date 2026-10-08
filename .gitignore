@@ -30,6 +30,8 @@ data/x_cookies.json
 .vscode/
 .DS_Store
 scratch/
+.agents/
+skills-lock.json
 
 
 # Audit study outputs (may contain post data)

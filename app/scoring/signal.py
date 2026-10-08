@@ -144,9 +144,9 @@ def generate_signal_and_explanation(
             if "OVEREXTENDED" not in modifiers:
                 modifiers.append("OVEREXTENDED")
 
-        # Capital Preservation Gate 4: Elevated Volatility / Risk Governance (risk_score < 35.0)
+        # Capital Preservation Gate 4: Elevated Volatility / Risk Governance (risk_score < RISK_GATE_THRESHOLD)
         # Size Down, Don't Veto: Cap STRONG BUY to BUY and flag for reduced position sizing (50%)
-        if risk_score is not None and risk_score < 35.0:
+        if risk_score is not None and risk_score < settings.RISK_GATE_THRESHOLD:
             if base_signal == "STRONG BUY":
                 base_signal = "BUY"
             if "HIGH RISK" not in modifiers:

@@ -144,6 +144,9 @@ Motivo del cambio (v2.1 → v2.2): con social 30% / momentum 25%, el momentum ex
 Ante fuentes no disponibles ($None$ o $N=0$):
 $$w_i^{\text{active}} = \frac{w_i}{\sum_{j \in \text{active}} w_j}$$
 
+#### 3b. News Score (v2.2.1):
+Mismo criterio que el SSI: polaridad solo entre titulares BULLISH/BEARISH (los neutrales, ~60% del feed, siguen contando en `total_news` pero no diluyen hacia 50); copias sindicadas del mismo titular ("... - Yahoo Finance", "... - The Motley Fool") se cuentan una vez (`normalize_headline_for_dedup`, se queda la copia de mayor confianza); vida media de 12h (`NEWS_HALF_LIFE_HOURS`, antes 24h, que mantenía dominante el rally del 6/10 hasta el 8/10); y contracción hacia 50 hasta que la evidencia (suma de recencia × importancia de los titulares con opinión) llega a `NEWS_MIN_OPINION_EVIDENCE = 2` (sin ella, un único titular de hace 3 días fijaba SATL en 2/100). Sobre 5–8 oct: RKLB 46 → 31 y ASTS 57 → 45 el 8/10; los tickers con pocas noticias (SATL, SPCE) quedan cerca de 50.
+
 #### 4. Momentum como Contexto Técnico (v2.2):
 $$\text{Momentum} = 50 \pm 10_{\,\text{precio vs EMA200}} \pm \min\left(10,\ 8(\text{vol\_ratio}-1)\right)_{\,\text{signo del día}} - 1.5\,\max(0, \text{RSI}-75)$$
 - Sin el término de retornos de 1/3/5 días ni la distancia lineal a la EMA200 (en ATR) de v2.1.
@@ -177,7 +180,10 @@ $$\text{Momentum} = 50 \pm 10_{\,\text{precio vs EMA200}} \pm \min\left(10,\ 8(\
 
 ### E. Predicción Cuantitativa (PMS), Divergencias y Resolución Robusta
 
-1. **Calibración con Anclaje Dinámico de Consenso (Media Móvil 7 Días):** Si el mercado no provee una tasa base explícita, se ancla a la media móvil histórica de 7 días de ese mismo contrato (acotada entre 0.05 y 0.95), midiendo la sorpresa real en lugar de sesgos estructurales de contratos muy asimétricos.
+1. **Calibración con Anclaje Dinámico de Consenso (Media Móvil 7 Días):** Si el mercado no provee una tasa base explícita, se ancla a la media móvil histórica de 7 días de ese mismo contrato (acotada entre 0.005 y 0.995, `PMS_MIN_BASE_RATE`), midiendo la sorpresa real en lugar de sesgos estructurales de contratos muy asimétricos. Hasta v2.2.0 el piso era 0.05: cualquier mercado improbable (p. ej. 3.5% estable) puntuaba ~43, un sesgo bajista sin información.
+5. **Sin PMS por proxies sectoriales (v2.2.1):** un ticker sin mercados directos válidos no recibe PMS (pilar excluido y pesos renormalizados) salvo `PMS_ALLOW_SECTOR_ONLY=True`. En oct-2026 ASTS, RKLB, SATL y SPCE solo tenían mercados de Starship vía `DEFAULT_EVENT_COMPANY_MAPPINGS`, y su PMS quedaba fijo en 47–49 todos los días: un ancla hacia 50 con el 11% del peso. Los eventos sectoriales siguen sumando cuando hay al menos un mercado directo.
+6. **Tramos numéricos excluidos (v2.2.1):** los mercados que son un tramo de un evento excluyente de Polymarket (`negRisk` con `groupItemTitle` numérico: "<5", "5-6", "200+") no entran al PMS (`outcome_group`/`outcome_label`, propiedad `is_range_bucket`). Cada tramo tenía polaridad +1, así que "menos de 5 lanzamientos" contaba como alcista y cada tramo improbable como bajista (SPCX PMS 43 por 8 tramos con p≈0.001). Los resultados con nombre de un evento excluyente ("SpaceX" en "Largest IPO") sí cuentan.
+7. **Event keys con límites de palabra (v2.2.1):** `match_event_key_from_text` usaba subcadenas, y "sda" dentro de "Wednesday"/"Thursday" mapeaba mercados de tormentas geomagnéticas a contratos de Space Force.
 2. **Dominancia de Momentum ($\Delta P_{24h}$ 60% / Nivel 40%):** Ponderación prioritaria al flujo de capital informado y sorpresas de corto plazo.
 3. **Divergencias Calibradas con Blend 50/50:** El motor de divergencias tripartitas combina 50% de retorno de corto plazo con 50% de momentum estructural de tendencia. Los umbrales de discrepancia se calibran empíricamente a $\pm 0.18$ para narrativa social y prediction markets, $\pm 0.10$ para divergencias de precio y RSI 70 para sobreextensión, manteniendo contracción bayesiana ante muestras pequeñas ($N < 3$).
 4. **Protección Anti-Aleteo (Flapping) ante Fallo de Fuentes:** La resolución de alertas de dilución queda condicionada al éxito real de obtención de fundamentales (`fund_success == True`) y las divergencias al éxito de ingesta de Polymarket, previniendo cierres y reaperturas espurias ante cortes temporales de red.
@@ -249,6 +255,7 @@ python -m pytest tests/ -v
 - **SMI:** momentum de baja varianza y pesos con el sentimiento al 80% (secciones 3.B.3 y 3.B.4).
 - **UI:** feed social ordenado por influencia con vistas y motivos de exclusión (sección 3.F.7).
 - `RULES_VERSION = 2.2.0` en cada snapshot, para separar datos antiguos de los nuevos al analizar.
+- **v2.2.1:** noticias con polaridad solo de opiniones, deduplicación de titulares sindicados, vida media 12h y contracción por evidencia (sección 3.B.3b); PMS sin proxies sectoriales ni tramos numéricos, piso de tasa base 0.005 y event keys con límites de palabra (sección 3.E.5–7). Con datos del 8/10 el PMS desaparece en ASTS/RKLB/SATL/SPCE y el SMI de RKLB pasa de 46.6 (HOLD) a ~41 (CAUTION).
 - Estudios reproducibles en `audit/sentiment_2026_10/` (README con resultados).
 
 Descartado tras medirlo: **sentimiento por empresa** (recortar el texto a las frases sobre cada ticker). Cambiaba el 1.9% de las etiquetas sin mejorar la precisión en dos revisiones a ciegas (30 vs 29 aciertos de 67); los casos de comparación reales eran 5 en 14 días.
@@ -263,6 +270,8 @@ Descartado tras medirlo: **sentimiento por empresa** (recortar el texto a las fr
 5. **Vigilar la asimetría de FinTwitBERT:** en RKLB y SATL la norma de polaridad ronda 88, lo que deja poco margen para detectar euforia (el SSI puede subir ~12 pts pero caer mucho más). Si se confirma, usar umbrales distintos para alcista y bajista.
 6. **Validar `ATTENTION_SPIKE`** (volumen de menciones ≥ 2×) antes de darle peso en el SMI.
 
+**Descartado tras medirlo (oct-2026):** modificador `SECTOR SELLOFF` por caída conjunta de la cesta. `audit/sentiment_2026_10/sector_selloff_study.py` no encontró capacidad predictiva a 1–10 días (5 y 2 años; ver su README). Si se quiere mostrar la caída sectorial, que sea como contexto informativo en la UI, sin mover la señal.
+
 **Mantenimiento continuo:**
 7. **Ampliar el filtro de spam** con estilos que todavía se escapan ("$1,000 to $100,000…", "track record speaks for itself…"), juntando ejemplos desde la vista "Excluded" del feed y verificando con `spam_pattern_check.py` que no descarta opiniones genuinas.
 8. **Tras cambiar `SOCIAL_SENTIMENT_MODEL`/`SOCIAL_SENTIMENT_THRESHOLD`:** correr `python -m app.cli reclassify-social` para no mezclar modelos en la línea base.
@@ -270,4 +279,5 @@ Descartado tras medirlo: **sentimiento por empresa** (recortar el texto a las fr
 **Limitaciones conocidas:**
 - El backtest no aplica la compuerta `CATALYST RISK` porque no hay historial de catalizadores por snapshot.
 - Los posts guardados antes de capturar `lang` (≤ 2026-10-02) solo se filtran por alfabeto: el español y el portugués pasan hasta salir de la ventana de 14 días.
-- Los snapshots con `rules_version < 2.2.0` usan la fórmula anterior del SSI y del momentum: no mezclarlos al medir.
+- Los snapshots con `rules_version < 2.2.0` usan la fórmula anterior del SSI y del momentum: no mezclarlos al medir. Los de `2.2.0` usan el News Score y el PMS anteriores a 2.2.1.
+- `outcome_group`/`outcome_label` solo viven en memoria durante la corrida (no hay columna): la exclusión de tramos depende de que Polymarket siga enviando `negRisk` y `groupItemTitle`.

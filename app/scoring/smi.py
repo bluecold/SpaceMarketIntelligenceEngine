@@ -80,6 +80,16 @@ def describe_engine() -> Dict[str, Any]:
         "version": settings.APP_VERSION,
         "rules_version": getattr(settings, "RULES_VERSION", settings.APP_VERSION),
         "weights": {k: round(v, 4) for k, v in get_active_weights().items()},
+        # Signal bands (mirrored around 50) and the risk gate, so the UI colors scores the way the engine reads them
+        "thresholds": {
+            "strong_buy": settings.THRESHOLD_STRONG_BUY,
+            "buy": settings.THRESHOLD_BUY,
+            "watch": settings.THRESHOLD_WATCH,
+            "hold": settings.THRESHOLD_HOLD,
+            "avoid": settings.THRESHOLD_AVOID,
+            "strong_avoid": settings.THRESHOLD_STRONG_AVOID,
+            "risk_gate": settings.RISK_GATE_THRESHOLD,
+        },
     }
 
 

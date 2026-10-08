@@ -1,7 +1,6 @@
 from typing import List, Dict, Any
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from app.database.connection import get_db
+from fastapi import APIRouter
+from app.database.connection import DbSession
 from app.database.repository import (
     get_latest_ssi_snapshots_batch,
     get_latest_market_snapshots_batch,
@@ -12,11 +11,11 @@ from app.database.repository import (
 from app.config import INITIAL_TICKERS
 from app.scoring.smi import describe_engine
 
-router = APIRouter(tags=["Dashboard"])
+router = APIRouter(prefix="/api", tags=["Dashboard"])
 
 
-@router.get("/api/dashboard")
-def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
+@router.get("/dashboard")
+def get_dashboard(db: DbSession) -> Dict[str, Any]:
     rankings = []
     alerts = []
     
@@ -60,7 +59,7 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
             # Check active divergences for this ticker
             primary_div = divs[0].type if divs else "NONE"
 
-            smi_val = ssi_snap.smi if ssi_snap.smi is not None else ssi_snap.ssi
+            smi_val = ssi_snap.smi  # Never substitute the social index for a missing SMI
             ssi_val = ssi_snap.social_score
             sig_str = ssi_snap.signal or "N/A"
             base_sig = ssi_snap.base_signal or sig_str
@@ -251,6 +250,16 @@ def get_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                 "last_seen_age_hours": last_seen_age,
                 "is_active": not is_snap_stale
             })
+
+    # Sort alerts chronologically: newest first (timestamp descending), tie-breaking by severity
+    severity_order = {"CRITICAL": 0, "HIGH": 1, "WARNING": 2, "MEDIUM": 3, "INFO": 4}
+    alerts.sort(
+        key=lambda x: (
+            x.get("timestamp") or "",
+            -severity_order.get(x.get("level", "INFO"), 5)
+        ),
+        reverse=True
+    )
 
     # Sort rankings by SMI descending, safely placing None values at the bottom
     rankings.sort(

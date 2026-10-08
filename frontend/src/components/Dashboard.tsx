@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
+import { Zap } from 'lucide-react';
 import { RankingItem, EngineInfo, formatWeight } from '../types';
-import { TrendingUp, TrendingDown, Eye, AlertCircle, Zap, Shield, HelpCircle, Activity, Globe } from 'lucide-react';
+import { fmtPrice, isNum, riskTone, scoreTone, signalTone, useThresholds } from '../lib/scale';
+import { Badge, DataFlags, EmptyState, ScoreValue, SignalPill } from './ui';
 
 interface DashboardProps {
   rankings: RankingItem[];
@@ -8,379 +10,224 @@ interface DashboardProps {
   engine?: EngineInfo;
 }
 
+type ViewMode = 'table' | 'cards';
+
+// Enter/Space activation for rows and cards that act as buttons
+const activateOnKey = (action: () => void) => (e: React.KeyboardEvent) => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    action();
+  }
+};
+
+const DivergenceTag: React.FC<{ divergence?: string; withIcon?: boolean }> = ({ divergence, withIcon }) => {
+  if (!divergence || divergence === 'NONE') return <span className="text-muted text-xs">Aligned</span>;
+  return (
+    <Badge variant={divergence.includes('BULLISH') ? 'bull' : 'bear'}>
+      {withIcon && <Zap size={12} />}
+      {divergence.split(':')[0]}
+    </Badge>
+  );
+};
+
 export const Dashboard: React.FC<DashboardProps> = ({ rankings, onSelectTicker, engine }) => {
-  const [viewMode, setViewMode] = useState<'cards' | 'table'>('table');
+  const [viewMode, setViewMode] = useState<ViewMode>('table');
+  const thresholds = useThresholds();
 
-  const getSignalClass = (signal: string) => {
-    const s = signal.toUpperCase();
-    if (s.includes('STRONG BUY') || s.includes('BUY')) return 'signal-buy';
-    if (s.includes('WATCH') || s.includes('HOLD') || s.includes('CAUTION')) return 'signal-watch';
-    if (s.includes('AVOID')) return 'signal-avoid';
-    return 'signal-na';
-  };
-
-  const getScoreColor = (score: number | null | undefined) => {
-    if (score === null || score === undefined) return 'var(--text-muted)';
-    if (score >= 75) return 'var(--bullish-green)';
-    if (score >= 50) return 'var(--neutral-yellow)';
-    return 'var(--bearish-red)';
-  };
-
-  const topBullish = rankings.find(r => r.signal && r.signal.includes('BUY')) || (rankings.find(r => r.smi !== null) || rankings[0]);
-  const validSmis = rankings.filter(r => r.smi !== null && r.smi !== undefined).map(r => r.smi as number);
-  const avgSmi = validSmis.length > 0
-    ? (validSmis.reduce((acc, val) => acc + val, 0) / validSmis.length).toFixed(1)
-    : '--';
+  const topAsset = rankings.find((r) => r.signal?.includes('BUY')) || rankings.find((r) => isNum(r.smi)) || rankings[0];
+  const validSmis = rankings.map((r) => r.smi).filter(isNum);
+  const avgSmi = validSmis.length > 0 ? validSmis.reduce((acc, v) => acc + v, 0) / validSmis.length : null;
 
   return (
-    <div>
-      {/* Top Sector Overview Summary Bar */}
+    <main>
+      {/* Sector overview */}
       <div className="summary-grid">
-        <div className="summary-card">
+        <section className="summary-card">
           <div className="summary-label">Top Space Intelligence Asset</div>
-          <div className="summary-value" style={{ color: 'var(--bullish-green)' }}>
-            {topBullish?.ticker || '--'}
+          <div className={`summary-value tone-${topAsset ? signalTone(topAsset.signal, topAsset.base_signal) : 'none'}`}>
+            {topAsset?.ticker || '—'}
           </div>
-          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-            SMI: {topBullish?.smi !== null && topBullish?.smi !== undefined ? topBullish.smi.toFixed(1) : '--'} | Signal: {topBullish?.signal || '--'}
+          <div className="summary-meta">
+            SMI: <ScoreValue value={topAsset?.smi} /> · Signal: {topAsset?.signal || '—'}
           </div>
-        </div>
+        </section>
 
-        <div className="summary-card">
+        <section className="summary-card">
           <div className="summary-label">Tracked Universe & Providers</div>
-          <div className="summary-value" style={{ color: 'var(--accent-cyan)' }}>
-            {rankings.length} Assets
-          </div>
-          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-            X (Social) + Polymarket + yfinance + News
-          </div>
-        </div>
+          <div className="summary-value tone-accent">{rankings.length} Assets</div>
+          <div className="summary-meta">X (Social) + Polymarket + yfinance + News</div>
+        </section>
 
-        <div className="summary-card">
+        <section className="summary-card">
           <div className="summary-label">Average Sector SMI</div>
-          <div className="summary-value" style={{ color: '#fff' }}>
-            {avgSmi !== '--' ? `${avgSmi} / 100` : '--'}
+          <div className={`summary-value tone-${scoreTone(avgSmi, thresholds)}`}>
+            {isNum(avgSmi) ? `${avgSmi.toFixed(1)} / 100` : '—'}
           </div>
-          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+          <div className="summary-meta">
             {engine
-              ? `Multi-Source: Social ${formatWeight(engine, 'social')} | News ${formatWeight(engine, 'news')} | Prediction ${formatWeight(engine, 'prediction')} | Market ${formatWeight(engine, 'momentum')} | Fundamentals ${formatWeight(engine, 'fundamental')}`
+              ? `Social ${formatWeight(engine, 'social')} · News ${formatWeight(engine, 'news')} · Prediction ${formatWeight(engine, 'prediction')} · Market ${formatWeight(engine, 'momentum')} · Fundamentals ${formatWeight(engine, 'fundamental')}`
               : 'Multi-Source SMI'}
           </div>
-        </div>
+        </section>
       </div>
 
-      {/* Header and View Selector */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
+      {/* Title and view selector */}
+      <div className="section-header">
         <div>
-          <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.3rem', margin: 0 }}>
-            Space Market Intelligence Engine — Active Rankings
-          </h2>
-          <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', margin: '4px 0 0 0' }}>
-            Real-time synthesis of Social Narrative (X), Prediction Markets (Polymarket), Technical Price Action and News.
+          <h2 className="section-title">Active Rankings</h2>
+          <p className="section-subtitle">
+            Synthesis of Social Narrative (X), Prediction Markets (Polymarket), News, Technical Price Action and Fundamentals.
           </p>
         </div>
 
-        <div style={{ display: 'flex', gap: '6px', background: 'var(--card-bg)', padding: '4px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-          <button
-            onClick={() => setViewMode('table')}
-            className={`btn ${viewMode === 'table' ? 'btn-primary' : 'btn-secondary'}`}
-            style={{ padding: '6px 12px', fontSize: '0.78rem' }}
-          >
-            Terminal Table
-          </button>
-          <button
-            onClick={() => setViewMode('cards')}
-            className={`btn ${viewMode === 'cards' ? 'btn-primary' : 'btn-secondary'}`}
-            style={{ padding: '6px 12px', fontSize: '0.78rem' }}
-          >
-            Cards View
-          </button>
+        <div className="segmented" role="group" aria-label="View mode">
+          {(['table', 'cards'] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setViewMode(mode)}
+              aria-pressed={viewMode === mode}
+              className={`btn btn-sm ${viewMode === mode ? 'btn-primary' : 'btn-secondary'}`}
+            >
+              {mode === 'table' ? 'Table' : 'Cards'}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* 1. Terminal Table View */}
-      {viewMode === 'table' ? (
-        <div style={{ background: 'var(--card-bg)', borderRadius: '12px', border: '1px solid var(--border-color)', overflowX: 'auto' }}>
-          <table className="terminal-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.85rem' }}>
+      <ScaleLegend />
+
+      {rankings.length === 0 ? (
+        <EmptyState>No snapshots yet. Run the SMIE pipeline to score the tracked tickers.</EmptyState>
+      ) : viewMode === 'table' ? (
+        <div className="table-wrap">
+          <table className="terminal-table">
             <thead>
-              <tr style={{ borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)', fontFamily: 'var(--font-heading)' }}>
-                <th style={{ padding: '12px 16px' }}>TICKER / ASSET</th>
-                <th style={{ padding: '12px 12px', textAlign: 'center' }}>SMI (INTEGRAL)</th>
-                <th style={{ padding: '12px 12px', textAlign: 'center' }}>SSI (SOCIAL)</th>
-                <th style={{ padding: '12px 12px', textAlign: 'center' }}>PMS (POLYMARKET)</th>
-                <th style={{ padding: '12px 12px', textAlign: 'center' }}>MARKET SCORE</th>
-                <th style={{ padding: '12px 12px', textAlign: 'center' }}>RISK / SAFETY</th>
-                <th style={{ padding: '12px 12px', textAlign: 'center' }}>SIGNAL</th>
-                <th style={{ padding: '12px 12px', textAlign: 'center' }}>CONFIDENCE</th>
-                <th style={{ padding: '12px 12px', textAlign: 'center' }}>REGIME / DIVERGENCE</th>
-                <th style={{ padding: '12px 16px', textAlign: 'right' }}>PRICE</th>
+              <tr>
+                <th scope="col">Ticker / Asset</th>
+                <th scope="col" className="num">SMI</th>
+                <th scope="col" className="num">SSI (Social)</th>
+                <th scope="col" className="num col-md">PMS (Polymarket)</th>
+                <th scope="col" className="num col-md">Market</th>
+                <th scope="col" className="num col-md">Risk / Safety</th>
+                <th scope="col" className="center">Signal</th>
+                <th scope="col" className="num col-lg">Confidence</th>
+                <th scope="col" className="center col-lg">Divergence</th>
+                <th scope="col" className="right">Price</th>
               </tr>
             </thead>
             <tbody>
-              {rankings.map((stock) => {
-                const smi = stock.smi ?? stock.ssi;
-                return (
-                  <tr
-                    key={stock.ticker}
-                    className="table-row-interactive"
-                    onClick={() => onSelectTicker(stock.ticker)}
-                    style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', cursor: 'pointer' }}
-                  >
-                    {/* Ticker & Name */}
-                    <td style={{ padding: '12px 16px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <span style={{ fontWeight: 700, color: '#fff', fontSize: '0.95rem' }}>${stock.ticker}</span>
-                        {stock.data_source === 'MOCK' && (
-                          <span
-                            title="Synthetic / Mock simulation data active"
-                            style={{
-                              fontSize: '0.62rem',
-                              fontWeight: 700,
-                              color: '#f87171',
-                              background: 'rgba(239, 68, 68, 0.12)',
-                              border: '1px solid rgba(239, 68, 68, 0.35)',
-                              padding: '1px 5px',
-                              borderRadius: '4px'
-                            }}
-                          >
-                            🔴 MOCK
-                          </span>
-                        )}
-                        {stock.data_source === 'DEGRADED' && (
-                          <span
-                            title="Degraded feed: some pillars excluded or unavailable"
-                            style={{
-                              fontSize: '0.62rem',
-                              fontWeight: 700,
-                              color: '#fbbf24',
-                              background: 'rgba(251, 191, 36, 0.12)',
-                              border: '1px solid rgba(251, 191, 36, 0.35)',
-                              padding: '1px 5px',
-                              borderRadius: '4px'
-                            }}
-                          >
-                            🟡 DEGRADED
-                          </span>
-                        )}
-                        {stock.is_stale && (
-                          <span
-                            title={`Data is ${stock.data_age_hours?.toFixed(0)}h old`}
-                            style={{
-                              fontSize: '0.65rem',
-                              fontWeight: 600,
-                              color: 'var(--neutral-yellow)',
-                              background: 'rgba(255, 179, 0, 0.12)',
-                              border: '1px solid rgba(255, 179, 0, 0.3)',
-                              padding: '1px 5px',
-                              borderRadius: '4px'
-                            }}
-                          >
-                            ⏳ {stock.data_age_hours ? `${stock.data_age_hours.toFixed(0)}h` : 'Stale'}
-                          </span>
-                        )}
-                      </div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{stock.name}</div>
-                    </td>
-
-                    {/* SMI Score */}
-                    <td style={{ padding: '12px 12px', textAlign: 'center' }}>
-                      <span className="smi-badge" style={{ color: getScoreColor(smi), fontWeight: 800, fontSize: '1.05rem' }}>
-                        {smi !== null && smi !== undefined ? smi.toFixed(1) : '—'}
-                      </span>
-                    </td>
-
-                    {/* SSI (Social Score) */}
-                    <td style={{ padding: '12px 12px', textAlign: 'center' }}>
-                      <span style={{ color: getScoreColor(stock.ssi), fontWeight: 700 }}>
-                        {stock.ssi !== null && stock.ssi !== undefined ? stock.ssi.toFixed(1) : '—'}
-                      </span>
-                    </td>
-
-                    {/* PMS (Prediction Market Score) */}
-                    <td style={{ padding: '12px 12px', textAlign: 'center' }}>
-                      {stock.pms !== null && stock.pms !== undefined ? (
-                        <span style={{ color: getScoreColor(stock.pms), fontWeight: 700 }}>
-                          {stock.pms.toFixed(1)}
-                        </span>
-                      ) : (
-                        <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>--</span>
-                      )}
-                    </td>
-
-                    {/* Market Score */}
-                    <td style={{ padding: '12px 12px', textAlign: 'center' }}>
-                      {stock.market_score !== null && stock.market_score !== undefined ? (
-                        <span style={{ color: getScoreColor(stock.market_score), fontWeight: 600 }}>
-                          {stock.market_score.toFixed(0)}/100
-                        </span>
-                      ) : (
-                        <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>--</span>
-                      )}
-                    </td>
-
-                    {/* Risk / Safety Score */}
-                    <td style={{ padding: '12px 12px', textAlign: 'center' }}>
-                      {stock.risk_score !== null && stock.risk_score !== undefined ? (
-                        <span style={{
-                          color: stock.risk_score >= 60 ? 'var(--bullish-green)' : stock.risk_score <= 35 ? 'var(--bearish-red)' : 'var(--neutral-yellow)',
-                          fontWeight: 600
-                        }}>
-                          {stock.risk_score.toFixed(0)}/100
-                        </span>
-                      ) : (
-                        <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>--</span>
-                      )}
-                    </td>
-
-                    {/* Signal */}
-                    <td style={{ padding: '12px 12px', textAlign: 'center' }}>
-                      <span className={`signal-pill ${getSignalClass(stock.signal)}`}>
-                        {stock.signal}
-                      </span>
-                    </td>
-
-                    {/* Confidence & Data Quality */}
-                    <td style={{ padding: '12px 12px', textAlign: 'center' }}>
-                      <div style={{ fontSize: '0.78rem', fontWeight: 600, color: stock.confidence >= 70 ? 'var(--bullish-green)' : 'var(--neutral-yellow)' }}>
-                        {stock.confidence ? stock.confidence.toFixed(0) : '0'}%
-                      </div>
-                      <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
-                        Qual: {stock.data_quality ? stock.data_quality.toFixed(0) : '0'}%
-                      </div>
-                    </td>
-
-                    {/* Regime / Divergence */}
-                    <td style={{ padding: '12px 12px', textAlign: 'center' }}>
-                      {stock.divergence && stock.divergence !== 'NONE' ? (
-                        <span
-                          style={{
-                            display: 'inline-block',
-                            padding: '3px 8px',
-                            borderRadius: '4px',
-                            fontSize: '0.72rem',
-                            fontWeight: 700,
-                            background: stock.divergence.includes('BULLISH') ? 'var(--bullish-bg)' : 'var(--bearish-bg)',
-                            color: stock.divergence.includes('BULLISH') ? 'var(--bullish-green)' : 'var(--bearish-red)',
-                            border: `1px solid ${stock.divergence.includes('BULLISH') ? 'rgba(0, 230, 118, 0.3)' : 'rgba(255, 23, 68, 0.3)'}`
-                          }}
-                        >
-                          {stock.divergence.split(':')[0]}
-                        </span>
-                      ) : (
-                        <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Aligned</span>
-                      )}
-                    </td>
-
-                    {/* Price */}
-                    <td style={{ padding: '12px 16px', textAlign: 'right' }}>
-                      <div style={{ fontWeight: 600, color: '#fff' }}>
-                        {stock.price ? `$${stock.price.toFixed(2)}` : (stock.market_status === 'DATA_UNAVAILABLE' ? 'N/A' : '--')}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
+              {rankings.map((stock) => (
+                <tr
+                  key={stock.ticker}
+                  className="table-row-interactive"
+                  tabIndex={0}
+                  aria-label={`Open details for ${stock.ticker}`}
+                  onClick={() => onSelectTicker(stock.ticker)}
+                  onKeyDown={activateOnKey(() => onSelectTicker(stock.ticker))}
+                >
+                  <td>
+                    <div className="ticker-cell">
+                      <span className="ticker-cell-symbol">${stock.ticker}</span>
+                      <DataFlags source={stock.data_source} isStale={stock.is_stale} ageHours={stock.data_age_hours} />
+                    </div>
+                    <div className="text-muted text-xs">{stock.name}</div>
+                  </td>
+                  <td className="num"><ScoreValue value={stock.smi} className="score-lg" /></td>
+                  <td className="num"><ScoreValue value={stock.ssi} className="score-md" /></td>
+                  <td className="num col-md"><ScoreValue value={stock.pms} className="score-md" /></td>
+                  <td className="num col-md"><ScoreValue value={stock.market_score} digits={0} suffix="/100" /></td>
+                  <td className="num col-md">
+                    <ScoreValue value={stock.risk_score} digits={0} suffix="/100" tone={riskTone(stock.risk_score, thresholds)} />
+                  </td>
+                  <td className="center"><SignalPill signal={stock.signal} baseSignal={stock.base_signal} /></td>
+                  <td className="num col-lg">
+                    <div className={`text-xs strong ${stock.confidence >= 70 ? 'text-ok' : 'text-warn'}`}>{(stock.confidence ?? 0).toFixed(0)}%</div>
+                    <div className="text-muted text-2xs">Quality: {(stock.data_quality ?? 0).toFixed(0)}%</div>
+                  </td>
+                  <td className="center col-lg"><DivergenceTag divergence={stock.divergence} /></td>
+                  <td className="right strong text-strong">
+                    {fmtPrice(stock.price, stock.market_status === 'DATA_UNAVAILABLE' ? 'N/A' : '—')}
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
       ) : (
-        /* 2. Cards Grid View */
         <div className="stock-grid">
-          {rankings.map((stock) => {
-            const smi = stock.smi ?? stock.ssi;
-            return (
-              <div
-                key={stock.ticker}
-                className="stock-card"
-                onClick={() => onSelectTicker(stock.ticker)}
-              >
-                <div className="card-top">
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <span className="ticker-symbol">${stock.ticker}</span>
-                      {stock.is_stale && (
-                        <span
-                          title={`Data is ${stock.data_age_hours?.toFixed(0)}h old`}
-                          style={{
-                            fontSize: '0.65rem',
-                            fontWeight: 600,
-                            color: 'var(--neutral-yellow)',
-                            background: 'rgba(255, 179, 0, 0.12)',
-                            border: '1px solid rgba(255, 179, 0, 0.3)',
-                            padding: '1px 5px',
-                            borderRadius: '4px'
-                          }}
-                        >
-                          ⏳ {stock.data_age_hours ? `${stock.data_age_hours.toFixed(0)}h` : 'Stale'}
-                        </span>
-                      )}
-                    </div>
-                    <div className="company-name">{stock.name}</div>
+          {rankings.map((stock) => (
+            <div
+              key={stock.ticker}
+              className="stock-card"
+              role="button"
+              tabIndex={0}
+              aria-label={`Open details for ${stock.ticker}`}
+              onClick={() => onSelectTicker(stock.ticker)}
+              onKeyDown={activateOnKey(() => onSelectTicker(stock.ticker))}
+            >
+              <div className="card-top">
+                <div>
+                  <div className="ticker-cell">
+                    <span className="ticker-symbol">${stock.ticker}</span>
+                    <DataFlags source={stock.data_source} isStale={stock.is_stale} ageHours={stock.data_age_hours} />
                   </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>SMI INDEX</div>
-                    <div className="ssi-score-badge" style={{ color: getScoreColor(smi) }}>
-                      {smi !== null && smi !== undefined ? smi.toFixed(1) : '—'}
-                    </div>
-                  </div>
+                  <div className="company-name">{stock.name}</div>
                 </div>
-
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px', margin: '8px 0' }}>
-                  <span className={`signal-pill ${getSignalClass(stock.signal)}`}>
-                    {stock.signal}
-                  </span>
-                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                    Confidence: <b style={{ color: '#fff' }}>{stock.confidence}%</b>
-                  </span>
+                <div className="right">
+                  <div className="micro-label">SMI</div>
+                  <ScoreValue value={stock.smi} className="ssi-score-badge" />
                 </div>
-
-                {/* Sub-scores preview */}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px', marginTop: '10px', padding: '8px', background: 'rgba(0,0,0,0.2)', borderRadius: '6px', fontSize: '0.72rem' }}>
-                  <div>
-                    <span style={{ color: 'var(--text-muted)' }}>SSI: </span>
-                    <b style={{ color: getScoreColor(stock.ssi) }}>{stock.ssi !== null && stock.ssi !== undefined ? stock.ssi.toFixed(0) : '—'}</b>
-                  </div>
-                  <div>
-                    <span style={{ color: 'var(--text-muted)' }}>PMS: </span>
-                    <b style={{ color: getScoreColor(stock.pms) }}>{stock.pms !== null && stock.pms !== undefined ? stock.pms.toFixed(0) : '—'}</b>
-                  </div>
-                  <div>
-                    <span style={{ color: 'var(--text-muted)' }}>Risk: </span>
-                    <b style={{ color: stock.risk_score !== null && stock.risk_score !== undefined ? (stock.risk_score >= 60 ? 'var(--bullish-green)' : stock.risk_score <= 35 ? 'var(--bearish-red)' : 'var(--neutral-yellow)') : 'var(--text-muted)' }}>
-                      {stock.risk_score !== null && stock.risk_score !== undefined ? stock.risk_score.toFixed(0) : '—'}
-                    </b>
-                  </div>
-                  <div>
-                    <span style={{ color: 'var(--text-muted)' }}>Price: </span>
-                    <b>{stock.price ? `$${stock.price.toFixed(2)}` : 'N/A'}</b>
-                  </div>
-                </div>
-
-                {/* Divergence Tag if present */}
-                {stock.divergence && stock.divergence !== 'NONE' && (
-                  <div
-                    style={{
-                      marginTop: '8px',
-                      fontSize: '0.72rem',
-                      fontWeight: 700,
-                      color: stock.divergence.includes('BULLISH') ? 'var(--bullish-green)' : 'var(--bearish-red)',
-                      background: stock.divergence.includes('BULLISH') ? 'var(--bullish-bg)' : 'var(--bearish-bg)',
-                      padding: '3px 8px',
-                      borderRadius: '6px',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '4px'
-                    }}
-                  >
-                    <Zap size={12} />
-                    {stock.divergence.split(':')[0]}
-                  </div>
-                )}
               </div>
-            );
-          })}
+
+              <div className="card-signal-row">
+                <SignalPill signal={stock.signal} baseSignal={stock.base_signal} />
+                <span className="text-muted text-sm">
+                  Confidence: <b className="text-strong">{(stock.confidence ?? 0).toFixed(0)}%</b>
+                </span>
+              </div>
+
+              <div className="card-subscores">
+                <div><span className="text-muted">SSI </span><ScoreValue value={stock.ssi} digits={0} className="strong" /></div>
+                <div><span className="text-muted">PMS </span><ScoreValue value={stock.pms} digits={0} className="strong" /></div>
+                <div>
+                  <span className="text-muted">Risk </span>
+                  <ScoreValue value={stock.risk_score} digits={0} tone={riskTone(stock.risk_score, thresholds)} className="strong" />
+                </div>
+                <div><span className="text-muted">Price </span><b>{fmtPrice(stock.price, 'N/A')}</b></div>
+              </div>
+
+              {stock.divergence && stock.divergence !== 'NONE' && (
+                <div className="card-divergence"><DivergenceTag divergence={stock.divergence} withIcon /></div>
+              )}
+            </div>
+          ))}
         </div>
       )}
+    </main>
+  );
+};
+
+// Explains the color scale, which follows the engine's signal bands (mirrored around 50)
+const ScaleLegend: React.FC = () => {
+  const t = useThresholds();
+  const items: { tone: string; label: string }[] = [
+    { tone: 'strong-bull', label: `≥ ${t.buy} Buy` },
+    { tone: 'bull', label: `≥ ${t.watch} Watch` },
+    { tone: 'neutral', label: `${t.hold}–${t.watch} Hold` },
+    { tone: 'bear', label: `≤ ${t.hold} Caution` },
+    { tone: 'strong-bear', label: `≤ ${t.avoid} Avoid` }
+  ];
+  return (
+    <div className="scale-legend" aria-label="Score color scale">
+      <span className="text-muted">Score scale (50 = neutral):</span>
+      {items.map((it) => (
+        <span key={it.tone} className={`scale-legend-item tone-${it.tone}`}>
+          <span className="scale-dot" aria-hidden="true" />
+          {it.label}
+        </span>
+      ))}
+      <span className="text-muted">· Risk is red below the {t.risk_gate} gate</span>
     </div>
   );
 };

@@ -2,24 +2,23 @@ import asyncio
 import logging
 import secrets
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, Optional
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, Header, Request
-from fastapi.responses import JSONResponse
+from typing import Dict, Any, Optional, Annotated
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, Header, Request, Path
 from sqlalchemy.orm import Session
 from app.config import settings
-from app.database.connection import get_db, SessionLocal
+from app.database.connection import get_db, SessionLocal, DbSession
 from app.database.models import JobRunModel
 from app.database.repository import acquire_pipeline_job_lock, create_job_run, finish_job_run, utc_now
 from app.jobs.runner import run_full_pipeline, PIPELINE_LOCK
 
 logger = logging.getLogger("SMIE.JobsAPI")
-router = APIRouter(tags=["Jobs"])
+router = APIRouter(prefix="/api/jobs", tags=["Jobs"])
 
 
 def verify_api_key(
     request: Request,
-    x_api_key: Optional[str] = Header(None, alias="X-API-KEY"),
-    authorization: Optional[str] = Header(None, alias="Authorization")
+    x_api_key: Annotated[Optional[str], Header(alias="X-API-KEY")] = None,
+    authorization: Annotated[Optional[str], Header(alias="Authorization")] = None
 ) -> bool:
     """
     Validates API Secret Key with constant-time comparison.
@@ -67,6 +66,9 @@ def verify_api_key(
     return True
 
 
+AuthDep = Annotated[bool, Depends(verify_api_key)]
+
+
 async def _execute_pipeline_task(job_id: int):
     """Worker task executed by BackgroundTasks."""
     try:
@@ -74,21 +76,20 @@ async def _execute_pipeline_task(job_id: int):
         await run_full_pipeline(existing_job_id=job_id, lock_already_acquired=True)
     except Exception as e:
         logger.exception(f"Fatal error in background pipeline task {job_id}: {e}")
-        db = SessionLocal()
-        try:
-            finish_job_run(db, job_id, status="ERROR", error=str(e))
-        finally:
-            db.close()
+        def _record_error():
+            with SessionLocal() as db_err:
+                finish_job_run(db_err, job_id, status="ERROR", error=str(e))
+        await asyncio.to_thread(_record_error)
     finally:
         if PIPELINE_LOCK.locked():
             PIPELINE_LOCK.release()
 
 
-@router.post("/api/jobs/run", status_code=202)
+@router.post("/run", status_code=202)
 async def trigger_full_pipeline_job(
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-    authorized: bool = Depends(verify_api_key)
+    db: DbSession,
+    authorized: AuthDep
 ) -> Dict[str, Any]:
     """
     Triggers the complete analysis pipeline asynchronously in the background.
@@ -104,7 +105,8 @@ async def trigger_full_pipeline_job(
         )
 
     # 2. Atomic distributed lock check across all processes, workers, CLI, and Scheduler
-    job_run, conflict_err = acquire_pipeline_job_lock(db, source="API")
+    # Executed via asyncio.to_thread to prevent blocking the async event loop during SQLite lock acquisition
+    job_run, conflict_err = await asyncio.to_thread(acquire_pipeline_job_lock, db, source="API")
     if not job_run:
         raise HTTPException(
             status_code=409,
@@ -120,21 +122,18 @@ async def trigger_full_pipeline_job(
     except Exception:
         if PIPELINE_LOCK.locked():
             PIPELINE_LOCK.release()
-        finish_job_run(db, job_run.id, status="ERROR", error="Failed to launch background task")
+        await asyncio.to_thread(finish_job_run, db, job_run.id, status="ERROR", error="Failed to launch background task")
         raise
 
-    return JSONResponse(
-        status_code=202,
-        content={
-            "status": "ACCEPTED",
-            "message": "Pipeline execution scheduled in background.",
-            "job_id": job_id
-        }
-    )
+    return {
+        "status": "ACCEPTED",
+        "message": "Pipeline execution scheduled in background.",
+        "job_id": job_id
+    }
 
 
-@router.get("/api/jobs/latest")
-def get_latest_job(db: Session = Depends(get_db)) -> Dict[str, Any]:
+@router.get("/latest")
+def get_latest_job(db: DbSession) -> Dict[str, Any]:
     """Returns the most recent job run execution record."""
     job = db.query(JobRunModel).order_by(JobRunModel.started_at.desc()).first()
     if not job:
@@ -153,8 +152,11 @@ def get_latest_job(db: Session = Depends(get_db)) -> Dict[str, Any]:
     }
 
 
-@router.get("/api/jobs/{job_id}")
-def get_job_status(job_id: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
+@router.get("/{job_id}")
+def get_job_status(
+    job_id: Annotated[int, Path(ge=1, description="Job run ID")],
+    db: DbSession
+) -> Dict[str, Any]:
     """Queries the status and telemetry of a specific job run by ID."""
     job = db.query(JobRunModel).filter(JobRunModel.id == job_id).first()
     if not job:

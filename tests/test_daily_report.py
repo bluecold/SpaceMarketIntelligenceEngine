@@ -317,11 +317,16 @@ def test_database_alerts_persistence_and_dashboard_serving():
     from fastapi.testclient import TestClient
     from app.main import app
     from app.database.connection import SessionLocal, init_db
+    from app.database.models import AlertModel
     from app.database.repository import save_alerts
 
     init_db()
     db = SessionLocal()
     try:
+        # Clear preexisting ASTS alerts to ensure strict test isolation
+        db.query(AlertModel).filter(AlertModel.ticker == "ASTS").delete()
+        db.commit()
+
         # Save a critical catalyst and momentum buy alert for ASTS
         alerts_to_save = [
             {

@@ -138,8 +138,10 @@ def test_news_score_respects_relevance_weighting():
 
     res = calculate_news_score(news)
     assert res["news_score"] is not None
-    # Score should be significantly bullish (> 70) because the bullish news had 5x higher relevance
-    assert res["news_score"] > 70.0
+    # Polarity should be significantly bullish (> 70) because the bullish news had 5x higher relevance
+    assert res["news_polarity_raw"] > 70.0
+    # A single opinionated headline is half the evidence needed for a full-strength score
+    assert 50.0 < res["news_score"] < res["news_polarity_raw"]
 
 
 def test_high_keyword_disambiguation_false_positives():
@@ -634,3 +636,31 @@ def test_finbert_classifier_inference():
     assert results[1].score < -0.20
     assert results[2].label == "NEUTRAL"
 
+
+
+def test_news_score_dedups_syndicated_headlines_and_ignores_neutrals():
+    """One story carried by four outlets counts once; neutral headlines do not dilute the polarity towards 50."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from app.sentiment.weighting import calculate_news_score
+
+    now = datetime.now(timezone.utc)
+
+    def item(title, score, label, conf=0.9):
+        return SimpleNamespace(title=title, sentiment_score=score, sentiment_label=label, sentiment_confidence=conf,
+                               published_at=now, relevance_score=0.85, catalyst_importance=None)
+
+    news = [item(f"Why Rocket Lab Stock Popped Today - {src}", 0.8, "BULLISH") for src in ("Yahoo Finance", "The Motley Fool", "AOL.com", "The Globe and Mail")]
+    news.append(item("Rocket Lab Shares Down 4.2% - MarketBeat", -0.8, "BEARISH"))
+    news += [item(f"Rocket Lab Q3 preview {i} - Benzinga", 0.02, "NEUTRAL") for i in range(5)]
+
+    res = calculate_news_score(news, analysis_timestamp=now)
+    assert res["total_news"] == 7
+    assert res["duplicate_news_count"] == 3
+    assert res["opinion_news_count"] == 2
+    # One bullish story vs one bearish story of equal weight -> balanced, not 4:1 bullish
+    assert res["news_score"] == 50.0
+
+    only_neutral = calculate_news_score([item("Rocket Lab to present at conference - PR Newswire", 0.01, "NEUTRAL")], analysis_timestamp=now)
+    assert only_neutral["news_score"] is None
+    assert only_neutral["total_news"] == 1

@@ -13,7 +13,7 @@ from app.sentiment.classifier import FinBERTSentimentClassifier, HeuristicSentim
 
 def _fake_pipeline(prob_by_text):
     """Mimics a HuggingFace text-classification pipeline with top_k=None."""
-    def run(texts, truncation=True, max_length=128):
+    def run(texts, truncation=True, max_length=128, **kwargs):
         return [[{"label": k, "score": v} for k, v in prob_by_text[t].items()] for t in texts]
     return run
 
@@ -47,7 +47,7 @@ def test_inference_failure_falls_back_and_reports_heuristic_model():
     """If inference fails, labels come from the lexicon and model_id says so (so they are never stored as FinTwit)."""
     clf = FinBERTSentimentClassifier("StephanAkkerman/FinTwitBERT-sentiment", label_threshold=0.90)
 
-    def broken(texts, truncation=True, max_length=128):
+    def broken(texts, truncation=True, max_length=128, **kwargs):
         raise RuntimeError("boom")
     clf.pipeline = broken
     res = clf.analyze_batch(["$ASTS short squeeze incoming"])

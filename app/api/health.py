@@ -1,18 +1,17 @@
 import os
 from datetime import datetime, timezone
 from typing import Dict, Any
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from fastapi import APIRouter
 from sqlalchemy import text
-from app.database.connection import get_db
+from app.database.connection import DbSession
 from app.database.models import JobRunModel, SSISnapshotModel
 from app.config import settings
 
-router = APIRouter(tags=["Health"])
+router = APIRouter(prefix="/api", tags=["Health"])
 
 
-@router.get("/api/health")
-def health_check(db: Session = Depends(get_db)) -> Dict[str, Any]:
+@router.get("/health")
+def health_check(db: DbSession) -> Dict[str, Any]:
     # Check DB
     db_status = "ok"
     try:

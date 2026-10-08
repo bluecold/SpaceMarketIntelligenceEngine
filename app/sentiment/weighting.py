@@ -720,48 +720,92 @@ def reconcile_sentiment_with_catalyst(
     return new_score, new_label, round(new_conf, 2)
 
 
+def normalize_headline_for_dedup(title: str) -> str:
+    """Headline key for syndicated copies: drops the trailing ' - Publisher' suffix, case and punctuation."""
+    t = (title or "").strip()
+    t = re.sub(r"\s+[-–—|]\s+[^-–—|]{2,60}$", "", t)
+    t = re.sub(r"[^\w\s]", " ", t.lower())
+    return re.sub(r"\s+", " ", t).strip()
+
+
 def calculate_news_score(
     news_items: List[Any],
     analysis_timestamp: Optional[datetime] = None,
-    half_life_hours: float = 24.0
+    half_life_hours: Optional[float] = None
 ) -> Dict[str, Any]:
     """
     Computes aggregated News Score (0 to 100) from recent news articles.
-    Filters articles by settings.NEWS_MIN_RELEVANCE (default 0.40).
-    Dynamically recalculates recency weight relative to analysis_timestamp.
-    Returns news_score = None when no relevant news items exist (Adaptive weight normalization).
+
+    - Filters articles by settings.NEWS_MIN_RELEVANCE (default 0.40).
+    - Deduplicates syndicated copies of one headline (Yahoo/Motley Fool/Globe and Mail...), keeping the most
+      confident copy, so one story counts once however many outlets carry it.
+    - Opinion-only polarity: the score is the weighted mean sentiment of BULLISH/BEARISH headlines. NEUTRAL
+      headlines (~60% of the feed) carry no direction and would pull every ticker towards 50; they still count
+      in total_news. Same rule as the social pillar.
+    - Recency decay with half-life settings.NEWS_HALF_LIFE_HOURS, recalculated against analysis_timestamp.
+    - Evidence shrinkage: the polarity is pulled towards 50 until the opinionated headlines add up to
+      settings.NEWS_MIN_OPINION_EVIDENCE (sum of recency x importance weights, ~fresh headlines). Without the
+      neutral headlines diluting it, a single stale headline would otherwise set the whole pillar.
+    Returns news_score = None when no relevant opinionated headline exists (adaptive weight normalization).
     """
+    empty = {
+        "news_score": None,
+        "total_news": 0,
+        "opinion_news_count": 0,
+        "duplicate_news_count": 0,
+        "bullish_news_pct": 0.0,
+        "bearish_news_pct": 0.0
+    }
     if not news_items:
-        return {
-            "news_score": None,
-            "total_news": 0,
-            "bullish_news_pct": 0.0,
-            "bearish_news_pct": 0.0
-        }
+        return empty
 
     if analysis_timestamp is None:
         analysis_timestamp = datetime.now(timezone.utc)
+    if half_life_hours is None:
+        half_life_hours = getattr(settings, "NEWS_HALF_LIFE_HOURS", 12.0)
 
     min_rel = getattr(settings, "NEWS_MIN_RELEVANCE", 0.40)
     relevant_items = [
         item for item in news_items
         if getattr(item, "relevance_score", 1.0) is None or getattr(item, "relevance_score", 1.0) >= min_rel
     ]
-
     if not relevant_items:
-        return {
-            "news_score": None,
-            "total_news": 0,
-            "bullish_news_pct": 0.0,
-            "bearish_news_pct": 0.0
-        }
+        return empty
+
+    # Keep one copy per headline: highest classifier confidence, then the most recent
+    unique: Dict[str, Any] = {}
+    for idx, item in enumerate(relevant_items):
+        key = normalize_headline_for_dedup(getattr(item, "title", "") or "") or f"__item_{idx}"
+        current = unique.get(key)
+        if current is None:
+            unique[key] = item
+            continue
+        rank = lambda x: (getattr(x, "sentiment_confidence", None) or 0.0, getattr(x, "published_at", None) or datetime.min)
+        try:
+            if rank(item) > rank(current):
+                unique[key] = item
+        except TypeError:
+            # Mixed naive/aware datetimes: compare confidence only
+            if rank(item)[0] > rank(current)[0]:
+                unique[key] = item
+    unique_items = list(unique.values())
+    n_total = len(unique_items)
 
     total_weight = 0.0
     weighted_sentiment_sum = 0.0
+    evidence = 0.0
     bull_cnt = 0
     bear_cnt = 0
 
-    for item in relevant_items:
+    for item in unique_items:
+        label = getattr(item, 'sentiment_label', None)
+        if label == "BULLISH":
+            bull_cnt += 1
+        elif label == "BEARISH":
+            bear_cnt += 1
+        else:
+            continue
+
         # Importance weighting multiplier
         imp_mult = 1.0
         if getattr(item, 'catalyst_importance', None) == "CRITICAL":
@@ -769,7 +813,6 @@ def calculate_news_score(
         elif getattr(item, 'catalyst_importance', None) == "HIGH":
             imp_mult = 1.5
 
-        # Recency decay for news (half-life 24 hours, dynamic from analysis_timestamp)
         pub_at = getattr(item, "published_at", None)
         if pub_at is not None:
             rec_w = calculate_recency_weight(pub_at, reference_now=analysis_timestamp, half_life_hours=half_life_hours)
@@ -779,31 +822,27 @@ def calculate_news_score(
         rel_score = getattr(item, 'relevance_score', 1.0) if getattr(item, 'relevance_score', 1.0) is not None else 1.0
         conf_score = getattr(item, 'sentiment_confidence', 1.0) if getattr(item, 'sentiment_confidence', 1.0) is not None else 1.0
         w = rel_score * rec_w * conf_score * imp_mult
-        
+
         total_weight += w
         weighted_sentiment_sum += getattr(item, 'sentiment_score', 0.0) * w
+        evidence += rec_w * imp_mult
 
-        if getattr(item, 'sentiment_label', None) == "BULLISH":
-            bull_cnt += 1
-        elif getattr(item, 'sentiment_label', None) == "BEARISH":
-            bear_cnt += 1
+    news_score = None
+    raw_score = None
+    if total_weight > 0:
+        norm_sent = weighted_sentiment_sum / total_weight
+        raw_score = 50.0 + (50.0 * norm_sent)
+        min_evidence = getattr(settings, "NEWS_MIN_OPINION_EVIDENCE", 2.0)
+        credibility = min(1.0, evidence / min_evidence) if min_evidence > 0 else 1.0
+        news_score = max(0.0, min(100.0, round(50.0 + (raw_score - 50.0) * credibility, 1)))
 
-    if total_weight <= 0:
-        return {
-            "news_score": None,
-            "total_news": len(relevant_items),
-            "bullish_news_pct": 0.0,
-            "bearish_news_pct": 0.0
-        }
-
-    norm_sent = weighted_sentiment_sum / total_weight
-    raw_news_score = 50.0 + (50.0 * norm_sent)
-    news_score = max(0.0, min(100.0, round(raw_news_score, 1)))
-
-    n_total = len(relevant_items)
     return {
         "news_score": news_score,
         "total_news": n_total,
+        "news_polarity_raw": round(raw_score, 1) if raw_score is not None else None,
+        "news_evidence": round(evidence, 2),
+        "opinion_news_count": bull_cnt + bear_cnt,
+        "duplicate_news_count": len(relevant_items) - n_total,
         "bullish_news_pct": round(100.0 * bull_cnt / n_total, 1),
         "bearish_news_pct": round(100.0 * bear_cnt / n_total, 1)
     }

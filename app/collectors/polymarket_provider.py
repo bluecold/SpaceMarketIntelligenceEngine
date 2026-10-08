@@ -43,24 +43,29 @@ def match_event_key_from_text(text: str) -> Optional[str]:
         return None
     text_lower = text.lower()
 
+    def has_any(words) -> bool:
+        # Word boundaries: a bare substring check matched "sda" inside "Wednesday"/"Thursday" and mapped
+        # geomagnetic-storm markets to Space Force contracts
+        return any(re.search(rf"\b{re.escape(w)}\b", text_lower) for w in words)
+
     # 1. Starlink direct-to-cell / FCC approval
-    if ("starlink" in text_lower and any(w in text_lower for w in ["cell", "fcc", "direct", "t-mobile", "broadband"])) or "direct-to-cell" in text_lower:
+    if ("starlink" in text_lower and has_any(["cell", "fcc", "direct", "t-mobile", "broadband"])) or "direct-to-cell" in text_lower:
         return "spacex_starlink_direct_to_cell_fcc_approval"
 
     # 2. Starship orbital / flight tests / upper stage catch
-    if any(w in text_lower for w in ["starship", "super heavy", "starbase", "orbital catch", "orbital flight"]):
+    if has_any(["starship", "starships", "super heavy", "starbase", "orbital catch", "orbital flight"]):
         return "spacex_starship_orbital_success"
 
     # 3. NASA Artemis / Moon contract expansion
-    if any(w in text_lower for w in ["artemis", "lunar gateway", "moon lander", "hls", "artemis contract", "nasa moon"]):
+    if has_any(["artemis", "lunar gateway", "moon lander", "hls", "artemis contract", "nasa moon"]):
         return "nasa_artemis_moon_contract_expansion"
 
     # 4. US Space Force SDA defense contracts
-    if any(w in text_lower for w in ["space force", "space development agency", "sda", "defense space", "nssl", "tranche 3", "tranche 2", "tranche 1"]):
+    if has_any(["space force", "space development agency", "sda", "defense space", "nssl", "tranche 3", "tranche 2", "tranche 1"]):
         return "us_space_force_sda_defense_contracts"
 
     # 5. Commercial launch cadence records
-    if any(w in text_lower for w in ["launch cadence", "orbital launches", "annual launches", "launch record", "cadence record"]):
+    if has_any(["launch cadence", "orbital launches", "annual launches", "launch record", "cadence record"]):
         return "commercial_launch_cadence_record"
 
     # 6. Direct key match if event_key or slug matches any key in DEFAULT_EVENT_COMPANY_MAPPINGS
@@ -481,7 +486,9 @@ class PolymarketGammaProvider(PredictionMarketProvider):
                 probability_change_24h=round(prob_delta_24h, 2) if prob_delta_24h is not None else None,
                 url=f"https://polymarket.com/event/{event.get('slug', '')}" if event.get("slug") else None,
                 polarity=polarity,
-                source="LIVE"
+                source="LIVE",
+                outcome_group=str(event.get("id")) if (event.get("negRisk") or m.get("negRisk")) and event.get("id") else None,
+                outcome_label=(m.get("groupItemTitle") or None)
             )
         except Exception as e:
             logger.debug(f"Failed parsing market: {e}")

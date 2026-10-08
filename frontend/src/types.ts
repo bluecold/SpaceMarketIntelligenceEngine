@@ -54,6 +54,18 @@ export interface EngineInfo {
   version: string;
   rules_version: string;
   weights: Record<string, number>;  // social, prediction, news, momentum, fundamental, risk (0-1)
+  thresholds?: SignalThresholds;
+}
+
+// Signal bands mirrored around 50 plus the risk gate (settings.THRESHOLD_* / RISK_GATE_THRESHOLD)
+export interface SignalThresholds {
+  strong_buy: number;
+  buy: number;
+  watch: number;
+  hold: number;
+  avoid: number;
+  strong_avoid: number;
+  risk_gate: number;
 }
 
 export const formatWeight = (engine: EngineInfo | undefined, pillar: string): string => {
@@ -163,8 +175,8 @@ export interface TickerDetailResponse {
   name: string;
   engine?: EngineInfo;
   header: {
-    smi: number;
-    ssi: number;
+    smi: number | null;
+    ssi: number | null;
     pms: number | null;
     signal: string;
     base_signal?: string;
@@ -218,8 +230,8 @@ export interface TickerDetailResponse {
 export interface HistoryPoint {
   timestamp: string;
   price: number | null;
-  smi: number;
-  ssi: number;
+  smi: number | null;
+  ssi: number | null;
   pms: number | null;
   social_score: number;
   news_score?: number | null;

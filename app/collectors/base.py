@@ -69,6 +69,14 @@ class PredictionMarketData(BaseModel):
     polarity: int = 1  # +1 = Bullish when YES occurs, -1 = Bearish when YES occurs (e.g. failure/delay)
     baseline_probability: Optional[float] = None  # Expected prior base-rate anchor (defaults to PMS_DEFAULT_BASE_RATE e.g. 0.20)
     source: str = "LIVE"  # "LIVE", "MOCK"
+    # Polymarket event id when the market is one outcome of a mutually exclusive (negRisk) event, and that outcome's label
+    outcome_group: Optional[str] = None
+    outcome_label: Optional[str] = None
+
+    @property
+    def is_range_bucket(self) -> bool:
+        """One numeric bucket of an exclusive set ('<5', '5-6', '200+'): a YES on it carries no direction by itself."""
+        return bool(self.outcome_group and self.outcome_label and any(ch.isdigit() for ch in self.outcome_label))
 
 
 class XProvider(ABC):

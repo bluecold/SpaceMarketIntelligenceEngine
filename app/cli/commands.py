@@ -234,7 +234,7 @@ def analyze(ticker):
         ssi_snap = get_latest_ssi_snapshot(db, ticker)
         mkt_snap = get_latest_market_snapshot(db, ticker)
         posts = get_recent_social_posts(db, ticker, hours=24)
-        markets = get_recent_prediction_markets(db, ticker)
+        markets = get_recent_prediction_markets(db, ticker, direct_only=True)
         divs = get_active_divergences(db, ticker, hours=48)
 
         if not ssi_snap:

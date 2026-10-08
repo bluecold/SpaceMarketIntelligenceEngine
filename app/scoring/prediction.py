@@ -9,7 +9,8 @@ def calculate_prediction_market_score(
     ticker: str,
     direct_markets: List[PredictionMarketData],
     sector_events: Optional[List[PredictionMarketData]] = None,
-    event_mappings: Optional[Dict[str, Dict[str, float]]] = None
+    event_mappings: Optional[Dict[str, Dict[str, float]]] = None,
+    allow_sector_only: Optional[bool] = None
 ) -> Tuple[Optional[float], float, float, Dict[str, Any]]:
     """
     Calculate Prediction Market Score (PMS, 0-100) for a specific ticker.
@@ -23,17 +24,24 @@ def calculate_prediction_market_score(
       - If Market Quality < 30.0, the market's effective weight is 0.
       - If no valid markets exceed quality threshold, returns (None, 0.0, avg_quality, breakdown).
       - Quality and liquidity determine market weighting and confidence without biasing directional PMS.
-      - Cross-company sector events are factored in via event impact mappings (-1.0 to +1.0).
+      - Cross-company sector events are factored in via event impact mappings (-1.0 to +1.0), but only
+        alongside at least one direct market unless allow_sector_only (default settings.PMS_ALLOW_SECTOR_ONLY).
+      - Numeric range buckets of an exclusive event ('<5', '5-6', ...) are skipped: each one's YES has no
+        direction of its own, and low-probability buckets used to read as bearish.
     
     Returns:
         (pms_score, pms_confidence, avg_quality, breakdown_dict)
     """
     mappings = event_mappings or DEFAULT_EVENT_COMPANY_MAPPINGS
+    if allow_sector_only is None:
+        allow_sector_only = getattr(settings, "PMS_ALLOW_SECTOR_ONLY", False)
+    min_base_rate = getattr(settings, "PMS_MIN_BASE_RATE", 0.005)
     sector_events = sector_events or []
     now_utc = datetime.now(timezone.utc)
     
     valid_market_scores: List[Dict[str, Any]] = []
     seen_market_ids: set = set()
+    range_bucket_count = 0
     
     # 1. Evaluate Direct Markets for this ticker
     for m in direct_markets:
@@ -58,6 +66,9 @@ def calculate_prediction_market_score(
             # Check Quality Rule
             if m.quality_score < settings.POLYMARKET_MIN_QUALITY:
                 continue  # Excluded by quality threshold
+            if getattr(m, "is_range_bucket", False):
+                range_bucket_count += 1
+                continue
                 
             seen_market_ids.add(m.external_id)
             # Base probability level (0 - 100) and effective delta adjusted by semantic polarity & base-rate anchor
@@ -68,7 +79,7 @@ def calculate_prediction_market_score(
             base_rate = getattr(m, "baseline_probability", None)
             if base_rate is None or not (0.0 < base_rate < 1.0):
                 base_rate = getattr(settings, "PMS_DEFAULT_BASE_RATE", 0.20)
-            base_rate = min(0.95, max(0.05, float(base_rate)))
+            base_rate = min(1.0 - min_base_rate, max(min_base_rate, float(base_rate)))
 
             if pol < 0:
                 # Negative event (e.g. failure, delay): high YES probability is bearish for stock
@@ -137,6 +148,9 @@ def calculate_prediction_market_score(
 
         if ev.quality_score < settings.POLYMARKET_MIN_QUALITY:
             continue
+        if getattr(ev, "is_range_bucket", False):
+            range_bucket_count += 1
+            continue
             
         event_key = ev.event_key or ev.external_id
         if event_key in mappings and ticker.upper() in mappings[event_key]:
@@ -183,6 +197,22 @@ def calculate_prediction_market_score(
                 "weight": (ev.quality_score / 100.0) * abs(impact_factor)
             })
 
+    has_direct = any(item["type"] == "DIRECT" for item in valid_market_scores)
+    if valid_market_scores and not has_direct and not allow_sector_only:
+        # Sector events alone are a weak, near-constant proxy: no PMS rather than an anchor around 48
+        return None, 0.0, 0.0, {
+            "status": "SECTOR_ONLY_EXCLUDED",
+            "market_count": 0,
+            "raw_market_count": len(direct_markets) + len(sector_events),
+            "valid_count": 0,
+            "sector_event_count": len(valid_market_scores),
+            "range_bucket_count": range_bucket_count,
+            "avg_quality": 0.0,
+            "pms_delta_24h": None,
+            "delta_24h": None,
+            "markets": []
+        }
+
     # If no valid markets meet the quality threshold
     if not valid_market_scores:
         all_markets = direct_markets + sector_events
@@ -192,6 +222,7 @@ def calculate_prediction_market_score(
             "market_count": 0,
             "raw_market_count": len(all_markets),
             "valid_count": 0,
+            "range_bucket_count": range_bucket_count,
             "avg_quality": round(avg_qual, 1),
             "pms_delta_24h": None,
             "delta_24h": None,
@@ -218,6 +249,7 @@ def calculate_prediction_market_score(
     breakdown = {
         "status": "AVAILABLE",
         "market_count": len(valid_market_scores),
+        "range_bucket_count": range_bucket_count,
         "avg_quality": avg_quality,
         "pms_delta_24h": pms_delta_24h,
         "delta_24h": pms_delta_24h,

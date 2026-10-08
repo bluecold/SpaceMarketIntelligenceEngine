@@ -336,12 +336,13 @@ def get_recent_prediction_markets(
     ticker: Optional[str] = None,
     mappings: Optional[Dict[str, Dict[str, float]]] = None,
     max_age_days: Optional[int] = 7,
-    include_expired: bool = False
+    include_expired: bool = False,
+    direct_only: bool = False
 ) -> List[PredictionMarketModel]:
     """
     Get active, valid prediction markets, filtered and prioritized:
     1. Direct contracts for the specified ticker (top priority).
-    2. Sector & Macro events with an impact mapping on the ticker.
+    2. Sector & Macro events with an impact mapping on the ticker (unless direct_only=True).
     Ensures freshness (collected_at >= since) and valid expiration (end_date >= now).
     """
     now = utc_now()
@@ -369,12 +370,16 @@ def get_recent_prediction_markets(
         # 1. Direct market for this ticker
         if m.ticker and m.ticker.upper() == ticker_up:
             direct_markets.append(m)
-        # 2. Sector event market with an impact mapping on this ticker
-        elif m.event_key and m.event_key in event_maps and ticker_up in event_maps[m.event_key]:
-            sector_markets.append(m)
-        # 3. Macro / unmapped global market with no ticker and no event_key
-        elif not m.ticker and not m.event_key:
-            sector_markets.append(m)
+        elif not direct_only:
+            # 2. Sector event market with an impact mapping on this ticker
+            if m.event_key and m.event_key in event_maps and ticker_up in event_maps[m.event_key]:
+                sector_markets.append(m)
+            # 3. Macro / unmapped global market with no ticker and no event_key
+            elif not m.ticker and not m.event_key:
+                sector_markets.append(m)
+
+    if direct_only:
+        return direct_markets
 
     # Return direct company markets first, followed by relevant sector events
     return direct_markets + sector_markets
@@ -571,7 +576,7 @@ def get_active_alerts_batch(db: Session, tickers: Optional[List[str]] = None) ->
     query = db.query(AlertModel).filter(AlertModel.resolved_at == None)
     if tickers:
         query = query.filter(AlertModel.ticker.in_([t.upper() for t in tickers]))
-    return query.order_by(desc(AlertModel.last_seen)).all()
+    return query.order_by(desc(AlertModel.timestamp), desc(AlertModel.last_seen)).all()
 
 
 def save_market_snapshot(db: Session, data: Dict[str, Any]) -> MarketSnapshotModel:
@@ -810,7 +815,7 @@ def get_history_series(db: Session, ticker: str, limit: int = 100) -> List[Dict[
         {
             "timestamp": s.timestamp.isoformat() + "Z" if s.timestamp else "",
             "price": s.price,
-            "smi": s.smi if s.smi is not None else s.ssi,
+            "smi": s.smi,  # Never substitute the social index for a missing SMI
             "ssi": s.social_score,
             "pms": s.prediction_score,
             "social_score": s.social_score,

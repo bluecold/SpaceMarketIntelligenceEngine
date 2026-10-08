@@ -120,7 +120,8 @@ def test_cross_company_event_mapping():
         ticker="ASTS",
         direct_markets=[],
         sector_events=[sector_event],
-        event_mappings=custom_mapping
+        event_mappings=custom_mapping,
+        allow_sector_only=True
     )
 
     assert pms_asts is not None
@@ -702,7 +703,8 @@ def test_sector_event_negative_impact_delta_sign_preservation():
         ticker="ASTS",
         direct_markets=[],
         sector_events=[sector_event],
-        event_mappings=custom_mapping
+        event_mappings=custom_mapping,
+        allow_sector_only=True
     )
 
     assert pms is not None
@@ -1261,4 +1263,139 @@ def test_save_prediction_markets_clob_token_persistence():
 
 
 
+
+
+
+def _pm(external_id, yes, ticker="SPCX", **kw):
+    base = dict(
+        external_id=external_id, ticker=ticker, title=kw.pop("title", external_id), status="ACTIVE",
+        created_at=datetime.now(timezone.utc), yes_probability=yes, no_probability=1.0 - yes,
+        volume=500000.0, liquidity=200000.0, spread=0.01, quality_score=90.0, probability_change_24h=0.0
+    )
+    base.update(kw)
+    return PredictionMarketData(**base)
+
+
+def test_sector_events_alone_give_no_pms_by_default():
+    """A ticker without direct markets gets no PMS from sector proxies (pillar excluded, not anchored near 50)."""
+    ev = _pm("poly-starship-dock", 0.52, ticker=None, event_key="spacex_starship_orbital_success")
+    pms, conf, _, bd = calculate_prediction_market_score("ASTS", direct_markets=[], sector_events=[ev])
+    assert pms is None
+    assert conf == 0.0
+    assert bd["status"] == "SECTOR_ONLY_EXCLUDED"
+    assert bd["sector_event_count"] == 1
+
+    # With a direct market present, sector events still contribute alongside it
+    direct = _pm("poly-asts-direct", 0.20, ticker="ASTS")
+    pms2, _, _, bd2 = calculate_prediction_market_score("ASTS", direct_markets=[direct], sector_events=[ev])
+    assert pms2 is not None
+    assert {m["type"] for m in bd2["markets"]} == {"DIRECT", "SECTOR_EVENT"}
+
+
+def test_range_buckets_of_exclusive_events_are_skipped():
+    """'<5', '5-6', '7-8'... buckets carry no direction one by one: they must not drag the PMS bearish."""
+    buckets = [
+        _pm(f"poly-bucket-{label}", p, outcome_group="evt-starship-count", outcome_label=label, baseline_probability=p)
+        for label, p in [("<5", 0.47), ("5-6", 0.535), ("7-8", 0.0125), ("9-10", 0.006), ("15-16", 0.0005)]
+    ]
+    assert all(b.is_range_bucket for b in buckets)
+    pms, _, _, bd = calculate_prediction_market_score("SPCX", direct_markets=buckets)
+    assert pms is None
+    assert bd["range_bucket_count"] == 5
+
+    # A named outcome of an exclusive event ("SpaceX" in "Largest IPO") stays directional
+    named = _pm("poly-ipo-spacex", 0.435, outcome_group="evt-largest-ipo", outcome_label="SpaceX", baseline_probability=0.435)
+    assert not named.is_range_bucket
+    pms_named, _, _, bd_named = calculate_prediction_market_score("SPCX", direct_markets=buckets + [named])
+    assert pms_named == 50.0
+    assert bd_named["market_count"] == 1
+
+
+def test_long_shot_market_at_its_own_baseline_is_neutral():
+    """A 3.5% market sitting at its 7-day average is neutral; the old 0.05 base-rate floor scored it ~43."""
+    m = _pm("poly-doge1-2026", 0.035, baseline_probability=0.0355)
+    pms, _, _, _ = calculate_prediction_market_score("SPCX", direct_markets=[m])
+    assert 49.0 <= pms <= 50.0
+
+
+def test_event_key_matching_uses_word_boundaries():
+    from app.collectors.polymarket_provider import match_event_key_from_text
+    # "sda" inside "Wednesday"/"Thursday" must not map a geomagnetic-storm market to Space Force contracts
+    assert match_event_key_from_text("Will the highest geomagnetic storm level on Thursday be G1?") is None
+    assert match_event_key_from_text("Will the SDA award Tranche 3 contracts?") == "us_space_force_sda_defense_contracts"
+    assert match_event_key_from_text("Will two SpaceX Starships dock together?") == "spacex_starship_orbital_success"
+
+
+def test_gamma_provider_marks_neg_risk_outcome_groups():
+    from app.collectors.polymarket_provider import PolymarketGammaProvider
+
+    provider = PolymarketGammaProvider()
+    event = {"id": "evt-77", "title": "How many SpaceX Starship launches reach space in 2026?", "slug": "starship-count", "negRisk": True}
+    raw = {"id": "m-1", "question": "Will 5-6 SpaceX Starship launches reach space in 2026?", "groupItemTitle": "5-6",
+           "outcomePrices": '["0.53", "0.47"]', "liquidityNum": 50000.0, "volumeNum": 200000.0, "spread": 0.02}
+    parsed = provider._parse_gamma_market(event, raw, None)
+    assert parsed.outcome_group == "evt-77"
+    assert parsed.outcome_label == "5-6"
+    assert parsed.is_range_bucket
+
+    ladder = provider._parse_gamma_market(
+        {"id": "evt-78", "title": "Two SpaceX Starships dock together by...?", "slug": "dock", "negRisk": False},
+        {**raw, "id": "m-2", "question": "Will two SpaceX Starships dock together by December 31, 2027?", "groupItemTitle": "December 31, 2027"},
+        None
+    )
+    assert ladder.outcome_group is None
+    assert not ladder.is_range_bucket
+
+
+def test_get_recent_prediction_markets_direct_only():
+    """Verify that get_recent_prediction_markets with direct_only=True returns only direct ticker contracts."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.database.models import Base, PredictionMarketModel
+    from app.database.repository import get_recent_prediction_markets
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    TestSession = sessionmaker(bind=engine)
+    db = TestSession()
+
+    try:
+        now = datetime.now(timezone.utc)
+        m1 = PredictionMarketModel(
+            external_id="poly-asts-1", ticker="ASTS", title="ASTS Satellite Direct Contract",
+            status="ACTIVE", yes_probability=0.7, no_probability=0.3,
+            volume=10000.0, liquidity=5000.0, spread=0.02, quality_score=80.0,
+            event_key=None, created_at=now
+        )
+        m2 = PredictionMarketModel(
+            external_id="poly-starlink-fcc", ticker=None, title="SpaceX Starlink FCC Approval",
+            status="ACTIVE", yes_probability=0.8, no_probability=0.2,
+            volume=50000.0, liquidity=20000.0, spread=0.01, quality_score=85.0,
+            event_key="spacex_starlink_direct_to_cell_fcc_approval", created_at=now
+        )
+        m3 = PredictionMarketModel(
+            external_id="poly-macro-1", ticker=None, title="Human landing on Moon",
+            status="ACTIVE", yes_probability=0.4, no_probability=0.6,
+            volume=100000.0, liquidity=40000.0, spread=0.01, quality_score=90.0,
+            event_key=None, created_at=now
+        )
+        db.add_all([m1, m2, m3])
+        db.commit()
+
+        # With direct_only=False (legacy), ASTS gets m1 (direct), m2 (mapped sector), and m3 (unmapped macro)
+        legacy_markets = get_recent_prediction_markets(db, ticker="ASTS", direct_only=False)
+        legacy_ids = [m.external_id for m in legacy_markets]
+        assert "poly-asts-1" in legacy_ids
+        assert "poly-starlink-fcc" in legacy_ids
+
+        # With direct_only=True (Single-Asset Focus), ASTS gets ONLY m1 (direct)
+        direct_markets = get_recent_prediction_markets(db, ticker="ASTS", direct_only=True)
+        direct_ids = [m.external_id for m in direct_markets]
+        assert direct_ids == ["poly-asts-1"]
+
+        # When a ticker has no direct contracts (e.g. RKLB in this db), it gets an empty list
+        rklb_direct = get_recent_prediction_markets(db, ticker="RKLB", direct_only=True)
+        assert rklb_direct == []
+    finally:
+        db.close()
 

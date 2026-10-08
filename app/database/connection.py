@@ -1,8 +1,10 @@
 import os
 import logging
 from sqlite3 import Connection as SQLiteConnection
+from typing import Annotated
+from fastapi import Depends
 from sqlalchemy import create_engine, event, text, inspect
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -72,6 +74,9 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+DbSession = Annotated[Session, Depends(get_db)]
 
 
 def init_db(target_engine=None):

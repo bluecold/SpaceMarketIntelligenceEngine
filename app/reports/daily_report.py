@@ -33,7 +33,7 @@ def generate_daily_report(db: Session) -> Dict[str, Any]:
         divs = get_active_divergences(db, ticker=symbol, hours=24)
         posts = get_recent_social_posts(db, ticker=symbol, hours=24)
         news = get_recent_news_items(db, ticker=symbol, days=2)
-        markets = get_recent_prediction_markets(db, ticker=symbol)
+        markets = get_recent_prediction_markets(db, ticker=symbol, direct_only=True)
 
         for d in divs:
             all_divergences.append({

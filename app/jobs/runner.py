@@ -536,7 +536,7 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 previous_smi_3d=prev_3d_dict,
                 previous_smi_5d=prev_5d_dict,
                 post_count=social_res.get("effective_sample_size", len(recent_posts)),
-                news_count=len(recent_news),
+                news_count=news_res.get("total_news", len(recent_news)),  # unique relevant headlines
                 prediction_count=prediction_count
             )
 

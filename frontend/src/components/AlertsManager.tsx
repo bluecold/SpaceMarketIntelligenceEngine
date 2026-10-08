@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Bell, Zap, Check,
   Clock, Radio, ExternalLink, CheckCheck, Settings,
-  ShieldCheck, ShieldAlert
+  ShieldCheck
 } from 'lucide-react';
 import { AlertItem } from '../types';
 
@@ -13,6 +13,7 @@ interface AlertsManagerProps {
 
 type FilterCategory = 'ALL' | 'CRITICAL' | 'DIVERGENCES' | 'TECHNICAL' | 'SIGNALS' | 'SYSTEM';
 type NotificationSeverity = 'CRITICAL' | 'HIGH' | 'ALL';
+type SortMode = 'DATE' | 'SEVERITY';
 
 interface NotificationSettings {
   desktopEnabled: boolean;
@@ -33,6 +34,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
   const [showSettings, setShowSettings] = useState(false);
   const [permission, setPermission] = useState<NotificationPermission>('default');
   const [activeFilter, setActiveFilter] = useState<FilterCategory>('ALL');
+  const [sortBy, setSortBy] = useState<SortMode>('DATE');
 
   // Read alerts tracker
   const [readIds, setReadIds] = useState<Set<string>>(() => {
@@ -107,11 +109,16 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
         setIsOpen(false);
       }
     };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsOpen(false);
+    };
     if (isOpen) {
       document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('keydown', handleEscape);
     }
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
     };
   }, [isOpen]);
 
@@ -127,7 +134,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
       setPermission(res);
       if (res === 'granted') {
         new Notification('🚀 SMIE Real-Time Alerts Enabled', {
-          body: `Monitoreo de señales activado. Modo: ${settings.minSeverity === 'CRITICAL' ? 'Solo Críticas' : settings.minSeverity === 'HIGH' ? 'Críticas y Altas' : 'Todas'}.`,
+          body: `Signal monitoring enabled. Mode: ${settings.minSeverity === 'CRITICAL' ? 'Critical only' : settings.minSeverity === 'HIGH' ? 'Critical + High' : 'All'}.`,
           icon: '🚀'
         });
       }
@@ -141,7 +148,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
     }
     try {
       new Notification('🔔 SMIE Intelligence Alert Test', {
-        body: 'Notificaciones de Windows funcionando correctamente en tiempo real.',
+        body: 'Desktop notifications are working.',
         icon: '🚀'
       });
     } catch (e) {
@@ -313,10 +320,10 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
       d.getFullYear() === yesterday.getFullYear();
 
     if (isYesterday) {
-      return `Ayer ${d.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' })}`;
+      return `Yesterday ${d.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' })}`;
     }
 
-    const dateStr = d.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+    const dateStr = d.toLocaleDateString([], { day: 'numeric', month: 'short' });
     const shortTimeStr = d.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' });
     return `${dateStr}, ${shortTimeStr}`;
   };
@@ -324,18 +331,18 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
   const formatRelativeTime = (ts?: string | null, ageHours?: number | null): string => {
     let effectiveHours = ageHours;
     if (effectiveHours === undefined || effectiveHours === null) {
-      if (!ts) return 'Reciente';
+      if (!ts) return 'Recent';
       const d = new Date(ts).getTime();
-      if (isNaN(d)) return 'Reciente';
+      if (isNaN(d)) return 'Recent';
       effectiveHours = Math.max(0, (Date.now() - d) / (1000 * 60 * 60));
     }
 
-    if (effectiveHours < 0.05) return 'Recién emitido';
-    if (effectiveHours < 1.0) return `hace ${Math.round(effectiveHours * 60)} min`;
-    if (effectiveHours < 48.0) return `hace ${effectiveHours.toFixed(1)}h`;
+    if (effectiveHours < 0.05) return 'Just now';
+    if (effectiveHours < 1.0) return `${Math.round(effectiveHours * 60)} min ago`;
+    if (effectiveHours < 48.0) return `${effectiveHours.toFixed(1)}h ago`;
 
     const days = Math.round(effectiveHours / 24.0);
-    return days === 1 ? 'hace 1 día' : `hace ${days} días`;
+    return days === 1 ? '1 day ago' : `${days} days ago`;
   };
 
   // Filter calculations
@@ -346,6 +353,36 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
     if (activeFilter === 'SIGNALS') return getCategory(al) === 'SIGNAL';
     if (activeFilter === 'SYSTEM') return getCategory(al) === 'SYSTEM';
     return true;
+  });
+
+  // Severity ranking for sorting
+  const severityRank: Record<string, number> = {
+    CRITICAL: 4,
+    HIGH: 3,
+    WARNING: 2,
+    MEDIUM: 1,
+    INFO: 0
+  };
+
+  // Sort alerts according to user preference (default: DATE descending, newest first)
+  const sortedAlerts = [...filteredAlerts].sort((a, b) => {
+    const timeA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+    const timeB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+    const rankA = severityRank[a.level] ?? 0;
+    const rankB = severityRank[b.level] ?? 0;
+
+    if (sortBy === 'SEVERITY') {
+      if (rankA !== rankB) {
+        return rankB - rankA; // Higher severity first
+      }
+      return timeB - timeA; // Newer first within same severity tier
+    }
+
+    // Default: Sort by DATE (newest first)
+    if (timeA !== timeB) {
+      return timeB - timeA; // Most recent first
+    }
+    return rankB - rankA; // Higher severity tie-breaker
   });
 
   const unreadCount = alerts.filter((al, idx) => !readIds.has(getAlertKey(al, idx))).length;
@@ -364,8 +401,12 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
     <div style={{ position: 'relative' }} ref={dropdownRef}>
       {/* Bell Button */}
       <button
+        type="button"
         onClick={() => setIsOpen(!isOpen)}
-        title="Centro de Alertas & Intelligence Radar"
+        title="Alert center & Intelligence Radar"
+        aria-label={`Alerts: ${alerts.length} on radar, ${unreadCount} unread`}
+        aria-expanded={isOpen}
+        aria-haspopup="dialog"
         className={hasCriticalUnread ? "pulse-critical" : ""}
         style={{
           background: alerts.length > 0
@@ -411,6 +452,8 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
       {/* Flyout Panel */}
       {isOpen && (
         <div
+          role="dialog"
+          aria-label="Intelligence Radar"
           style={{
             position: 'absolute',
             top: '46px',
@@ -437,7 +480,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
                 Intelligence Radar
               </span>
               <span style={{ fontSize: '0.72rem', background: 'rgba(0, 242, 254, 0.1)', color: 'var(--accent-cyan)', padding: '2px 6px', borderRadius: '4px', fontWeight: 700 }}>
-                {alerts.length} en radar
+                {alerts.length} on radar
               </span>
             </div>
 
@@ -456,10 +499,11 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
                   padding: '3px 7px',
                   borderRadius: '6px'
                 }}
-                title="Configuración de notificaciones de Windows"
+                title="Desktop notification settings"
+                aria-expanded={showSettings}
               >
                 <Settings size={13} />
-                <span>Ajustes</span>
+                <span>Settings</span>
               </button>
 
               {unreadCount > 0 && (
@@ -477,9 +521,9 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
                     padding: '2px 6px',
                     borderRadius: '4px'
                   }}
-                  title="Marcar todas las alertas como leídas"
+                  title="Mark all alerts as read"
                 >
-                  <CheckCheck size={13} /> Leídas
+                  <CheckCheck size={13} /> Mark read
                 </button>
               )}
             </div>
@@ -500,7 +544,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#fff', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <ShieldCheck size={14} color="var(--accent-cyan)" /> Notificaciones de Windows
+                  <ShieldCheck size={14} color="var(--accent-cyan)" /> Desktop notifications
                 </span>
                 <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '6px', fontSize: '0.75rem' }}>
                   <input
@@ -510,7 +554,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
                     style={{ cursor: 'pointer' }}
                   />
                   <span style={{ color: settings.desktopEnabled ? 'var(--bullish-green)' : 'var(--text-muted)' }}>
-                    {settings.desktopEnabled ? 'Activadas' : 'Silenciadas'}
+                    {settings.desktopEnabled ? 'On' : 'Muted'}
                   </span>
                 </label>
               </div>
@@ -518,14 +562,14 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
               {settings.desktopEnabled && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                    Umbral de severidad para popup en Windows:
+                    Minimum severity for a desktop popup:
                   </div>
                   <div style={{ display: 'flex', gap: '6px' }}>
                     {(
                       [
-                        { id: 'CRITICAL', label: '🔴 Solo Críticas' },
-                        { id: 'HIGH', label: '🟠 Críticas + Altas' },
-                        { id: 'ALL', label: '⚪ Todas' }
+                        { id: 'CRITICAL', label: '🔴 Critical only' },
+                        { id: 'HIGH', label: '🟠 Critical + High' },
+                        { id: 'ALL', label: '⚪ All' }
                       ] as const
                     ).map((lvl) => (
                       <button
@@ -552,7 +596,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
 
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '4px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
                 <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>
-                  🛡️ Carga inicial protegida (sin spam en F5)
+                  🛡️ Existing alerts are not re-notified on reload
                 </span>
                 <button
                   onClick={triggerTestNotification}
@@ -569,22 +613,22 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
                     gap: '4px'
                   }}
                 >
-                  <Zap size={11} /> Probar aviso
+                  <Zap size={11} /> Send test
                 </button>
               </div>
             </div>
           )}
 
           {/* Filter Pills */}
-          <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '4px' }}>
+          <div className="scrollable-pills">
             {(
               [
-                { id: 'ALL', label: `Todas (${countByFilter.ALL})` },
-                { id: 'CRITICAL', label: `🚨 Críticas (${countByFilter.CRITICAL})` },
-                { id: 'DIVERGENCES', label: `⚡ Divergencias (${countByFilter.DIVERGENCES})` },
-                { id: 'TECHNICAL', label: `📈 Técnicas (${countByFilter.TECHNICAL})` },
-                { id: 'SIGNALS', label: `🚀 Señales (${countByFilter.SIGNALS})` },
-                { id: 'SYSTEM', label: `⏳ Sistema (${countByFilter.SYSTEM})` }
+                { id: 'ALL', label: `All (${countByFilter.ALL})` },
+                { id: 'CRITICAL', label: `🚨 Critical (${countByFilter.CRITICAL})` },
+                { id: 'DIVERGENCES', label: `⚡ Divergences (${countByFilter.DIVERGENCES})` },
+                { id: 'TECHNICAL', label: `📈 Technical (${countByFilter.TECHNICAL})` },
+                { id: 'SIGNALS', label: `🚀 Signals (${countByFilter.SIGNALS})` },
+                { id: 'SYSTEM', label: `⏳ System (${countByFilter.SYSTEM})` }
               ] as const
             ).map((tab) => (
               <button
@@ -608,11 +652,70 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
             ))}
           </div>
 
+          {/* Subheader / Sort Selector */}
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              padding: '2px 4px',
+              fontSize: '0.72rem',
+              color: 'var(--text-muted)'
+            }}
+          >
+            <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>
+              {sortedAlerts.length} {sortedAlerts.length === 1 ? 'alert' : 'alerts'}
+            </span>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '3px', background: 'rgba(255, 255, 255, 0.03)', padding: '2px 4px', borderRadius: '6px', border: '1px solid rgba(255, 255, 255, 0.05)' }}>
+              <span style={{ fontSize: '0.66rem', color: 'var(--text-dim)', marginRight: '2px' }}>
+                Sort:
+              </span>
+              <button
+                onClick={() => setSortBy('DATE')}
+                style={{
+                  background: sortBy === 'DATE' ? 'rgba(0, 242, 254, 0.15)' : 'transparent',
+                  border: sortBy === 'DATE' ? '1px solid var(--accent-cyan)' : '1px solid transparent',
+                  color: sortBy === 'DATE' ? 'var(--accent-cyan)' : 'var(--text-muted)',
+                  borderRadius: '4px',
+                  padding: '2px 6px',
+                  fontSize: '0.67rem',
+                  cursor: 'pointer',
+                  fontWeight: sortBy === 'DATE' ? 700 : 500,
+                  transition: 'all 0.15s ease'
+                }}
+                title="Newest alerts first"
+              >
+                🕒 Newest
+              </button>
+              <button
+                onClick={() => setSortBy('SEVERITY')}
+                style={{
+                  background: sortBy === 'SEVERITY' ? 'rgba(0, 242, 254, 0.15)' : 'transparent',
+                  border: sortBy === 'SEVERITY' ? '1px solid var(--accent-cyan)' : '1px solid transparent',
+                  color: sortBy === 'SEVERITY' ? 'var(--accent-cyan)' : 'var(--text-muted)',
+                  borderRadius: '4px',
+                  padding: '2px 6px',
+                  fontSize: '0.67rem',
+                  cursor: 'pointer',
+                  fontWeight: sortBy === 'SEVERITY' ? 700 : 500,
+                  transition: 'all 0.15s ease'
+                }}
+                title="Critical and high severity first"
+              >
+                ⚡ Severity
+              </button>
+            </div>
+          </div>
+
           {/* Desktop Permission Request Banner (if not yet granted) */}
           {permission !== 'granted' && (
-            <div
+            <button
+              type="button"
               onClick={requestNotificationPermission}
               style={{
+                width: '100%',
+                textAlign: 'left',
                 background: 'rgba(0, 242, 254, 0.08)',
                 border: '1px dashed rgba(0, 242, 254, 0.3)',
                 color: 'var(--accent-cyan)',
@@ -628,22 +731,22 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
               }}
             >
               <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Zap size={14} /> Activar notificaciones en Windows (solo nuevas señales)
+                <Zap size={14} /> Enable desktop notifications (new signals only)
               </span>
               <span style={{ fontWeight: 700, fontSize: '0.72rem', textDecoration: 'underline' }}>
-                Activar
+                Enable
               </span>
-            </div>
+            </button>
           )}
 
           {/* Alerts List */}
-          {filteredAlerts.length === 0 ? (
+          {sortedAlerts.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '30px 10px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-              No hay alertas activas en esta categoría.
+              No active alerts in this category.
             </div>
           ) : (
             <div style={{ maxHeight: '360px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px', paddingRight: '2px' }}>
-              {filteredAlerts.map((al, idx) => {
+              {sortedAlerts.map((al, idx) => {
                 const key = getAlertKey(al, idx);
                 const isRead = readIds.has(key);
                 const isActive = isAlertActive(al);
@@ -661,7 +764,15 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
                 return (
                   <div
                     key={key}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => handleAlertClick(al, idx)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        handleAlertClick(al, idx);
+                      }
+                    }}
                     style={{
                       background: cardBg,
                       borderLeft: `4px solid ${borderLeftColor}`,
@@ -715,7 +826,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
                             border: `1px solid ${isActive ? 'rgba(16, 185, 129, 0.3)' : 'rgba(234, 179, 8, 0.3)'}`
                           }}
                         >
-                          {isActive ? '🟢 Vigente' : '⏳ Obsoleta'}
+                          {isActive ? '🟢 Active' : '⏳ Expired'}
                         </span>
 
                         {/* Persistent Active Verification Badge */}
@@ -735,14 +846,14 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
                             }}
                             title={
                               al.last_seen_age_hours !== undefined && al.last_seen_age_hours !== null
-                                ? `Condición activa confirmada hace ${al.last_seen_age_hours < 1 ? 'minutos' : `${al.last_seen_age_hours.toFixed(1)}h`}`
-                                : 'Condición activa persistente'
+                                ? `Condition last confirmed ${al.last_seen_age_hours < 1 ? 'minutes' : `${al.last_seen_age_hours.toFixed(1)}h`} ago`
+                                : 'Persistent active condition'
                             }
                           >
                             <Check size={10} />
                             {al.last_seen_age_hours !== undefined && al.last_seen_age_hours !== null && al.last_seen_age_hours < 24
-                              ? 'Confirmada hoy'
-                              : 'Riesgo activo'}
+                              ? 'Confirmed today'
+                              : 'Ongoing risk'}
                           </span>
                         )}
 
@@ -759,7 +870,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
                               border: `1px solid ${al.category === 'FUNDAMENTAL' ? 'rgba(168, 85, 247, 0.35)' : al.category === 'CATALYST' ? 'rgba(249, 115, 22, 0.35)' : 'rgba(56, 189, 248, 0.35)'}`
                             }}
                           >
-                            {al.category === 'FUNDAMENTAL' ? 'Balance/Runway' : al.category === 'CATALYST' ? 'Catalizador' : 'Técnico'}
+                            {al.category === 'FUNDAMENTAL' ? 'Balance/Runway' : al.category === 'CATALYST' ? 'Catalyst' : 'Technical'}
                           </span>
                         )}
 
@@ -789,7 +900,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
                               background: 'var(--accent-cyan)',
                               display: 'inline-block'
                             }}
-                            title="No leída"
+                            title="Unread"
                           />
                         )}
                       </div>
@@ -813,7 +924,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
 
                     {/* Footer Action Link */}
                     <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', fontSize: '0.72rem', color: 'var(--accent-cyan)', gap: '3px', fontWeight: 600 }}>
-                      <span>Inspeccionar ${al.ticker} en terminal</span>
+                      <span>Open ${al.ticker} details</span>
                       <ExternalLink size={11} />
                     </div>
                   </div>

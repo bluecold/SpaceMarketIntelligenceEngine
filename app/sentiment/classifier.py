@@ -322,8 +322,8 @@ class FinBERTSentimentClassifier(BaseSentimentClassifier):
 
         output_results = []
         try:
-            # Batch inference with HuggingFace pipeline
-            predictions = self.pipeline(clean_texts, truncation=True, max_length=128)
+            # Batch inference with HuggingFace pipeline (batch_size=32 for vectorized inference)
+            predictions = self.pipeline(clean_texts, truncation=True, max_length=128, batch_size=32)
             for preds in predictions:
                 if isinstance(preds, list):
                     scores = {item['label'].lower(): float(item['score']) for item in preds if isinstance(item, dict) and 'label' in item}

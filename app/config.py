@@ -120,7 +120,7 @@ DEFAULT_EVENT_COMPANY_MAPPINGS: Dict[str, Dict[str, float]] = {
 class Settings(BaseSettings):
     APP_NAME: str = "Space Market Intelligence Engine"
     APP_VERSION: str = "2.2.0"
-    RULES_VERSION: str = "2.2.0"  # Stored per snapshot: 2.2.0 = opinion-only SSI + baseline, FinTwitBERT, mirrored bands, v2.2 weights
+    RULES_VERSION: str = "2.2.1"  # Stored per snapshot: 2.2.0 = opinion-only SSI + baseline, FinTwitBERT, mirrored bands, v2.2 weights; 2.2.1 = opinion-only deduped news, PMS without sector-only proxies or range buckets
     ENVIRONMENT: str = "development"  # "development", "testing", "production"
     DEBUG: bool = True
     DATABASE_URL: str = "sqlite:///./data/space_sentiment.db"
@@ -156,6 +156,8 @@ class Settings(BaseSettings):
     SOCIAL_ALLOWED_LANGUAGES: List[str] = ["en"]
     SOCIAL_EXCLUDE_SPAM: bool = True  # Drop stock-promo bot posts (group invites, paid signals, hashtag campaigns)
     NEWS_MIN_RELEVANCE: float = 0.40
+    NEWS_HALF_LIFE_HOURS: float = 12.0  # News recency decay; 24h kept a rally's headlines dominant for 2-3 sessions after it ended
+    NEWS_MIN_OPINION_EVIDENCE: float = 2.0  # Recency x importance weight (~2 fresh opinionated headlines) for a full-strength news score
     # SSI baseline: X polarity is measured against the ticker's own trailing norm (excluding the lookback window)
     SOCIAL_BASELINE_DAYS: int = 14
     SOCIAL_BASELINE_PRIOR_WEIGHT: float = 10.0  # Pseudo-weight (~10-15 posts) shrinking thin baselines towards neutral
@@ -205,6 +207,8 @@ class Settings(BaseSettings):
     THRESHOLD_HOLD: float = 45.0          # SMI <= 45.0 leaves HOLD for CAUTION (-5 under 50.0)
     THRESHOLD_AVOID: float = 30.0         # SMI <= 30.0 (-20 under 50.0, mirror of BUY)
     THRESHOLD_STRONG_AVOID: float = 15.0  # SMI <= 15.0 (-35 under 50.0, mirror of STRONG BUY)
+    # Capital-preservation gate: risk_score below this caps STRONG BUY to BUY and adds the HIGH RISK modifier
+    RISK_GATE_THRESHOLD: float = 35.0
     
     # Divergence Engine thresholds
     DIVERGENCE_EARLY_REVERSAL_DELTA: float = 15.0  # 24h probability change threshold (+/- 15 pp)
@@ -213,6 +217,10 @@ class Settings(BaseSettings):
     PMS_WEIGHT_MOMENTUM: float = 0.60       # Probability Momentum (24h) weight (real-time smart money alpha)
     PMS_WEIGHT_LEVEL: float = 0.40          # Calibrated probability level weight
     PMS_DEFAULT_BASE_RATE: float = 0.20     # Calibrated base-rate anchor for aerospace innovation milestones
+    PMS_MIN_BASE_RATE: float = 0.005        # Floor for the base-rate anchor (a 0.05 floor read every long-shot market as bearish)
+    # Sector events only proxy for a ticker without markets of its own: for ASTS/RKLB/SATL/SPCE they reduced to
+    # Starship markets that sat at 47-49 every day (Oct 2026 review). Off = such tickers get no PMS (pillar excluded).
+    PMS_ALLOW_SECTOR_ONLY: bool = False
     
     # Strategy & Volume Thresholds (Option A - Institutional Quality)
     VOLUME_RATIO_INSTITUTIONAL_BUY: float = 1.2  # +20% volume threshold for institutional confirmation

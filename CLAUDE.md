@@ -28,7 +28,7 @@ python -m app.cli analyze ASTS                   # per-ticker breakdown with "WH
 python -m app.cli reclassify-social --days 14  # relabel stored X posts after changing SOCIAL_SENTIMENT_MODEL
 ```
 
-There is no linter or formatter config. Frontend type checking runs as part of `npm run build` (`tsc && vite build`).
+The frontend has ESLint (`cd frontend && npm run lint`, flat config in `frontend/eslint.config.js`); there is no Python linter or formatter config. Frontend type checking runs as part of `npm run build` (`tsc && vite build`). Frontend score colors come from `engine.thresholds` (served by `describe_engine()` from the `THRESHOLD_*` and `RISK_GATE_THRESHOLD` settings) through `frontend/src/lib/scale.ts`; don't hardcode score cutoffs in components.
 
 ## Architecture
 

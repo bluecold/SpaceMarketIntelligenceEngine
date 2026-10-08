@@ -35,6 +35,14 @@ assert "test_space_sentiment.db" in str(engine.url) or "space_sentiment.db" not 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_session():
     """Session-level fixture: initialize test database and remove test artifacts on teardown."""
+    # Pre-clean stale test SQLite files if any exist from previous runs
+    for p in [_TEST_DB_PATH, _TEST_DB_PATH + "-wal", _TEST_DB_PATH + "-shm", _TEST_DB_PATH + "-journal"]:
+        try:
+            if os.path.exists(p):
+                os.remove(p)
+        except Exception:
+            pass
+
     rebind_engine(_TEST_DB_URL)
     init_db()
 

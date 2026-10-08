@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
+import { Modal } from './ui';
 import {
-  X, Compass, Activity, Zap, Shield, HelpCircle,
-  TrendingUp, Layers, CheckCircle2, AlertTriangle,
-  Info, Cpu, BookOpen, Target, Scale, Award
+  X, Compass, Zap, Layers, CheckCircle2, AlertTriangle,
+  BookOpen, Target, Scale
 } from 'lucide-react';
 
 interface AboutModalProps {
@@ -13,20 +13,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
   const [activeSection, setActiveSection] = useState<'overview' | 'metrics' | 'divergences' | 'guide' | 'proscons'>('overview');
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div
-        className="modal-content"
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          maxWidth: '920px',
-          width: '95%',
-          maxHeight: '88vh',
-          display: 'flex',
-          flexDirection: 'column',
-          padding: '0',
-          overflow: 'hidden'
-        }}
-      >
+    <Modal onClose={onClose} labelledBy="about-title" className="modal-about" closeButton={false}>
         {/* Modal Header */}
         <div
           style={{
@@ -51,7 +38,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
               🚀
             </div>
             <div>
-              <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.35rem', margin: 0, color: '#fff' }}>
+              <h2 id="about-title" style={{ fontFamily: 'var(--font-heading)', fontSize: '1.35rem', margin: 0, color: '#fff' }}>
                 Space Market Intelligence Engine (SMIE v2.2)
               </h2>
               <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: '2px 0 0 0' }}>
@@ -60,7 +47,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
             </div>
           </div>
 
-          <button className="btn-close" onClick={onClose} style={{ position: 'static' }}>
+          <button type="button" className="btn-close" onClick={onClose} style={{ position: 'static' }} aria-label="Close">
             <X size={18} />
           </button>
         </div>
@@ -71,13 +58,14 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
             display: 'flex',
             background: 'rgba(11, 15, 25, 0.9)',
             borderBottom: '1px solid var(--border-color)',
-            padding: '0 16px',
+            padding: '0 16px 4px 16px',
             overflowX: 'auto',
             gap: '8px'
           }}
         >
           <button
             onClick={() => setActiveSection('overview')}
+            aria-pressed={activeSection === 'overview'}
             style={{
               background: 'none',
               border: 'none',
@@ -98,6 +86,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
 
           <button
             onClick={() => setActiveSection('metrics')}
+            aria-pressed={activeSection === 'metrics'}
             style={{
               background: 'none',
               border: 'none',
@@ -118,6 +107,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
 
           <button
             onClick={() => setActiveSection('divergences')}
+            aria-pressed={activeSection === 'divergences'}
             style={{
               background: 'none',
               border: 'none',
@@ -138,6 +128,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
 
           <button
             onClick={() => setActiveSection('guide')}
+            aria-pressed={activeSection === 'guide'}
             style={{
               background: 'none',
               border: 'none',
@@ -158,6 +149,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
 
           <button
             onClick={() => setActiveSection('proscons')}
+            aria-pressed={activeSection === 'proscons'}
             style={{
               background: 'none',
               border: 'none',
@@ -548,7 +540,6 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
             Entendido, ir al Dashboard
           </button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
