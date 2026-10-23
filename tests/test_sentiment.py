@@ -651,7 +651,7 @@ def test_news_score_dedups_syndicated_headlines_and_ignores_neutrals():
                                published_at=now, relevance_score=0.85, catalyst_importance=None)
 
     news = [item(f"Why Rocket Lab Stock Popped Today - {src}", 0.8, "BULLISH") for src in ("Yahoo Finance", "The Motley Fool", "AOL.com", "The Globe and Mail")]
-    news.append(item("Rocket Lab Shares Down 4.2% - MarketBeat", -0.8, "BEARISH"))
+    news.append(item("Rocket Lab Delays Neutron Again, Raising Funding Questions - MarketBeat", -0.8, "BEARISH"))
     news += [item(f"Rocket Lab Q3 preview {i} - Benzinga", 0.02, "NEUTRAL") for i in range(5)]
 
     res = calculate_news_score(news, analysis_timestamp=now)

@@ -728,6 +728,43 @@ def normalize_headline_for_dedup(title: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+# Headlines whose subject is the share price itself ("Stock Falls 4.9% - Here's What Happened", "hits 52-week low").
+# They restate a move that already happened (~1/3 of ASTS headlines in Oct-2026), so they carry no new information
+# and pull the news pillar towards yesterday's price action.
+_PRICE_MOVE_VERBS = (
+    r"falls?|fell|drops?|dropped|sinks?|sank|slides?|slid|slips?|slipped|slumps?|slumped|tumbles?|tumbled|"
+    r"plunges?|plunged|plummets?|plummeted|crash(?:es|ed)?|dips?|dipped|declines?|declined|sheds?|"
+    r"jumps?|jumped|soars?|soared|surges?|surged|rall(?:y|ies|ied)|climbs?|climbed|rises?|rose|"
+    r"spikes?|spiked|skyrockets?|skyrocketed|pops?|popped|gains?|gained|moved (?:up|down)(?: by)?|(?:is |are )?(?:down|up)"
+)
+PRICE_RECAP_PATTERNS = [
+    re.compile(rf"\b(?:{_PRICE_MOVE_VERBS})\s+(?:by\s+)?(?:more than |over |nearly |almost |as much as |about |another )?\d+(?:\.\d+)?\s?%", re.I),
+    re.compile(r"\b(?:hits?|sinks? to|falls? to|touches|at|reaches|new)\s+(?:a\s+)?(?:new\s+)?(?:52|fifty-two)[- ]week (?:low|high)\b", re.I),
+    re.compile(r"\b(?:hits?|sinks? to|falls? to|touches|at|reaches|new)\s+(?:a\s+)?(?:new\s+)?(?:12|twelve)[- ]month (?:low|high)\b", re.I),
+    re.compile(r"\bcloses at \$?\d", re.I),
+    re.compile(r"\bstock price (?:down|up)\b", re.I),
+    re.compile(r"\bwhy (?:is |are )?.{0,60}?\b(?:stock|shares)\b.{0,25}?\b(?:falling|rising|soaring|sinking|sliding|dropping|plunging|jumping|surging|tumbling|climbing|down|up)\b", re.I),
+]
+# A percentage move right after these nouns is a business metric ("Revenue Jumps 40%"), not the share price
+_METRIC_NOUNS = re.compile(
+    r"\b(?:revenue|revenues|sales|earnings|eps|profit|profits|income|margin|margins|backlog|bookings|subscribers|"
+    r"users|guidance|cash|deliveries|orders|launches|production|output|demand|loss|losses)\s*$", re.I)
+# "Could Soar by 73%", "How Shares Can Rise 70%": an analyst projection, not a move that happened
+_PROJECTION_WORDS = re.compile(r"\b(?:could|can|may|might|will|would|to|set to|poised to)\s*$", re.I)
+
+
+def is_price_recap_headline(title: str) -> bool:
+    """True when the headline reports the share-price move itself rather than news about the company."""
+    text = re.sub(r"\s+[-–—|]\s+[^-–—|]{2,60}$", "", (title or "").strip())  # drop ' - Publisher'
+    for pat in PRICE_RECAP_PATTERNS:
+        for m in pat.finditer(text):
+            prefix = text[:m.start()]
+            if pat is PRICE_RECAP_PATTERNS[0] and (_METRIC_NOUNS.search(prefix) or _PROJECTION_WORDS.search(prefix)):
+                continue
+            return True
+    return False
+
+
 def calculate_news_score(
     news_items: List[Any],
     analysis_timestamp: Optional[datetime] = None,
@@ -797,8 +834,15 @@ def calculate_news_score(
     bull_cnt = 0
     bear_cnt = 0
 
+    exclude_recaps = getattr(settings, "NEWS_EXCLUDE_PRICE_RECAPS", True)
+    recap_cnt = 0
     for item in unique_items:
         label = getattr(item, 'sentiment_label', None)
+        if (exclude_recaps and label in ("BULLISH", "BEARISH") and not getattr(item, "catalyst", None)
+                and is_price_recap_headline(getattr(item, "title", "") or "")):
+            # Restates the price move; headlines that also name a catalyst keep their direction
+            recap_cnt += 1
+            continue
         if label == "BULLISH":
             bull_cnt += 1
         elif label == "BEARISH":
@@ -842,6 +886,7 @@ def calculate_news_score(
         "news_polarity_raw": round(raw_score, 1) if raw_score is not None else None,
         "news_evidence": round(evidence, 2),
         "opinion_news_count": bull_cnt + bear_cnt,
+        "price_recap_news_count": recap_cnt,
         "duplicate_news_count": len(relevant_items) - n_total,
         "bullish_news_pct": round(100.0 * bull_cnt / n_total, 1),
         "bearish_news_pct": round(100.0 * bear_cnt / n_total, 1)

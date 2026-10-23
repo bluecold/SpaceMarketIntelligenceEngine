@@ -167,7 +167,7 @@ def test_ingestion_stores_sentiment_model_and_lang():
     from app.jobs.runner import ingest_social_posts_for_ticker
 
     class _Provider:
-        async def search(self, query, ticker, max_results=100):
+        async def search(self, query, ticker, max_results=100, **kwargs):
             return [SocialPostData(tweet_id="ing_1", ticker=ticker, username="a", text="$ASTS loading more shares",
                                    created_at=datetime.now(timezone.utc), lang="en")]
 

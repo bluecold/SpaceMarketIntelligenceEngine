@@ -39,7 +39,7 @@ export interface RankingItem {
   prediction_count?: number | null;
   data_source?: 'LIVE' | 'DEGRADED' | 'MOCK' | string;
   social_source?: 'LIVE' | 'MOCK' | 'EXCLUDED' | string;
-  prediction_source?: 'LIVE' | 'MOCK' | 'EXCLUDED' | string;
+  prediction_source?: 'LIVE' | 'MOCK' | 'EXCLUDED' | 'NOT_APPLICABLE' | string;
   news_source?: 'LIVE' | 'EXCLUDED' | string;
   market_source?: 'LIVE' | 'DEGRADED' | string;
   price: number | null;

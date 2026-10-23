@@ -338,6 +338,16 @@ def _as_naive_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo is not None else dt
 
 
+def _volume_since() -> Optional[datetime]:
+    raw = getattr(settings, "SOCIAL_VOLUME_SINCE", None)
+    if not raw:
+        return None
+    try:
+        return _as_naive_utc(datetime.fromisoformat(str(raw)))
+    except ValueError:
+        return None
+
+
 def calculate_social_baseline(
     history_posts: List[SocialPostModel],
     window_start: datetime,
@@ -353,12 +363,14 @@ def calculate_social_baseline(
     - polarity: weighted opinion polarity (-1..+1) without recency decay, shrunk towards 0 by a
       pseudo-weight of settings.SOCIAL_BASELINE_PRIOR_WEIGHT so thin histories barely move the SSI.
     - daily_post_rate: median of unique relevant posts per 24h bucket (deduplicated within each bucket,
-      exactly like the live lookback window). Empty buckets are collection gaps and are skipped.
+      exactly like the live lookback window). Empty buckets are collection gaps and are skipped. Posts
+      collected before settings.SOCIAL_VOLUME_SINCE (single-page searches) only feed the polarity.
     """
     start = _as_naive_utc(window_start)
     end = _as_naive_utc(window_end)
     min_rel = getattr(settings, "SOCIAL_MIN_RELEVANCE", 0.40)
     prior_weight = getattr(settings, "SOCIAL_BASELINE_PRIOR_WEIGHT", 10.0)
+    volume_since = _volume_since()
 
     unique: Dict[str, Any] = {}
     bucket_keys: Dict[int, set] = {}
@@ -371,8 +383,10 @@ def calculate_social_baseline(
             continue
         key = normalize_text_for_dedup(p.text) if getattr(p, "text", None) else ""
         key = key or str(getattr(p, "tweet_id", id(p)))
-        bucket = int((end - created).total_seconds() // 86400)
-        bucket_keys.setdefault(bucket, set()).add(key)
+        collected = getattr(p, "collected_at", None)
+        if volume_since is None or collected is None or _as_naive_utc(collected) >= volume_since:
+            bucket = int((end - created).total_seconds() // 86400)
+            bucket_keys.setdefault(bucket, set()).add(key)
         if key not in unique:
             unique[key] = p
 
@@ -402,7 +416,11 @@ def calculate_social_baseline(
     }
 
 
-def apply_social_baseline(social_res: Dict[str, Any], baseline: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def apply_social_baseline(
+    social_res: Dict[str, Any],
+    baseline: Optional[Dict[str, Any]],
+    coverage_complete: bool = True
+) -> Dict[str, Any]:
     """
     Re-centers the raw opinion polarity on the ticker's own baseline and adds attention metrics.
 
@@ -410,7 +428,9 @@ def apply_social_baseline(social_res: Dict[str, Any], baseline: Optional[Dict[st
       mention_volume_ratio = unique relevant posts in the lookback window / baseline posts per window
 
     The ratio is None until the baseline covers settings.SOCIAL_BASELINE_MIN_DAYS, since a short history
-    cannot tell a spike from normal traffic. Adds social_polarity_raw and social_baseline for transparency.
+    cannot tell a spike from normal traffic, and when coverage_complete is False (X paging stopped at its page
+    cap or a rate limit), since the window then holds only the newest slice of the mentions.
+    Adds social_polarity_raw and social_baseline for transparency.
     """
     res = dict(social_res)
     raw = social_res.get("social_score")
@@ -427,7 +447,7 @@ def apply_social_baseline(social_res: Dict[str, Any], baseline: Optional[Dict[st
 
     min_days = getattr(settings, "SOCIAL_BASELINE_MIN_DAYS", 3.0)
     rate = baseline.get("daily_post_rate") or 0.0
-    if baseline.get("days_covered", 0.0) >= min_days and rate > 0:
+    if coverage_complete and baseline.get("days_covered", 0.0) >= min_days and rate > 0:
         lookback_days = getattr(settings, "SOCIAL_LOOKBACK_HOURS", 24) / 24.0
         current = social_res.get("unique_post_count", 0) or 0
         res["mention_volume_ratio"] = round(current / (rate * lookback_days), 2)

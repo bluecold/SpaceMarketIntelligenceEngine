@@ -17,7 +17,6 @@ const EXCLUDED_REASON_LABELS: Record<string, string> = {
 };
 
 type TabId = 'prediction' | 'social' | 'news' | 'divergences' | 'technical';
-type MarketFilter = 'ALL' | 'DIRECT' | 'SECTOR';
 type FeedView = 'influential' | 'latest' | 'excluded';
 
 const sentimentTone = (label: string): Tone =>

@@ -122,7 +122,8 @@ El sistema está construido como un **Monolito Modular** en Python 3.11+ con int
 - **Línea Base por Ticker (14 días):** El retail en X es estructuralmente alcista (polaridad media 55–61 en los 5 tickers), así que el SSI mide el desvío respecto de la norma propia del ticker, calculada sobre $[t-14d, t-24h)$ sin decaimiento temporal y contraída hacia neutral con un pseudo-peso $k = 10$ (`SOCIAL_BASELINE_PRIOR_WEIGHT`):
   $$\text{baseline} = 50 + 50 \cdot \frac{\sum w_j s_j}{\sum w_j + k}, \qquad \text{SSI} = \text{clamp}(50 + \text{raw} - \text{baseline})$$
   Se persisten `social_polarity_raw` y `social_baseline` por snapshot.
-- **Volumen de Menciones (`mention_volume_ratio`):** Posts relevantes únicos en la ventana de 24h dividido por la mediana diaria del ticker en la línea base (deduplicando dentro de cada día y saltando días sin recolección). Requiere ≥ 3 días de historial. Desde 2× (`SOCIAL_ATTENTION_SPIKE_RATIO`) emite `ATTENTION_SPIKE` (`HIGH` si el SSI se inclina a un lado, `WARNING` si es mixto). No pondera en el SMI hasta validarse.
+- **Volumen de Menciones (`mention_volume_ratio`):** Posts relevantes únicos en la ventana de 24h dividido por la mediana diaria del ticker en la línea base (deduplicando dentro de cada día y saltando días sin recolección). Requiere ≥ 3 días de historial. Desde 2× (`SOCIAL_ATTENTION_SPIKE_RATIO`) emite `ATTENTION_SPIKE` (`HIGH` si el SSI se inclina a un lado, `WARNING` si es mixto). No pondera en el SMI hasta validarse. Desde v2.2.2 solo cuentan para la tasa diaria los posts recolectados después de `SOCIAL_VOLUME_SINCE`, y el ratio queda en `None` si la búsqueda de la corrida no cubrió la ventana (`social_coverage_complete = False`).
+- **Recolección paginada de X (v2.2.2):** Hasta v2.2.1 cada corrida hacía una sola búsqueda, y twikit devuelve como máximo 20 tweets por pedido (`count=100` se recortaba a 20). Medido del 8 al 23/10: cada corrida cubría ~1 minuto de tráfico en SPCX, ~10 en ASTS y ~18 en RKLB (1,7h en SATL/SPCE), así que la "ventana de 24h" eran unas pocas muestras de minutos (SSI de ASTS entre 15 y 93) y el volumen de menciones contaba corridas, no menciones (todas las cuentas eran múltiplos de 19). Ahora `TwikitProvider.search` pagina con `.next()` hasta el último tweet ya guardado, el inicio de la ventana (`since_time:`) o `X_SEARCH_MAX_PAGES = 10` (200 tweets; X permite ~50 búsquedas cada 15 min), y devuelve solo tweets nuevos. La consulta agrega `lang:en` y SPCX usa `$SPCX OR ("SpaceX" (stock OR shares OR IPO))` (`TickerConfig.x_search_terms`), porque un "SpaceX" a secas llenaba una página por minuto. Si la búsqueda corta por tope de páginas o rate limit, el snapshot guarda `social_coverage_complete = False`. Con corridas cada hora (`ENABLE_SCHEDULER=True`, `JOB_INTERVAL_MINUTES=60`) ningún ticker debería llegar al tope (prueba en vivo 23/10: SPCX ~85 tweets/h, ASTS ~25/h).
 
 #### 2. Módulo de Análisis Fundamental y Alertas por Umbral:
 Calcula los meses exactos de supervivencia operativa:
@@ -144,8 +145,10 @@ Motivo del cambio (v2.1 → v2.2): con social 30% / momentum 25%, el momentum ex
 Ante fuentes no disponibles ($None$ o $N=0$):
 $$w_i^{\text{active}} = \frac{w_i}{\sum_{j \in \text{active}} w_j}$$
 
-#### 3b. News Score (v2.2.1):
+#### 3b. News Score (v2.2.1, filtro de resúmenes de precio en v2.2.2):
 Mismo criterio que el SSI: polaridad solo entre titulares BULLISH/BEARISH (los neutrales, ~60% del feed, siguen contando en `total_news` pero no diluyen hacia 50); copias sindicadas del mismo titular ("... - Yahoo Finance", "... - The Motley Fool") se cuentan una vez (`normalize_headline_for_dedup`, se queda la copia de mayor confianza); vida media de 12h (`NEWS_HALF_LIFE_HOURS`, antes 24h, que mantenía dominante el rally del 6/10 hasta el 8/10); y contracción hacia 50 hasta que la evidencia (suma de recencia × importancia de los titulares con opinión) llega a `NEWS_MIN_OPINION_EVIDENCE = 2` (sin ella, un único titular de hace 3 días fijaba SATL en 2/100). Sobre 5–8 oct: RKLB 46 → 31 y ASTS 57 → 45 el 8/10; los tickers con pocas noticias (SATL, SPCE) quedan cerca de 50.
+
+**Resúmenes de precio sin dirección (v2.2.2, `NEWS_EXCLUDE_PRICE_RECAPS`):** los titulares cuyo tema es el propio movimiento de la acción ("Stock Falls 4.9% - Here's What Happened", "Moved Down by 14.90% on Oct 9", "hits 52-week low", "Why Is X Stock Falling Thursday?") repiten un precio que ya ocurrió y no aportan información nueva. Eran el 18% de los titulares del 1 al 23/10 y el 55% de los bajistas de ASTS. `is_price_recap_headline` los detecta y salen de la polaridad (siguen en `total_news`, contados en `price_recap_news_count`), salvo que el titular también tenga un catalizador ("Rocket Lab stock falls after delaying Neutron to 2027" conserva su dirección). No se excluyen métricas del negocio ("Revenue Jumps 40%") ni proyecciones ("Could Soar by 73%"). Replay sobre los snapshots v2.2.1: News Score medio de ASTS 28 → 42, RKLB 26 → 34 (sigue bajista por el retraso del Neutron), SPCX 45 → 50; SATL pierde el pilar en 7 de 15 snapshots porque sus únicos titulares con opinión eran resúmenes de precio.
 
 #### 4. Momentum como Contexto Técnico (v2.2):
 $$\text{Momentum} = 50 \pm 10_{\,\text{precio vs EMA200}} \pm \min\left(10,\ 8(\text{vol\_ratio}-1)\right)_{\,\text{signo del día}} - 1.5\,\max(0, \text{RSI}-75)$$
@@ -160,6 +163,7 @@ $$\text{Momentum} = 50 \pm 10_{\,\text{precio vs EMA200}} \pm \min\left(10,\ 8(\
 2. **Evaluación Dinámica de Procedencia:** La procedencia del snapshot y de las alertas se deduce del origen real de las filas contenidas en la ventana de análisis.
 3. **Purga Automática de Datos Sintéticos:** Si `ALLOW_MOCK_FALLBACK=False`, el inicio del sistema purga automáticamente registros mock heredados.
 4. **Distintivos Visuales:** El frontend y las notificaciones de escritorio muestran etiquetas claras `[MOCK]` o `[DEGRADED]` cuando la procedencia no es 100% en vivo.
+5. **Polymarket "no aplica" (v2.2.2):** una empresa sin contratos directos en Polymarket tiene `prediction_source = NOT_APPLICABLE`, que no marca el snapshot como `DEGRADED` ni descuenta `data_quality` (`calculate_smi(..., prediction_applicable=False)`). Antes el 80% de los snapshots (ASTS, RKLB, SATL, SPCE) salía `DEGRADED` permanentemente y la etiqueta dejaba de distinguir una falla real. Con contratos directos que no pasan el filtro de calidad sigue siendo `EXCLUDED`.
 
 ---
 
@@ -256,14 +260,16 @@ python -m pytest tests/ -v
 - **UI:** feed social ordenado por influencia con vistas y motivos de exclusión (sección 3.F.7).
 - `RULES_VERSION = 2.2.0` en cada snapshot, para separar datos antiguos de los nuevos al analizar.
 - **v2.2.1:** noticias con polaridad solo de opiniones, deduplicación de titulares sindicados, vida media 12h y contracción por evidencia (sección 3.B.3b); PMS sin proxies sectoriales ni tramos numéricos, piso de tasa base 0.005 y event keys con límites de palabra (sección 3.E.5–7). Con datos del 8/10 el PMS desaparece en ASTS/RKLB/SATL/SPCE y el SMI de RKLB pasa de 46.6 (HOLD) a ~41 (CAUTION).
+- **v2.2.2 (23/10):** recolección paginada de X con cobertura por snapshot (sección 3.B.1), resúmenes de precio fuera de la polaridad de noticias (sección 3.B.3b) y Polymarket "no aplica" (sección 3.C.5). Revisión con 15 días de datos v2.2.1: el SSI venía de unas pocas muestras de ~20 tweets, así que el IC medido hasta ahora no evalúa el sentimiento social.
 - Estudios reproducibles en `audit/sentiment_2026_10/` (README con resultados).
 
 Descartado tras medirlo: **sentimiento por empresa** (recortar el texto a las frases sobre cada ticker). Cambiaba el 1.9% de las etiquetas sin mejorar la precisión en dos revisiones a ciegas (30 vs 29 aciertos de 67); los casos de comparación reales eran 5 en 14 días.
 
 ### Tareas pendientes (por prioridad)
 
-**Validar con datos del sistema nuevo (a partir de 3–4 semanas desde el despliegue de v2.2):**
-1. **Verificar el signo predictivo del sentimiento social.** En los 19 días disponibles (etiquetas mixtas FinBERT/FinTwitBERT) el SSI tuvo IC **negativo** con el retorno a 72h (-0.13 dentro de ticker): la euforia de X precedió caídas. Ahora el social explica el 57% del SMI. Correr `python -m audit.sentiment_2026_10.pillar_ic_and_composition --since <fecha v2.2>`. Si el IC sigue negativo y estable, evaluar leerlo como indicador contrario o reducir su peso.
+**Validar con datos del sistema nuevo (a partir de 3–4 semanas desde el despliegue de v2.2.2, 23/10/2026):**
+0. **Correr el pipeline a cadencia fija** (`ENABLE_SCHEDULER=True`, cada 60 min). Del 8 al 23/10 hubo entre 0 y 5 corridas por día (ninguna el 15/10, el día del retraso del Neutron), y tanto la cobertura de X como el IC dependen de esa cadencia. Revisar que `social_coverage_complete` sea `True` en la gran mayoría de los snapshots; si no, subir `X_SEARCH_MAX_PAGES` o la frecuencia.
+1. **Verificar el signo predictivo del sentimiento social.** En los 19 días disponibles (etiquetas mixtas FinBERT/FinTwitBERT) el SSI tuvo IC **negativo** con el retorno a 72h (-0.13 dentro de ticker). Con 15 días de v2.2.1 el IC fue ~0 (-0.02 a 72h, +0.13 a 24h dentro de ticker) y los signos de todos los pilares cambiaron entre cortes, pero ese SSI salía de muestras de ~20 tweets: **no sirve para decidir**. Correr `python -m audit.sentiment_2026_10.pillar_ic_and_composition --since 2026-10-24`. Si el IC sale negativo y estable, evaluar leerlo como indicador contrario o reducir su peso.
 2. **Rebalancear pesos con evidencia** (paso 5 del plan de sentimiento): asignar peso según IC positivo y estable de cada pilar. Fundamentales mostró el IC más alto (+0.17 dentro de ticker); Polymarket explica 0% del movimiento del SMI porque su score casi no varía.
 3. **Usar el cambio de sentimiento además del nivel** (paso 4): el SSI ya mide el desvío respecto de la norma de 14 días; evaluar si su variación a 24–72h aporta información adicional.
 4. **Recalibrar los umbrales de divergencia social (±0.18).** Se fijaron cuando el SSI variaba ±1–3 pts; ahora varía ±6–15, así que las divergencias sociales disparan con más frecuencia.
@@ -279,5 +285,6 @@ Descartado tras medirlo: **sentimiento por empresa** (recortar el texto a las fr
 **Limitaciones conocidas:**
 - El backtest no aplica la compuerta `CATALYST RISK` porque no hay historial de catalizadores por snapshot.
 - Los posts guardados antes de capturar `lang` (≤ 2026-10-02) solo se filtran por alfabeto: el español y el portugués pasan hasta salir de la ventana de 14 días.
-- Los snapshots con `rules_version < 2.2.0` usan la fórmula anterior del SSI y del momentum: no mezclarlos al medir. Los de `2.2.0` usan el News Score y el PMS anteriores a 2.2.1.
+- Los snapshots con `rules_version < 2.2.0` usan la fórmula anterior del SSI y del momentum: no mezclarlos al medir. Los de `2.2.0` usan el News Score y el PMS anteriores a 2.2.1. Los de `< 2.2.2` tienen un SSI armado con una sola página de X por corrida.
+- Una búsqueda de X cortada por el tope de páginas deja un hueco que la corrida siguiente no rellena (se detiene en el primer tweet ya guardado). Queda registrado en `social_coverage_complete`.
 - `outcome_group`/`outcome_label` solo viven en memoria durante la corrida (no hay columna): la exclusión de tramos depende de que Polymarket siga enviando `negRisk` y `groupItemTitle`.

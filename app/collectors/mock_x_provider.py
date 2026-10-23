@@ -1,7 +1,7 @@
 import random
 from datetime import datetime, timedelta, timezone
 from typing import List
-from app.collectors.base import XProvider, SocialPostData
+from app.collectors.base import XProvider, SocialPostData, SocialSearchMeta
 
 MOCK_TEMPLATES = {
     "ASTS": [
@@ -37,7 +37,8 @@ MOCK_TEMPLATES = {
 
 
 class MockXProvider(XProvider):
-    async def search(self, query: str, ticker: str, max_results: int = 100) -> List[SocialPostData]:
+    async def search(self, query: str, ticker: str, max_results: int = 100, since=None, known_ids=None) -> List[SocialPostData]:
+        self.last_search_meta = SocialSearchMeta(pages=1, complete=True, stop_reason="exhausted")
         posts = []
         templates = MOCK_TEMPLATES.get(ticker, MOCK_TEMPLATES["ASTS"])
         

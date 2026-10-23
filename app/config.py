@@ -15,6 +15,8 @@ class TickerConfig(BaseModel):
     market_symbol: Optional[str] = None
     exchange: str = "NASDAQ"
     validation_status: str = "VALIDATED"
+    # X search terms when `$SYMBOL OR "name"` is too broad to page through (a bare "SpaceX" fills a page in ~1 minute)
+    x_search_terms: Optional[str] = None
 
 
 # Core initial space stocks specified for SMIE v2.0
@@ -73,6 +75,7 @@ INITIAL_TICKERS = [
         narrative_entity="SpaceX",
         aliases=["$SPCX", "SpaceX", "Space X", "Starship", "Starlink"],
         sector="Launch Vehicles & Satellite Infrastructure",
+        x_search_terms='$SPCX OR ("SpaceX" (stock OR shares OR IPO))',
         is_private_or_test=False,
         is_tradable=True,
         market_symbol="SPCX",
@@ -120,7 +123,7 @@ DEFAULT_EVENT_COMPANY_MAPPINGS: Dict[str, Dict[str, float]] = {
 class Settings(BaseSettings):
     APP_NAME: str = "Space Market Intelligence Engine"
     APP_VERSION: str = "2.2.0"
-    RULES_VERSION: str = "2.2.1"  # Stored per snapshot: 2.2.0 = opinion-only SSI + baseline, FinTwitBERT, mirrored bands, v2.2 weights; 2.2.1 = opinion-only deduped news, PMS without sector-only proxies or range buckets
+    RULES_VERSION: str = "2.2.2"  # Stored per snapshot: 2.2.0 = opinion-only SSI + baseline, FinTwitBERT, mirrored bands, v2.2 weights; 2.2.1 = opinion-only deduped news, PMS without sector-only proxies or range buckets; 2.2.2 = paginated X collection (SSI windows no longer ~20 tweets), price-recap headlines excluded from news polarity
     ENVIRONMENT: str = "development"  # "development", "testing", "production"
     DEBUG: bool = True
     DATABASE_URL: str = "sqlite:///./data/space_sentiment.db"
@@ -150,19 +153,27 @@ class Settings(BaseSettings):
     
     # Social Collector Params
     SOCIAL_LOOKBACK_HOURS: int = 24
-    SOCIAL_MAX_POSTS_PER_TICKER: int = 100
+    SOCIAL_MAX_POSTS_PER_TICKER: int = 100  # Legacy single-request size; twikit caps one page at 20 tweets
+    # Until v2.2.2 one request per run stored the latest ~20 tweets (1-20 minutes of traffic for ASTS/RKLB/SPCX).
+    # The collector now pages back to the last stored tweet or the lookback start, up to X_SEARCH_MAX_PAGES.
+    X_SEARCH_MAX_PAGES: int = 10            # 20 tweets/page; X allows ~50 searches per 15 min per account
+    X_SEARCH_PAGE_DELAY_SECONDS: float = 1.0
     SOCIAL_MIN_RELEVANCE: float = 0.40
     # Sentiment models are English-only; other languages are excluded from the SSI (~6.5% of relevant posts)
     SOCIAL_ALLOWED_LANGUAGES: List[str] = ["en"]
     SOCIAL_EXCLUDE_SPAM: bool = True  # Drop stock-promo bot posts (group invites, paid signals, hashtag campaigns)
     NEWS_MIN_RELEVANCE: float = 0.40
     NEWS_HALF_LIFE_HOURS: float = 12.0  # News recency decay; 24h kept a rally's headlines dominant for 2-3 sessions after it ended
+    NEWS_EXCLUDE_PRICE_RECAPS: bool = True  # "Stock Falls 6%"-style headlines without a catalyst carry no direction (18% of Oct-2026 headlines)
     NEWS_MIN_OPINION_EVIDENCE: float = 2.0  # Recency x importance weight (~2 fresh opinionated headlines) for a full-strength news score
     # SSI baseline: X polarity is measured against the ticker's own trailing norm (excluding the lookback window)
     SOCIAL_BASELINE_DAYS: int = 14
     SOCIAL_BASELINE_PRIOR_WEIGHT: float = 10.0  # Pseudo-weight (~10-15 posts) shrinking thin baselines towards neutral
     SOCIAL_BASELINE_MIN_DAYS: float = 3.0       # History needed before mention_volume_ratio is reported
     SOCIAL_ATTENTION_SPIKE_RATIO: float = 2.0   # Mentions >= 2x the ticker's normal daily rate -> ATTENTION_SPIKE alert
+    # Posts collected before this date came from single-page searches, so their daily counts reflect how many
+    # runs happened, not how many mentions there were. They still feed the polarity baseline, not the mention rate.
+    SOCIAL_VOLUME_SINCE: str = "2026-10-23T19:15:00"  # UTC, v2.2.2 deployment
     ENGAGEMENT_SCALE_DIVISOR: float = 10.0  # Scales log1p engagement: ln(1 + ~22,000) ≈ 10.0 maps high engagement to ~2.0x weight
     
     # Prediction Market (Polymarket) Settings

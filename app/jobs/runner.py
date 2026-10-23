@@ -83,6 +83,13 @@ async def ingest_prediction_markets(db: SessionLocal, poly_provider=None) -> Lis
     return poly_markets or []
 
 
+def build_x_query(ticker_config) -> str:
+    """X search query: the ticker's terms plus a language operator when only one language is scored."""
+    terms = ticker_config.x_search_terms or f'${ticker_config.symbol} OR "{ticker_config.name}"'
+    langs = getattr(settings, "SOCIAL_ALLOWED_LANGUAGES", None) or []
+    return f"({terms}) lang:{langs[0]}" if len(langs) == 1 else f"({terms})"
+
+
 async def ingest_social_posts_for_ticker(
     db: SessionLocal,
     ticker_config,
@@ -96,9 +103,16 @@ async def ingest_social_posts_for_ticker(
         sentiment_classifier = get_social_sentiment_classifier()
 
     ticker = ticker_config.symbol
-    query = f"${ticker} OR \"{ticker_config.name}\""
+    query = build_x_query(ticker_config)
+    # Page back only to the newest tweet already stored, or to the start of the lookback window
+    known_ids = {
+        p.tweet_id for p in get_recent_social_posts(db, ticker, hours=settings.SOCIAL_LOOKBACK_HOURS)
+        if getattr(p, "tweet_id", None)
+    }
+    x_provider.last_search_meta = None
     posts_data = await x_provider.search(
-        query=query, ticker=ticker, max_results=settings.SOCIAL_MAX_POSTS_PER_TICKER
+        query=query, ticker=ticker, max_results=settings.SOCIAL_MAX_POSTS_PER_TICKER,
+        since=utc_now() - timedelta(hours=settings.SOCIAL_LOOKBACK_HOURS), known_ids=known_ids
     )
 
     texts = [p.text for p in posts_data]
@@ -344,6 +358,7 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
 
             # --- STEP 1: SOCIAL COLLECTION (X / TWITTER) ---
             social_success = False
+            social_coverage_complete = False
             posts_data = []
             catalysts_found = []
             try:
@@ -353,6 +368,8 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 catalysts_found.extend(soc_cats)
                 records_processed += len(posts_data)
                 social_success = True
+                search_meta = getattr(x_provider, "last_search_meta", None)
+                social_coverage_complete = bool(search_meta.complete) if search_meta is not None else True
             except Exception as e:
                 logger.error(f"Social collection error for {ticker} (isolated): {e}")
 
@@ -434,7 +451,7 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 window_start=now_eval - timedelta(days=settings.SOCIAL_BASELINE_DAYS),
                 window_end=now_eval - timedelta(hours=settings.SOCIAL_LOOKBACK_HOURS)
             )
-            social_res = apply_social_baseline(social_res, social_baseline)
+            social_res = apply_social_baseline(social_res, social_baseline, coverage_complete=social_coverage_complete)
             social_score = social_res["social_score"]
 
             recent_news = get_recent_news_items(db, ticker, days=3)
@@ -537,7 +554,9 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 previous_smi_5d=prev_5d_dict,
                 post_count=social_res.get("effective_sample_size", len(recent_posts)),
                 news_count=news_res.get("total_news", len(recent_news)),  # unique relevant headlines
-                prediction_count=prediction_count
+                prediction_count=prediction_count,
+                # No direct contract listed for this company: the pillar does not apply, it is not missing data
+                prediction_applicable=bool(direct_markets)
             )
 
             # Signal & Explanation generation
@@ -585,6 +604,8 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 pred_src = "EXCLUDED"
             elif not poly_success:
                 pred_src = "ERROR"
+            elif not direct_markets:
+                pred_src = "NOT_APPLICABLE"
             elif prediction_count == 0 or pms_score is None:
                 pred_src = "EXCLUDED"
             else:
@@ -663,6 +684,7 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 "social_polarity_raw": social_res.get("social_polarity_raw"),
                 "social_baseline": social_res.get("social_baseline"),
                 "mention_volume_ratio": social_res.get("mention_volume_ratio"),
+                "social_coverage_complete": social_coverage_complete,
                 "news_count": len(recent_news),
                 "prediction_count": prediction_count,
                 "data_source": overall_data_src,

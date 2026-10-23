@@ -110,7 +110,8 @@ def calculate_smi(
     post_count: Optional[int] = None,
     news_count: Optional[int] = None,
     prediction_count: Optional[int] = None,
-    custom_weights: Optional[Dict[str, float]] = None
+    custom_weights: Optional[Dict[str, float]] = None,
+    prediction_applicable: bool = True
 ) -> Dict[str, Any]:
     """
     Computes Space Market Intelligence Index (SMI, 0 - 100) using SMIE v2.0 Architecture.
@@ -233,6 +234,9 @@ def calculate_smi(
     # 4. Data Quality Score (0 to 100%)
     # Exclude non-directional zero-weight pillars (e.g. risk when decoupled) to reflect genuine source completeness
     eval_pillars = [k for k, v in BASE_WEIGHTS.items() if v > 0]
+    # A company without listed Polymarket contracts is not missing data (pillar does not apply)
+    if not prediction_applicable and prediction_score is None:
+        eval_pillars = [k for k in eval_pillars if k != "prediction"]
     total_pillars = len(eval_pillars) if eval_pillars else len(BASE_WEIGHTS)
     active_eval_pillars = [k for k in active_scores.keys() if k in eval_pillars]
     data_quality = round(100.0 * (len(active_eval_pillars) / float(total_pillars)), 1) if total_pillars > 0 else 0.0

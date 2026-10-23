@@ -663,6 +663,7 @@ def save_ssi_snapshot(db: Session, data: Dict[str, Any], commit: bool = True) ->
         social_polarity_raw=data.get("social_polarity_raw"),
         social_baseline=data.get("social_baseline"),
         mention_volume_ratio=data.get("mention_volume_ratio"),
+        social_coverage_complete=data.get("social_coverage_complete"),
         news_count=data.get("news_count"),
         prediction_count=data.get("prediction_count"),
         data_source=data.get("data_source", "LIVE"),

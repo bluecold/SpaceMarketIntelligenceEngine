@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 from pydantic import BaseModel
 
 
@@ -17,6 +17,14 @@ class SocialPostData(BaseModel):
     views: int = 0
     source: str = "LIVE"  # "LIVE", "MOCK", "DEGRADED"
     lang: Optional[str] = None  # Language detected by X (e.g. "en", "ja", "und"); None when unknown
+
+
+class SocialSearchMeta(BaseModel):
+    """How far one X search reached. complete=False means the page cap or a rate limit cut it short, so the
+    posts are only the newest slice of the window and mention counts understate the real volume."""
+    pages: int = 0
+    complete: bool = True
+    stop_reason: str = ""  # "exhausted", "reached_known", "reached_since", "page_cap", "rate_limited"
 
 
 class MarketData(BaseModel):
@@ -80,9 +88,20 @@ class PredictionMarketData(BaseModel):
 
 
 class XProvider(ABC):
+    # Set by search(): how far the last search reached
+    last_search_meta: Optional[SocialSearchMeta] = None
+
     @abstractmethod
-    async def search(self, query: str, ticker: str, max_results: int = 100) -> List[SocialPostData]:
-        """Search recent X/Twitter posts for a ticker query."""
+    async def search(
+        self,
+        query: str,
+        ticker: str,
+        max_results: int = 100,
+        since: Optional[datetime] = None,
+        known_ids: Optional[Set[str]] = None
+    ) -> List[SocialPostData]:
+        """Search recent X/Twitter posts for a ticker query, newest first, stopping at `since` or at the
+        first already-stored tweet in `known_ids`."""
         pass
 
 
