@@ -15,6 +15,8 @@ _EASTERN_TZ = ZoneInfo("America/New_York")
 # In-memory fundamentals cache: ticker -> (timestamp, data_dict) with 24h TTL
 _FUNDAMENTALS_CACHE: dict = {}
 _CACHE_TTL_SECONDS = 86400  # 24 hours
+# Next earnings date cache: ticker -> (timestamp, "YYYY-MM-DD"). Failures are not cached.
+_EARNINGS_CACHE: dict = {}
 
 
 def _calculate_easter(year: int) -> date:
@@ -269,6 +271,29 @@ def _fetch_market_data_sync(ticker: str) -> MarketData:
         )
 
 
+def _fetch_next_earnings_sync(ticker_up: str) -> Optional[str]:
+    """Returns the next earnings date (Eastern, YYYY-MM-DD) or None when unknown or unavailable."""
+    try:
+        cfg = next((t for t in INITIAL_TICKERS if t.symbol == ticker_up), None)
+        provider_symbol = (cfg.market_symbol or ticker_up) if cfg else ticker_up
+        # Ticker.calendar comes back empty for these tickers; get_earnings_dates lists upcoming dates first
+        df = yf.Ticker(provider_symbol).get_earnings_dates(limit=8)
+        if df is None or df.empty:
+            return None
+        today = datetime.now(_EASTERN_TZ).date()
+        dates = []
+        for ts in df.index:
+            if pd.isna(ts):
+                continue
+            ts = pd.Timestamp(ts)
+            dates.append((ts.tz_convert(_EASTERN_TZ) if ts.tzinfo is not None else ts).date())
+        upcoming = [d for d in dates if d >= today]
+        return min(upcoming).isoformat() if upcoming else None
+    except Exception as e:
+        logger.warning(f"Could not fetch earnings dates for {ticker_up}: {e}")
+        return None
+
+
 def _fetch_fundamentals_sync(ticker_up: str) -> dict:
     """Synchronous worker function executed in a separate thread."""
     result = {
@@ -499,6 +524,20 @@ class YFinanceMarketProvider(MarketProviderInterface):
     async def fetch_market_data(self, ticker: str) -> MarketData:
         """Alias for get_market_data to maintain backwards compatibility."""
         return await self.get_market_data(ticker)
+
+    async def get_next_earnings_date(self, ticker: str) -> Optional[str]:
+        """Next earnings date as YYYY-MM-DD, or None if unknown. Known dates are cached for 24h."""
+        ticker_up = ticker.upper()
+        now_ts = datetime.now(timezone.utc).timestamp()
+        if ticker_up in _EARNINGS_CACHE:
+            cached_time, cached_date = _EARNINGS_CACHE[ticker_up]
+            if (now_ts - cached_time) < _CACHE_TTL_SECONDS and cached_date >= datetime.now(_EASTERN_TZ).date().isoformat():
+                return cached_date
+
+        result = await asyncio.to_thread(_fetch_next_earnings_sync, ticker_up)
+        if result:
+            _EARNINGS_CACHE[ticker_up] = (now_ts, result)
+        return result
 
     async def get_fundamentals(self, ticker: str) -> dict:
         """

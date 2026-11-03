@@ -123,7 +123,7 @@ DEFAULT_EVENT_COMPANY_MAPPINGS: Dict[str, Dict[str, float]] = {
 class Settings(BaseSettings):
     APP_NAME: str = "Space Market Intelligence Engine"
     APP_VERSION: str = "2.2.0"
-    RULES_VERSION: str = "2.2.2"  # Stored per snapshot: 2.2.0 = opinion-only SSI + baseline, FinTwitBERT, mirrored bands, v2.2 weights; 2.2.1 = opinion-only deduped news, PMS without sector-only proxies or range buckets; 2.2.2 = paginated X collection (SSI windows no longer ~20 tweets), price-recap headlines excluded from news polarity
+    RULES_VERSION: str = "2.2.3"  # Stored per snapshot: 2.2.0 = opinion-only SSI + baseline, FinTwitBERT, mirrored bands, v2.2 weights; 2.2.1 = opinion-only deduped news, PMS without sector-only proxies or range buckets; 2.2.2 = paginated X collection (SSI windows no longer ~20 tweets), price-recap headlines excluded from news polarity; 2.2.3 = more CAPITAL_RAISE wording (stock offering, debt-for-equity), informational EARNINGS modifier
     ENVIRONMENT: str = "development"  # "development", "testing", "production"
     DEBUG: bool = True
     DATABASE_URL: str = "sqlite:///./data/space_sentiment.db"
@@ -167,6 +167,7 @@ class Settings(BaseSettings):
     NEWS_EXCLUDE_PRICE_RECAPS: bool = True  # "Stock Falls 6%"-style headlines without a catalyst carry no direction (18% of Oct-2026 headlines)
     NEWS_MIN_OPINION_EVIDENCE: float = 2.0  # Recency x importance weight (~2 fresh opinionated headlines) for a full-strength news score
     # SSI baseline: X polarity is measured against the ticker's own trailing norm (excluding the lookback window)
+    EARNINGS_WARNING_DAYS: int = 7  # Calendar days ahead that add the informational EARNINGS modifier (never moves the signal)
     SOCIAL_BASELINE_DAYS: int = 14
     SOCIAL_BASELINE_PRIOR_WEIGHT: float = 10.0  # Pseudo-weight (~10-15 posts) shrinking thin baselines towards neutral
     SOCIAL_BASELINE_MIN_DAYS: float = 3.0       # History needed before mention_volume_ratio is reported

@@ -28,7 +28,8 @@ def generate_signal_and_explanation(
     fundamental_score: Optional[float] = None,
     risk_score: Optional[float] = None,
     momentum_score: Optional[float] = None,
-    is_mom_comparable_1d: bool = True
+    is_mom_comparable_1d: bool = True,
+    days_to_earnings: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     Generates quantitative trading signal, multi-source divergence detection,
@@ -158,6 +159,11 @@ def generate_signal_and_explanation(
                 base_signal = "WATCH"
             if "NO MKT DATA" not in modifiers:
                 modifiers.append("NO MKT DATA")
+
+    # Informational only: upcoming earnings never change base_signal
+    earnings_soon = days_to_earnings is not None and 0 <= days_to_earnings <= settings.EARNINGS_WARNING_DAYS
+    if earnings_soon and has_any_data:
+        modifiers.append("EARNINGS TODAY" if days_to_earnings == 0 else f"EARNINGS IN {days_to_earnings}D")
 
     signal_modifier = " | ".join(modifiers) if modifiers else None
     full_signal = f"{base_signal} ({signal_modifier})" if signal_modifier else base_signal
@@ -435,6 +441,10 @@ def generate_signal_and_explanation(
             reasons.append(f"- Low cash runway: {runway_months:.1f} months of liquidity available (${cash_m:.0f}M cash)")
         elif runway_months >= 24.0 or runway_months == 999.0:
             reasons.append(f"+ Strong balance sheet runway: >24 months of cash reserves (low dilution risk)")
+
+    if earnings_soon:
+        when = "today" if days_to_earnings == 0 else f"in {days_to_earnings} day(s)"
+        reasons.append(f"! Earnings report {when}: expect a volatility event (does not change the signal)")
 
     # Social Narrative reasons: SSI is centered on the ticker's own norm, so distance from 50 is the signal
     social_baseline = social_stats.get("social_baseline") if social_stats else None

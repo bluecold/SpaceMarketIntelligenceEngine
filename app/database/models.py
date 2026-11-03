@@ -249,6 +249,7 @@ class SSISnapshotModel(Base):
     social_baseline = Column(Float, nullable=True)      # Ticker's trailing X polarity norm (0-100) subtracted from the SSI
     mention_volume_ratio = Column(Float, nullable=True) # Unique relevant posts vs the ticker's normal daily rate
     social_coverage_complete = Column(Boolean, nullable=True)  # False: X paging hit its cap/rate limit, window is partial
+    next_earnings_date = Column(String(10), nullable=True)  # YYYY-MM-DD known at snapshot time, to flag earnings days when measuring
     news_count = Column(Integer, nullable=True)       # News articles count
     prediction_count = Column(Integer, nullable=True) # Prediction markets count
     

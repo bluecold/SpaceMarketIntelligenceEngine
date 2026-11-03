@@ -65,7 +65,8 @@ CATALYST_CONFIG = {
             "prices offering", "prices public offering", "at-the-market",
             "at the market", "atm offering", "atm facility", "atm program",
             "atm sales", "atm agreement", "capital raise",
-            "debt offering", "private placement", "pipe financing", "pipe offering"
+            "debt offering", "private placement", "pipe financing", "pipe offering",
+            "stock offering", "debt-for-equity", "debt for equity"
             # 'cash burn' is deliberately absent: it is an ongoing risk (covered by fundamentals runway), not a raise event
         ],
         "direction": "BEARISH",

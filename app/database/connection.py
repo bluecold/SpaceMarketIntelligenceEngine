@@ -136,6 +136,7 @@ def init_db(target_engine=None):
             ("ssi_snapshots", "social_baseline", "FLOAT"),
             ("ssi_snapshots", "mention_volume_ratio", "FLOAT"),
             ("ssi_snapshots", "social_coverage_complete", "BOOLEAN"),
+            ("ssi_snapshots", "next_earnings_date", "VARCHAR(10)"),
             ("ssi_snapshots", "raw_post_count", "INTEGER"),
             ("ssi_snapshots", "relevant_post_count", "INTEGER"),
             ("ssi_snapshots", "unique_post_count", "INTEGER"),

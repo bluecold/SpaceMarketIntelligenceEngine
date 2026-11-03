@@ -1,6 +1,7 @@
 import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from typing import Dict, Any, List, Optional
 
 from app.config import settings, INITIAL_TICKERS
@@ -484,6 +485,18 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 logger.warning(f"Could not compute fundamentals for {ticker}: {e}")
                 fund_success = False
 
+            # Next earnings date: context only. A failed lookup must never affect the run.
+            next_earnings_date = None
+            days_to_earnings = None
+            try:
+                if hasattr(market_provider, "get_next_earnings_date"):
+                    next_earnings_date = await market_provider.get_next_earnings_date(ticker)
+                if next_earnings_date:
+                    today_et = datetime.now(ZoneInfo("America/New_York")).date()
+                    days_to_earnings = (date.fromisoformat(next_earnings_date) - today_et).days
+            except Exception as e:
+                logger.warning(f"Could not resolve earnings date for {ticker}: {e}")
+
             # Extract 1d price return from indicators or raw OHLCV DataFrame
             price_change_1d = indicators.get("price_change_1d")
             if price_change_1d is None and raw_market_df is not None and len(raw_market_df) >= 2 and 'Close' in raw_market_df.columns:
@@ -580,7 +593,8 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 fundamental_score=fundamental_score,
                 risk_score=risk_score,
                 momentum_score=momentum_score,
-                is_mom_comparable_1d=smi_dict.get("is_mom_comparable_1d", True)
+                is_mom_comparable_1d=smi_dict.get("is_mom_comparable_1d", True),
+                days_to_earnings=days_to_earnings
             )
 
             # --- STEP 6: DETERMINE DATA PROVENANCE & SAVE STATEFUL DATA ---
@@ -685,6 +699,7 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 "social_baseline": social_res.get("social_baseline"),
                 "mention_volume_ratio": social_res.get("mention_volume_ratio"),
                 "social_coverage_complete": social_coverage_complete,
+                "next_earnings_date": next_earnings_date,
                 "news_count": len(recent_news),
                 "prediction_count": prediction_count,
                 "data_source": overall_data_src,

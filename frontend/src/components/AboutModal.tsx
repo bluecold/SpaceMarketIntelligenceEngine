@@ -216,7 +216,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                 <div style={{ background: 'rgba(255,255,255,0.03)', padding: '12px', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
                   <div style={{ color: '#f59e0b', fontWeight: 700, fontSize: '0.85rem' }}>3. Noticias & Catalizadores</div>
                   <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                    Detección de contratos de defensa, lanzamientos, acuerdos y diluciones de capital.
+                    Detección de contratos de defensa, lanzamientos, acuerdos y diluciones de capital (stock offerings, debt-for-equity).
                   </div>
                 </div>
 
@@ -267,7 +267,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                     <br />
                     • <strong>Escala Cuantitativa Simétrica:</strong> <code>≥ 85</code> STRONG BUY | <code>70–84</code> BUY | <code>55–69</code> WATCH | <code>46–54</code> HOLD | <code>31–45</code> CAUTION | <code>16–30</code> AVOID | <code>≤ 15</code> STRONG AVOID.
                     <br />
-                    • <strong>Señales Canónicas Desacopladas & Bloqueo Operativo:</strong> Separa la señal base (<code>base_signal</code>) de modificadores de riesgo (<code>OVEREXTENDED / DILUTION RISK / HIGH RISK / NO MKT DATA / CATALYST RISK</code>). Ante ausencia de precio cotizado en vivo, restringe compras a <code>WATCH (NO MKT DATA)</code> para impedir órdenes no operables.
+                    • <strong>Señales Canónicas Desacopladas & Bloqueo Operativo:</strong> Separa la señal base (<code>base_signal</code>) de modificadores contextuales y de riesgo (<code>OVEREXTENDED / DILUTION RISK / HIGH RISK / NO MKT DATA / CATALYST RISK / EARNINGS IN nD</code>). El modificador de resultados es estrictamente informativo (ventana de 7 días sin alterar la señal cuantitativa) y ante ausencia de cotización restringe compras a <code>WATCH (NO MKT DATA)</code> para impedir órdenes no operables.
                   </p>
                 </div>
 

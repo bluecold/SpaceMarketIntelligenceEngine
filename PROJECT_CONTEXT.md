@@ -170,7 +170,7 @@ $$\text{Momentum} = 50 \pm 10_{\,\text{precio vs EMA200}} \pm \min\left(10,\ 8(\
 ### D. Señales Canónicas, Calibración Simétrica y Bloqueo Operativo
 
 - **Señal Base Simétrica:** Enum canónico puro con calibración balanceada alrededor de 50.0 (`STRONG BUY ≥ 85`, `BUY ≥ 70`, `WATCH ≥ 55`, `HOLD 45–55`, `CAUTION ≤ 45`, `AVOID ≤ 30`, `STRONG AVOID ≤ 15`; cada banda bajista es el espejo exacto de la alcista respecto de 50).
-- **Modificadores Acumulativos:** `DILUTION RISK`, `CONFLICTING SOURCES`, `LOW DATA QUALITY`, `OVEREXTENDED`, `HIGH RISK`, `NO MKT DATA`, `CATALYST RISK`.
+- **Modificadores Acumulativos:** `DILUTION RISK`, `CONFLICTING SOURCES`, `LOW DATA QUALITY`, `OVEREXTENDED`, `HIGH RISK`, `NO MKT DATA`, `CATALYST RISK`, `EARNINGS IN nD` / `EARNINGS TODAY` (v2.2.3: informativo, nunca cambia `base_signal`; ventana `EARNINGS_WARNING_DAYS` = 7 días).
 - **Compuerta de Catalizador Bajista (`CATALYST RISK`):** Un catalizador `BEARISH` de importancia `CRITICAL` (fallo de lanzamiento, cancelación de contrato, competidor seleccionado) o un `CAPITAL_RAISE` confirmado limita `STRONG BUY`/`BUY` a `WATCH`.
 - **Reconciliación Catalizador–Sentimiento:** Si el clasificador marca NEUTRAL un texto con catalizador `CRITICAL`/`HIGH` (excepto `LAUNCH` genérico), el sentimiento del ítem toma el prior del catalizador (±0.60 / ±0.40); si lo contradice, se promedian ambos.
 - **Bloqueo Operativo por Falta de Cotización:** Si `market_status != 'AVAILABLE'` o `price is None` o `price <= 0`, las compras se restringen obligatoriamente a `WATCH (NO MKT DATA)`, alineando la ejecución en vivo con el motor de backtesting y evitando órdenes ciegas.
@@ -261,6 +261,7 @@ python -m pytest tests/ -v
 - `RULES_VERSION = 2.2.0` en cada snapshot, para separar datos antiguos de los nuevos al analizar.
 - **v2.2.1:** noticias con polaridad solo de opiniones, deduplicación de titulares sindicados, vida media 12h y contracción por evidencia (sección 3.B.3b); PMS sin proxies sectoriales ni tramos numéricos, piso de tasa base 0.005 y event keys con límites de palabra (sección 3.E.5–7). Con datos del 8/10 el PMS desaparece en ASTS/RKLB/SATL/SPCE y el SMI de RKLB pasa de 46.6 (HOLD) a ~41 (CAUTION).
 - **v2.2.2 (23/10):** recolección paginada de X con cobertura por snapshot (sección 3.B.1), resúmenes de precio fuera de la polaridad de noticias (sección 3.B.3b) y Polymarket "no aplica" (sección 3.C.5). Revisión con 15 días de datos v2.2.1: el SSI venía de unas pocas muestras de ~20 tweets, así que el IC medido hasta ahora no evalúa el sentimiento social.
+- **v2.2.3 (noviembre):** `CAPITAL_RAISE` reconoce "stock offering" y "debt-for-equity" (se escapaban la oferta de $1.94B de RKLB y los canjes de deuda de SPCE) y modificador informativo de resultados. Cada snapshot guarda `next_earnings_date` para poder marcar esos días al medir.
 - Estudios reproducibles en `audit/sentiment_2026_10/` (README con resultados).
 
 Descartado tras medirlo: **sentimiento por empresa** (recortar el texto a las frases sobre cada ticker). Cambiaba el 1.9% de las etiquetas sin mejorar la precisión en dos revisiones a ciegas (30 vs 29 aciertos de 67); los casos de comparación reales eran 5 en 14 días.
@@ -276,6 +277,17 @@ Descartado tras medirlo: **sentimiento por empresa** (recortar el texto a las fr
 5. **Vigilar la asimetría de FinTwitBERT:** en RKLB y SATL la norma de polaridad ronda 88, lo que deja poco margen para detectar euforia (el SSI puede subir ~12 pts pero caer mucho más). Si se confirma, usar umbrales distintos para alcista y bajista.
 6. **Validar `ATTENTION_SPIKE`** (volumen de menciones ≥ 2×) antes de darle peso en el SMI.
 
+**Plan tras revisar TradingAgents y WorldMonitor (2/11/2026).** Ninguno justifica cambiar la arquitectura ni el scoring; quedan estas ideas:
+- **Activar el scheduler (es la tarea 0).** Del 23 al 30/10 hubo ~15 snapshots por ticker, unas 2 corridas por día. Solo configuración; es lo más urgente.
+- **Mejorar el estudio de IC antes de la tarea 1.** Agregar a `pillar_ic_and_composition.py` retorno en exceso contra la cesta de los otros tickers (correlación media de 0.50 en un año, sin SPCX), intervalo de confianza y entrada en el primer cierre posterior al snapshot. Motivo: `market_provider` usa barras diarias sin after-hours, así que con corridas fuera de sesión una noticia nocturna entra al score y su reacción cae en el retorno "futuro". Cambiar `app/backtesting/engine.py` solo si el estudio muestra que importa.
+- **Colector de SEC EDGAR para dilución.** Leer `data.sec.gov/submissions` (424B5/B4/B7 y S-3, con fecha de aceptación) para una alerta y `DILUTION RISK`, sin tocar el score. Declarar un User-Agent con contacto. Complementa a las noticias, no las reemplaza: la deuda de ASTS del 22/09 no aparece en esos formularios. También reduciría la limitación del backtest con `CATALYST RISK`. `sec_edgar.py` de TradingAgents (Apache-2.0) sirve de referencia para balances "as filed"; la parte de prospectos hay que escribirla.
+- **Registrar etiquetas de StockTwits (tarea 5).** Script en `audit/` que guarde solo conteos, sin textos ni usuarios y sin peso en el SMI. Muestra del 2/11: 74 alcistas, 9 bajistas y 67 sin etiqueta en 150 mensajes; RKLB 15 de 17 alcistas (88%), igual que su norma, lo que sugiere un sesgo del público más que del modelo. Es una muestra chica.
+- **Investigar `mention_volume_ratio` (tarea 6).** Promedió entre 1.45 y 8.07 según el día desde el 24/10, casi siempre sobre el umbral de 2×. La causa no está identificada: la línea base ya excluye los posts anteriores a `SOCIAL_VOLUME_SINCE`. Probar primero con el scheduler activo, porque puede depender de la cadencia de corridas.
+- **Recaps de un mismo evento.** Seis artículos de RKLB entre el 15 y el 29/09 cuentan la misma oferta y cada uno reactiva `CAPITAL_RAISE`; `normalize_headline_for_dedup` solo une titulares casi idénticos. Evaluar si conviene agrupar por evento.
+- **Punto de decisión (~20/11, solo `rules_version` ≥ 2.2.3):** tareas 1, 2 y 5. Si los intervalos del IC siguen cruzando cero, no tocar pesos y seguir juntando datos. La temporada de resultados (9–12/11) cae dentro de la ventana, así que puede hacer falta esperar más.
+
+**Descartado tras revisarlo (nov-2026):** debate multiagente y memoria con LLM de TradingAgents (caros, no deterministas y rompen la paridad live/backtest); StockTwits como pilar, insiders, Reddit y macro sin evidencia previa; de WorldMonitor, todo salvo la idea del calendario (`prediction_leads_news` no sirve con el PMS sin aplicar en 4 de 5 tickers). WorldMonitor es AGPL-3.0: tomar ideas, no código.
+
 **Descartado tras medirlo (oct-2026):** modificador `SECTOR SELLOFF` por caída conjunta de la cesta. `audit/sentiment_2026_10/sector_selloff_study.py` no encontró capacidad predictiva a 1–10 días (5 y 2 años; ver su README). Si se quiere mostrar la caída sectorial, que sea como contexto informativo en la UI, sin mover la señal.
 
 **Mantenimiento continuo:**
@@ -286,5 +298,7 @@ Descartado tras medirlo: **sentimiento por empresa** (recortar el texto a las fr
 - El backtest no aplica la compuerta `CATALYST RISK` porque no hay historial de catalizadores por snapshot.
 - Los posts guardados antes de capturar `lang` (≤ 2026-10-02) solo se filtran por alfabeto: el español y el portugués pasan hasta salir de la ventana de 14 días.
 - Los snapshots con `rules_version < 2.2.0` usan la fórmula anterior del SSI y del momentum: no mezclarlos al medir. Los de `2.2.0` usan el News Score y el PMS anteriores a 2.2.1. Los de `< 2.2.2` tienen un SSI armado con una sola página de X por corrida.
+- La columna `catalyst` de `news_items` guarda la etiqueta del momento de la ingesta y no se recalcula: filas viejas pueden diferir de las reglas actuales (por ejemplo, "Satellite Offering" de ASTS, 6/09, sigue como `CAPITAL_RAISE`). No afecta a las señales nuevas, pero sí a cualquier estudio que lea esa columna.
+- El modificador `EARNINGS` y `next_earnings_date` dependen de `get_earnings_dates` de yfinance; las fechas pueden ser estimadas y el backtest no las usa.
 - Una búsqueda de X cortada por el tope de páginas deja un hueco que la corrida siguiente no rellena (se detiene en el primer tweet ya guardado). Queda registrado en `social_coverage_complete`.
 - `outcome_group`/`outcome_label` solo viven en memoria durante la corrida (no hay columna): la exclusión de tramos depende de que Polymarket siga enviando `negRisk` y `groupItemTitle`.
