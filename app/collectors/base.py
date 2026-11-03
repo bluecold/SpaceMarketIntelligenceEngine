@@ -128,6 +128,12 @@ class PredictionMarketProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_history(self, market_id: str, clob_token_id: Optional[str] = None) -> List[MarketProbabilityPoint]:
-        """Fetch historical probability points for a market."""
+    async def get_history(
+        self,
+        market_id: str,
+        clob_token_id: Optional[str] = None,
+        interval: str = "1w",
+        fidelity: int = 60,
+    ) -> List[MarketProbabilityPoint]:
+        """Fetch historical probability points for a market over `interval`, one point per `fidelity` minutes."""
         pass

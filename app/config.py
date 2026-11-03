@@ -183,6 +183,9 @@ class Settings(BaseSettings):
     POLYMARKET_API_URL: str = "https://gamma-api.polymarket.com"
     POLYMARKET_MIN_QUALITY: float = 30.0  # Quality threshold below which weight becomes 0
     POLYMARKET_LOOKBACK_HOURS: int = 24
+    # LIVE markets still ACTIVE in the DB but missing from the open-markets sweep get looked up by id
+    # (at most this many per run) so a contract that closed or resolved stops showing as active
+    POLYMARKET_RECONCILE_MAX: int = 25
 
     # News Provider
     NEWS_PROVIDER: str = "rss"  # "rss" or "mock"
@@ -244,6 +247,19 @@ class Settings(BaseSettings):
     # Scheduler
     ENABLE_SCHEDULER: bool = False
     JOB_INTERVAL_MINUTES: int = 60
+
+    # Source freshness (app/monitoring/freshness.py): age of the newest item of each source at the time of a
+    # successful run. A provider can answer without error and still return nothing new (twikit with an expired
+    # session, a news feed repeating old items, a lagging price feed). Calibrated on 55 runs, 8/10-2/11/2026:
+    # newest X post was at most 2.7h old (SATL), newest news item across tickers 4.9h, newest Polymarket
+    # snapshot 0.2h. Per-ticker news is not checked: SATL legitimately goes 4-5 days without an article.
+    SOCIAL_STALE_HOURS: float = 12.0
+    NEWS_STALE_HOURS: float = 24.0
+    POLYMARKET_STALE_HOURS: float = 6.0
+    # The price feed must carry the latest session that opened at least this long ago (US holiday calendar)
+    MARKET_CANDLE_GRACE_MINUTES: int = 60
+    # With the scheduler on, no successful run for this many intervals marks the pipeline itself as stale
+    PIPELINE_STALE_INTERVALS: float = 3.0
 
     # API Security
     API_SECRET_KEY: Optional[str] = None  # Optional API Key for protected endpoints (POST /api/jobs/run)

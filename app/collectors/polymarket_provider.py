@@ -11,6 +11,63 @@ from app.prediction.quality import calculate_market_quality
 
 logger = logging.getLogger("SMIE.PolymarketProvider")
 
+# CLOB prices-history accepts only these window names ("1m" is one MONTH, not one minute).
+# Without `fidelity` the CLOB returns 1-minute points, so "1d" alone is ~1440 points of the last 24h.
+CLOB_HISTORY_INTERVALS = frozenset({"1h", "6h", "1d", "1w", "1m", "max"})
+
+# Final UMA oracle state. "proposed"/"disputed" mean the answer can still change, so a closed market
+# in those states is CLOSED (trading ended), not RESOLVED.
+UMA_FINAL_STATUS = "resolved"
+
+
+def _parse_gamma_datetime(value) -> Optional[datetime]:
+    """Parse Gamma timestamps: ISO 'Z' strings and closedTime's '2024-08-31 16:04:49+00' form."""
+    if not value:
+        return None
+    text = str(value).strip().replace("Z", "+00:00")
+    if re.search(r"[+-]\d{2}$", text):
+        text += ":00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _price_change_to_points(raw) -> Optional[float]:
+    """Gamma price changes are fractions of $1 (0.15 = +15pp); store them in probability points."""
+    if raw is None:
+        return None
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return val * 100.0 if abs(val) <= 1.0 else val
+
+
+def infer_gamma_market_status(event: dict, m: dict, end_date: Optional[datetime]) -> tuple:
+    """Return (status, resolution_date) from the fields Gamma actually serves.
+
+    RESOLVED needs the oracle's final answer (umaResolutionStatus == "resolved"). `closed` only means
+    trading stopped, and `active` stays True on closed and even resolved markets, so neither is
+    settlement evidence.
+    """
+    uma = str(m.get("umaResolutionStatus") or "").strip().lower()
+    if uma == UMA_FINAL_STATUS:
+        res_date = (
+            _parse_gamma_datetime(m.get("umaEndDate"))
+            or _parse_gamma_datetime(m.get("closedTime"))
+            or _parse_gamma_datetime(event.get("closedTime"))
+        )
+        return "RESOLVED", res_date
+    if m.get("closed") or event.get("closed") or m.get("archived") or event.get("archived"):
+        return "CLOSED", None
+    if m.get("active") is False or event.get("active") is False:
+        return "CLOSED", None
+    if end_date and end_date < datetime.now(timezone.utc):
+        return "CLOSED", None
+    return "ACTIVE", None
+
 
 def match_ticker_from_text(text: str) -> Optional[str]:
     """
@@ -185,8 +242,9 @@ class PolymarketGammaProvider(PredictionMarketProvider):
     Gracefully handles rate limits, connection errors, and falls back if network is unreachable.
     """
 
-    def __init__(self, base_url: Optional[str] = None):
+    def __init__(self, base_url: Optional[str] = None, clob_url: str = "https://clob.polymarket.com"):
         self.base_url = base_url or settings.POLYMARKET_API_URL
+        self.clob_url = clob_url.rstrip("/")
         self._fallback_provider = MockPolymarketProvider()
 
     async def get_markets(
@@ -277,8 +335,22 @@ class PolymarketGammaProvider(PredictionMarketProvider):
             return await self._fallback_provider.get_market(market_id)
         return None
 
-    async def get_history(self, market_id: str, clob_token_id: Optional[str] = None) -> List[MarketProbabilityPoint]:
-        """Fetch historical probability curve from Polymarket CLOB prices-history or fallback."""
+    async def get_history(
+        self,
+        market_id: str,
+        clob_token_id: Optional[str] = None,
+        interval: str = "1w",
+        fidelity: int = 60,
+    ) -> List[MarketProbabilityPoint]:
+        """Fetch the YES-token probability curve from CLOB prices-history.
+
+        `interval` is the window (see CLOB_HISTORY_INTERVALS) and `fidelity` the bar width in minutes;
+        the default is one week of hourly points. The CLOB serves only {t, p}: there is no volume.
+        """
+        if interval not in CLOB_HISTORY_INTERVALS:
+            raise ValueError(f"interval must be one of {sorted(CLOB_HISTORY_INTERVALS)}, got {interval!r}")
+        if int(fidelity) < 1:
+            raise ValueError(f"fidelity must be >= 1 minute, got {fidelity}")
         target_token = clob_token_id
         if not target_token:
             # Check if market_id looks like a CLOB token ID (typically >30 digits)
@@ -301,22 +373,22 @@ class PolymarketGammaProvider(PredictionMarketProvider):
         try:
             async with httpx.AsyncClient(timeout=6.0) as client:
                 resp = await client.get(
-                    "https://clob.polymarket.com/prices-history",
-                    params={"interval": "1d", "market": target_token}
+                    f"{self.clob_url}/prices-history",
+                    params={"interval": interval, "fidelity": int(fidelity), "market": target_token}
                 )
                 if resp.status_code == 200:
                     data = resp.json().get("history", [])
                     points = []
                     for item in data:
                         t_val = item.get("t")
-                        p_val = max(0.0, min(1.0, float(item.get("p", 0.5))))
-                        v_val = float(item.get("v", 0.0))
-                        dt = datetime.fromtimestamp(t_val, tz=timezone.utc) if t_val else datetime.now(timezone.utc)
+                        p_raw = item.get("p")
+                        if not t_val or p_raw is None:
+                            continue  # a point without time or price is not an observation
+                        p_val = max(0.0, min(1.0, float(p_raw)))
                         points.append(MarketProbabilityPoint(
-                            timestamp=dt,
+                            timestamp=datetime.fromtimestamp(t_val, tz=timezone.utc),
                             yes_probability=round(p_val, 4),
                             no_probability=round(1.0 - p_val, 4),
-                            volume=round(v_val, 2),
                             source="LIVE"
                         ))
                     if points:
@@ -326,7 +398,7 @@ class PolymarketGammaProvider(PredictionMarketProvider):
         except Exception as e:
             logger.error(f"Error parsing Polymarket CLOB price history for {target_token} ({e}).", exc_info=True)
         if getattr(settings, "ALLOW_MOCK_FALLBACK", False):
-            return await self._fallback_provider.get_history(market_id, clob_token_id)
+            return await self._fallback_provider.get_history(market_id, clob_token_id, interval=interval, fidelity=fidelity)
         return []
 
     def _parse_gamma_market(self, event: dict, m: dict, ticker: Optional[str]) -> Optional[PredictionMarketData]:
@@ -389,59 +461,14 @@ class PolymarketGammaProvider(PredictionMarketProvider):
             liquidity = float(liq_raw) if liq_raw is not None else 0.0
 
             spread = float(m.get("spread") or 0.02)
-            
-            # Extract 24h price/probability delta from Gamma API if present (do not inherit event delta)
-            raw_delta_24h = (
-                m.get("oneDayPriceChange")
-                if m.get("oneDayPriceChange") is not None
-                else (m.get("priceChange24h") if m.get("priceChange24h") is not None else m.get("priceChange"))
-            )
-            prob_delta_24h = None
-            if raw_delta_24h is not None:
-                try:
-                    delta_val = float(raw_delta_24h)
-                    prob_delta_24h = delta_val * 100.0 if abs(delta_val) <= 1.0 else delta_val
-                except Exception:
-                    prob_delta_24h = None
 
-            end_date_str = m.get("endDate") or event.get("endDate") or m.get("end_date")
-            end_date = None
-            if end_date_str:
-                try:
-                    end_date = datetime.fromisoformat(str(end_date_str).replace("Z", "+00:00"))
-                except Exception:
-                    pass
+            # Gamma serves 1h/24h/1w/1mo price changes per market (do not inherit event deltas).
+            # There is no 6h field: it stays None instead of a fabricated 0.0.
+            prob_delta_1h = _price_change_to_points(m.get("oneHourPriceChange"))
+            prob_delta_24h = _price_change_to_points(m.get("oneDayPriceChange"))
 
-            res_date_str = m.get("resolutionDate") or event.get("resolutionDate") or m.get("resolution_date")
-            resolution_date = None
-            if res_date_str:
-                try:
-                    resolution_date = datetime.fromisoformat(str(res_date_str).replace("Z", "+00:00"))
-                except Exception:
-                    pass
-
-            # Dynamically infer market status from flags and expiration
-            is_closed = (
-                bool(m.get("closed"))
-                or bool(event.get("closed"))
-                or bool(m.get("resolved"))
-                or bool(event.get("resolved"))
-            )
-            is_active = (
-                bool(m.get("active", True))
-                and bool(event.get("active", True))
-                and not is_closed
-            )
-            now_utc = datetime.now(timezone.utc)
-
-            if is_closed or m.get("resolved") or event.get("resolved"):
-                status = "RESOLVED" if (m.get("resolved") or event.get("resolved") or resolution_date is not None) else "CLOSED"
-            elif not is_active:
-                status = "CLOSED"
-            elif end_date and end_date < now_utc:
-                status = "CLOSED"
-            else:
-                status = "ACTIVE"
+            end_date = _parse_gamma_datetime(m.get("endDate") or event.get("endDate"))
+            status, resolution_date = infer_gamma_market_status(event, m, end_date)
 
             qual = calculate_market_quality(liquidity=liquidity, volume=volume, spread=spread, end_date=end_date)
 
@@ -481,8 +508,8 @@ class PolymarketGammaProvider(PredictionMarketProvider):
                 liquidity=liquidity,
                 spread=spread,
                 quality_score=qual,
-                probability_change_1h=0.0,
-                probability_change_6h=0.0,
+                probability_change_1h=round(prob_delta_1h, 2) if prob_delta_1h is not None else None,
+                probability_change_6h=None,
                 probability_change_24h=round(prob_delta_24h, 2) if prob_delta_24h is not None else None,
                 url=f"https://polymarket.com/event/{event.get('slug', '')}" if event.get("slug") else None,
                 polarity=polarity,

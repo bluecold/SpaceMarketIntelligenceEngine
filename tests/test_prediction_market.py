@@ -807,7 +807,7 @@ def test_negative_semantic_polarity_scoring():
         "volumeNum": 100000.0,
         "liquidityNum": 50000.0,
         "spread": 0.02,
-        "priceChange24h": 10.0  # +10% increase in chance of delay
+        "oneDayPriceChange": 0.10  # +10pp increase in chance of delay (Gamma serves fractions)
     }
 
     parsed = provider._parse_gamma_market(event_data, market_data, ticker="ASTS")
@@ -846,7 +846,7 @@ def test_polymarket_resolution_rule_does_not_invert_positive_question():
         "volumeNum": 250000.0,
         "liquidityNum": 100000.0,
         "spread": 0.01,
-        "priceChange24h": 5.0
+        "oneDayPriceChange": 0.05
     }
 
     parsed = provider._parse_gamma_market(event_data, market_data, ticker="RKLB")
@@ -920,15 +920,17 @@ def test_polymarket_status_inference_active_closed_resolved():
     assert m2 is not None
     assert m2.status in ("CLOSED", "RESOLVED")
 
-    # 3. Market with resolutionDate
+    # 3. Market whose UMA oracle answer is final (fields as Gamma serves them; active stays True)
     m3 = provider._parse_gamma_market(
-        event={"id": "ev-3", "title": "Resolved Event", "active": False, "closed": True},
-        m={"id": "m-3", "question": "SpaceX Starship orbital flight test", "resolutionDate": past_date, "resolved": True, "outcomes": '["Yes", "No"]', "outcomePrices": '["1.0", "0.0"]'},
+        event={"id": "ev-3", "title": "Resolved Event", "active": True, "closed": True},
+        m={"id": "m-3", "question": "SpaceX Starship orbital flight test", "closed": True, "active": True,
+           "umaResolutionStatus": "resolved", "closedTime": "2024-08-31 16:04:49+00",
+           "outcomes": '["Yes", "No"]', "outcomePrices": '["1", "0"]'},
         ticker="SPCX"
     )
     assert m3 is not None
     assert m3.status == "RESOLVED"
-    assert m3.resolution_date is not None
+    assert m3.resolution_date == datetime(2024, 8, 31, 16, 4, 49, tzinfo=timezone.utc)
 
     # 4. Market with past endDate and not explicitly marked closed
     m4 = provider._parse_gamma_market(

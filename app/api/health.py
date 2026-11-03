@@ -6,6 +6,7 @@ from sqlalchemy import text
 from app.database.connection import DbSession
 from app.database.models import JobRunModel, SSISnapshotModel
 from app.config import settings
+from app.monitoring.freshness import evaluate_data_freshness
 
 router = APIRouter(prefix="/api", tags=["Health"])
 
@@ -55,8 +56,17 @@ def health_check(db: DbSession) -> Dict[str, Any]:
             "error_message": last_job.error_message
         }
 
+    # Providers that answer but stop delivering new data (DB-only check, see app/monitoring/freshness.py)
+    try:
+        data_freshness = evaluate_data_freshness(db)
+    except Exception as e:
+        data_freshness = {"status": "error", "detail": str(e)}
+
     is_last_job_ok = last_job is None or last_job.status in ["SUCCESS", "RUNNING"]
-    overall_status = "ok" if (db_status == "ok" and is_last_job_ok and x_status in ["live", "mock"] and poly_status in ["live", "mock", "disabled"]) else "degraded"
+    overall_status = "ok" if (
+        db_status == "ok" and is_last_job_ok and x_status in ["live", "mock"]
+        and poly_status in ["live", "mock", "disabled"] and data_freshness.get("status") == "ok"
+    ) else "degraded"
 
     return {
         "status": overall_status,
@@ -80,5 +90,6 @@ def health_check(db: DbSession) -> Dict[str, Any]:
             "name": "google_rss",
             "status": "live"
         },
+        "data_freshness": data_freshness,
         "last_update": last_update_str
     }

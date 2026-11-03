@@ -404,3 +404,20 @@ def init_db(target_engine=None):
                 logger.info("Successfully executed one-time schema migration 'v2_mock_data_and_orphan_purge'.")
         except Exception as purge_err:
             logger.warning(f"Note on schema migration v2_mock_data_and_orphan_purge: {purge_err}")
+
+        # One-time migration: the mock catalogue used to emit 'poly-...' ids (now 'mock_poly_...'). Rows saved
+        # before the `source` column existed took its 'LIVE' default, and the purge above only matched
+        # 'poly-%-2026', so two such rows stayed LIVE/ACTIVE. A real Gamma market id is numeric, so a LIVE
+        # 'poly-%' row is synthetic: relabel it MOCK, and under strict governance delete it like the purge above.
+        try:
+            migrated = conn.execute(text("SELECT 1 FROM schema_migrations WHERE version = 'v2_2_legacy_mock_polymarket_relabel';")).scalar()
+            if not migrated and "prediction_markets" in existing_tables:
+                conn.execute(text("UPDATE prediction_markets SET source = 'MOCK' WHERE source = 'LIVE' AND external_id LIKE 'poly-%';"))
+                if not getattr(settings, "ALLOW_MOCK_FALLBACK", False):
+                    conn.execute(text("DELETE FROM prediction_market_snapshots WHERE market_id IN (SELECT id FROM prediction_markets WHERE source = 'MOCK');"))
+                    conn.execute(text("DELETE FROM prediction_markets WHERE source = 'MOCK';"))
+                conn.execute(text("INSERT INTO schema_migrations (version, applied_at) VALUES ('v2_2_legacy_mock_polymarket_relabel', CURRENT_TIMESTAMP);"))
+                conn.commit()
+                logger.info("Successfully executed one-time schema migration 'v2_2_legacy_mock_polymarket_relabel'.")
+        except Exception as relabel_err:
+            logger.warning(f"Note on schema migration v2_2_legacy_mock_polymarket_relabel: {relabel_err}")

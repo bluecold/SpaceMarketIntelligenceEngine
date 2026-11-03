@@ -346,6 +346,8 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                     • <strong>Sin Acuerdo Artificial:</strong> No se asigna acuerdo ni bonificación de confianza (+15%) cuando existe solo 1 fuente activa aislada; se requiere corroboración cruzada.
                     <br />
                     • <strong>Salud Fundamental Adaptativa:</strong> Se normalizan los pesos exclusivamente sobre las métricas observadas (runway, solvencia, crecimiento, margen) sin imputar valores neutrales ficticios.
+                    <br />
+                    • <strong>Monitoreo de Frescura (Freshness):</strong> Supervisión continua que detecta si un proveedor responde sin error pero no aporta datos nuevos (alerta automática <code>SOURCE_STALE</code> si X &gt; 12h, noticias &gt; 24h, Polymarket &gt; 6h o falta la vela de sesión).
                   </p>
                 </div>
               </div>

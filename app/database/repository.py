@@ -196,6 +196,40 @@ def get_recent_news_items(db: Session, ticker: str, days: int = 3) -> List[NewsI
     )
 
 
+def get_stale_active_prediction_markets(db: Session, seen_external_ids: Set[str], limit: int) -> List[str]:
+    """External ids of LIVE markets still ACTIVE in the DB that the latest sweep did not return, oldest first."""
+    if limit <= 0:
+        return []
+    query = (
+        db.query(PredictionMarketModel.external_id)
+        .filter(PredictionMarketModel.status == "ACTIVE")
+        .filter(PredictionMarketModel.source == "LIVE")
+    )
+    if seen_external_ids:
+        query = query.filter(PredictionMarketModel.external_id.notin_(list(seen_external_ids)))
+    rows = query.order_by(PredictionMarketModel.collected_at.asc()).limit(limit).all()
+    return [r[0] for r in rows]
+
+
+def update_prediction_market_status(
+    db: Session, external_id: str, status: str, resolution_date: Optional[datetime] = None, commit: bool = True
+) -> bool:
+    """Record a lifecycle change (CLOSED/RESOLVED) without touching probabilities or appending a snapshot."""
+    existing = db.query(PredictionMarketModel).filter(PredictionMarketModel.external_id == external_id).first()
+    if not existing or existing.status == status:
+        return False
+    existing.status = status
+    if resolution_date is not None:
+        if resolution_date.tzinfo is not None:
+            resolution_date = resolution_date.astimezone(timezone.utc).replace(tzinfo=None)
+        existing.resolution_date = resolution_date
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+    return True
+
+
 def save_prediction_markets(db: Session, markets: List[PredictionMarketData], commit: bool = True) -> int:
     """Upsert prediction markets and append timestamped snapshot."""
     count = 0

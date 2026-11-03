@@ -90,7 +90,10 @@ def test_allow_mock_fallback_false_blocks_clob_and_market_fallback():
         orig_fallback = settings.ALLOW_MOCK_FALLBACK
         try:
             settings.ALLOW_MOCK_FALLBACK = False
-            provider = PolymarketGammaProvider(base_url="http://127.0.0.1:9999/nonexistent")
+            # Both hosts unreachable: get_history must not fall through to the real CLOB (tests run offline)
+            provider = PolymarketGammaProvider(
+                base_url="http://127.0.0.1:9999/nonexistent", clob_url="http://127.0.0.1:9999/clob"
+            )
 
             # 1. get_market should return None instead of mock market
             market = await provider.get_market("non-existent-market-id-999")

@@ -10,6 +10,7 @@ from app.database.repository import (
     ensure_tickers_seeded, save_social_posts, get_recent_social_posts,
     save_news_items, get_recent_news_items,
     save_prediction_markets, get_recent_prediction_markets,
+    get_stale_active_prediction_markets, update_prediction_market_status,
     save_divergences, save_alerts, save_market_snapshot, get_latest_market_snapshot,
     save_ssi_snapshot, get_latest_ssi_snapshot, get_historical_ssi_snapshot,
     create_job_run, finish_job_run, utc_now,
@@ -40,6 +41,7 @@ from app.scoring.fundamentals import calculate_fundamental_score, get_fundamenta
 from app.scoring.smi import calculate_smi
 from app.scoring.signal import generate_signal_and_explanation
 from app.divergence.detector import detect_divergences
+from app.monitoring.freshness import build_freshness_alert, ticker_source_checks
 
 logger = logging.getLogger("SMIE.Runner")
 
@@ -81,7 +83,30 @@ async def ingest_prediction_markets(db: SessionLocal, poly_provider=None) -> Lis
     poly_markets = await poly_provider.get_markets()
     if poly_markets:
         save_prediction_markets(db, poly_markets)
+    await reconcile_stale_prediction_markets(db, poly_provider, {m.external_id for m in poly_markets or []})
     return poly_markets or []
+
+
+async def reconcile_stale_prediction_markets(db: SessionLocal, poly_provider, seen_external_ids: set) -> int:
+    """The sweep only asks for open markets, so one that closes simply stops coming back and would stay
+    ACTIVE in the DB. Look those up by id and record CLOSED/RESOLVED. A failed or still-open lookup leaves
+    the row alone: it may just be past the sweep's last page."""
+    limit = int(getattr(settings, "POLYMARKET_RECONCILE_MAX", 0) or 0)
+    updated = 0
+    for external_id in get_stale_active_prediction_markets(db, seen_external_ids, limit):
+        try:
+            fresh = await poly_provider.get_market(external_id)
+        except Exception as e:
+            logger.debug(f"Polymarket reconcile lookup failed for {external_id}: {e}")
+            continue
+        if fresh is None or getattr(fresh, "source", "LIVE") != "LIVE" or fresh.status == "ACTIVE":
+            continue
+        if update_prediction_market_status(db, external_id, fresh.status, fresh.resolution_date, commit=False):
+            updated += 1
+    if updated:
+        db.commit()
+        logger.info(f"Polymarket reconcile: {updated} stored market(s) moved out of ACTIVE.")
+    return updated
 
 
 def build_x_query(ticker_config) -> str:
@@ -748,6 +773,17 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                     resolve_categories.add("FUNDAMENTAL")
                 if div_sources_success:
                     resolve_categories.add("DIVERGENCE")
+
+                # Source freshness: a provider that answers but brings nothing new raises a SYSTEM alert,
+                # which resolves on the first run where every source is fresh again (DB-only, no network)
+                try:
+                    freshness_alert = build_freshness_alert(ticker, ticker_source_checks(db, ticker))
+                    if freshness_alert:
+                        freshness_alert["data_source"] = overall_data_src
+                        alerts_to_save.append(freshness_alert)
+                    resolve_categories.add("SYSTEM")
+                except Exception as fresh_err:
+                    logger.warning(f"Source freshness check failed for {ticker}: {fresh_err}")
 
                 save_alerts(
                     db,

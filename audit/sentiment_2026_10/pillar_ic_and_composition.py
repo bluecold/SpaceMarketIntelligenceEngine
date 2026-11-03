@@ -1,21 +1,29 @@
 """
 Replays every stored snapshot with the current scoring code and reports, for the SMI and each pillar:
   1. its share of SMI movement (covariance contribution), i.e. what actually drives the index;
-  2. its rank correlation (IC) with 24h / 72h forward price returns, pooled and within ticker;
-  3. the resulting signal-band distribution.
+  2. the resulting signal-band distribution;
+  3. a verdict per pillar and horizon (ALIVE / REVERSED / DEAD / INSUFFICIENT_DATA) from its IC against
+     forward returns, with the rules in `_ic_stats.py`: entry at the first close after the snapshot,
+     return in excess of the other tickers' basket, Newey-West t and block-bootstrap CI, sign stable
+     across weeks and tickers, and no single ticker carrying the result.
 
-Use it before rebalancing weights (pending task): a pillar deserves weight only if its IC is consistently
-positive. Social is rebuilt from stored posts (opinion-only polarity + 14-day baseline + filters);
-momentum is rebuilt from daily yfinance bars at each snapshot date. Read-only on the database.
+Use it before rebalancing weights (pending task): a pillar deserves weight only if it comes out ALIVE in
+both horizons. Social is rebuilt from stored posts (opinion-only polarity + 14-day baseline + filters);
+momentum is rebuilt from daily yfinance bars at each snapshot date. Read-only on the database; the
+verdict table (no post data) is also written to audit/output/.
 
-    python -m audit.sentiment_2026_10.pillar_ic_and_composition [--since 2026-10-03]
+    python -m audit.sentiment_2026_10.pillar_ic_and_composition [--min-rules-version 2.2.2] [--since 2026-10-24]
 """
 import argparse
+import json
 import statistics as st
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-from audit.sentiment_2026_10._common import TICKERS, connect_readonly, spearman
+from audit.sentiment_2026_10._common import OUTPUT_DIR, TICKERS, connect_readonly
+from audit.sentiment_2026_10._ic_stats import (
+    build_panel, complete_bars, evaluate_ic, excess_forward_return, format_result, session_close_times,
+)
 
 import yfinance as yf
 from app.database.models import SocialPostModel
@@ -26,6 +34,16 @@ from app.scoring.social import apply_social_baseline, calculate_social_baseline,
 from app.technical.indicators import calculate_technical_indicators
 
 PILLARS = ("social", "news", "prediction", "momentum", "fundamental")
+HORIZONS = (1, 3)  # trading sessions after the entry close (roughly the old 24h / 72h)
+# Snapshots before 2.2.2 carry an SSI built from one ~20-tweet page per run (PROJECT_CONTEXT, section 5)
+DEFAULT_MIN_RULES_VERSION = "2.2.2"
+
+
+def version_tuple(v):
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except ValueError:
+        return (0,)
 
 
 def load_posts(con):
@@ -43,22 +61,34 @@ def load_posts(con):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--since", help="only snapshots from this date (YYYY-MM-DD), e.g. after a scoring change")
+    ap.add_argument("--min-rules-version", default=DEFAULT_MIN_RULES_VERSION,
+                    help=f"skip snapshots stored under older rules (default {DEFAULT_MIN_RULES_VERSION}; 'all' keeps every one)")
     args = ap.parse_args()
 
     con = connect_readonly()
     posts = load_posts(con)
-    prices = {}
+    now_utc = datetime.now(timezone.utc)
+    prices, closes, close_times = {}, {}, {}
     for tk in TICKERS:
         df = yf.Ticker(tk).history(period="2y", interval="1d")[["Open", "High", "Low", "Close", "Volume"]].dropna()
         df.index = df.index.tz_localize(None)
         prices[tk] = df
+        closes[tk] = complete_bars(df["Close"], now_utc)  # today's partial bar is not a close yet
+        close_times[tk] = session_close_times(closes[tk].index)
 
     query = ("select ticker, timestamp, news_score, prediction_score, prediction_quality, fundamental_score, "
-             "news_count, prediction_count, rsi14, price from ssi_snapshots where smi is not null")
+             "news_count, prediction_count, rsi14, price, rules_version from ssi_snapshots where smi is not null")
+    params = []
     if args.since:
-        query += f" and timestamp >= '{args.since}'"
+        query += " and timestamp >= ?"
+        params.append(args.since)
+    min_rules = None if args.min_rules_version == "all" else version_tuple(args.min_rules_version)
     out = []
-    for tk, ts, news, pms, pq, fund, nc, prc, rsi, price in con.execute(query + " order by timestamp"):
+    versions = Counter()
+    for tk, ts, news, pms, pq, fund, nc, prc, rsi, price, rules in con.execute(query + " order by timestamp", params):
+        if min_rules and version_tuple(rules) < min_rules:
+            continue
+        versions[rules] += 1
         ts = datetime.fromisoformat(ts)
         win = [p for p in posts[tk] if ts - timedelta(hours=24) <= p.created_at <= ts]
         hist = [p for p in posts[tk] if ts - timedelta(days=14) <= p.created_at <= ts]
@@ -80,7 +110,7 @@ def main():
                                               indicators={"status": "AVAILABLE", "price": price or 1.0, "rsi14": rsi})
         out.append({"tk": tk, "ts": ts, "price": price, "smi": d, "band": sig["base_signal"]})
 
-    print(f"snapshots: {len(out)}")
+    print(f"snapshots: {len(out)} | rules_version: {dict(versions)}")
     full = [o for o in out if len(o["smi"]["active_scores"]) >= 5]
     if len(full) > 10:
         fs = [o["smi"]["smi"] for o in full]
@@ -93,28 +123,32 @@ def main():
         print(f"SMI std={st.pstdev(fs):.1f} | share of SMI movement: " + " ".join(shares))
     print("signal bands:", dict(Counter(o["band"] for o in out)))
 
-    for hours in (24, 72):
-        print(f"\n--- IC vs {hours}h forward return: pooled | within ticker ---")
-        feats = defaultdict(list)
-        for tk in TICKERS:
-            series = [o for o in out if o["tk"] == tk and o["price"]]
-            for i, o in enumerate(series):
-                fut = next((f for f in series[i + 1:] if f["ts"] >= o["ts"] + timedelta(hours=hours)), None)
-                if not fut or fut["ts"] > o["ts"] + timedelta(hours=hours + 48):
-                    continue
-                ret = (fut["price"] - o["price"]) / o["price"]
-                feats["SMI"].append((o["smi"]["smi"], ret, tk))
-                for k in PILLARS:
-                    v = o["smi"]["active_scores"].get(k)
-                    if v is not None:
-                        feats[k].append((v, ret, tk))
-        for k, pairs in feats.items():
-            pooled = spearman([p[0] for p in pairs], [p[1] for p in pairs])
-            per = [spearman([p[0] for p in pairs if p[2] == t], [p[1] for p in pairs if p[2] == t]) for t in TICKERS]
-            per = [x for x in per if x is not None]
-            if pooled is not None and per:
-                print(f"{k:12s} n={len(pairs):4d} {pooled:+.3f} | {st.mean(per):+.3f}")
+    # Verdicts. Returns come from daily closes (entry at the first close after each snapshot, excess
+    # over the other tickers), not from the snapshot's own price, which can be an after-hours quote.
+    results = []
+    for h in HORIZONS:
+        obs = []
+        for o in out:
+            fr = excess_forward_return(closes, o["tk"], o["ts"], h, close_times=close_times)
+            if fr is None:
+                continue
+            row = {"ticker": o["tk"], "ts": o["ts"], "entry_date": fr["entry_date"], "ret": fr["excess"],
+                   "SMI": o["smi"]["smi"]}
+            row.update({k: o["smi"]["active_scores"].get(k) for k in PILLARS})
+            obs.append(row)
+        print(f"\n--- {h}-session excess forward return: {len(obs)} snapshots with a complete window ---")
+        for name in ("SMI",) + PILLARS:
+            r = evaluate_ic(build_panel(obs, name), name, h)
+            results.append(r)
+            print(format_result(r))
 
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    path = OUTPUT_DIR / f"pillar_ic_verdicts_{now_utc:%Y%m%d}.json"
+    path.write_text(json.dumps({
+        "generated_at": now_utc.isoformat(), "since": args.since, "min_rules_version": args.min_rules_version,
+        "rules_versions": dict(versions), "results": [r.as_dict() for r in results],
+    }, indent=2, default=str), encoding="utf-8")
+    print(f"\nverdicts written to {path}")
 
 if __name__ == "__main__":
     main()

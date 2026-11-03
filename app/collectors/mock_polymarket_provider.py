@@ -172,7 +172,14 @@ class MockPolymarketProvider(PredictionMarketProvider):
                 return m
         return None
 
-    async def get_history(self, market_id: str, clob_token_id: Optional[str] = None) -> List[MarketProbabilityPoint]:
+    async def get_history(
+        self,
+        market_id: str,
+        clob_token_id: Optional[str] = None,
+        interval: str = "1w",
+        fidelity: int = 60,
+    ) -> List[MarketProbabilityPoint]:
+        # Synthetic data: always a 24h hourly curve, whatever window is asked for.
         market = await self.get_market(market_id)
         if not market:
             return []
