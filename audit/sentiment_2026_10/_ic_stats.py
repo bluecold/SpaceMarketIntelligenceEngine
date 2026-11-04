@@ -257,6 +257,139 @@ def evaluate_ic(panel: pd.DataFrame, name: str, horizon: int, seed: int = 7) -> 
     return res
 
 
+# --- Flag effect (does a modifier/gate mark worse forward returns?) ----------------------------------
+
+MIN_FLAG_INDEPENDENT_OBS = 10  # flagged dates / horizon, and the same for unflagged dates
+MIN_FLAG_TICKERS = 2           # tickers seen both with and without the flag
+
+LOWER, HIGHER, NO_DIFFERENCE = "LOWER", "HIGHER", "NO_DIFFERENCE"
+
+
+@dataclass
+class FlagResult:
+    name: str
+    horizon: int
+    n_flagged: int
+    n_unflagged: int
+    flagged_dates: int
+    unflagged_dates: int
+    mixed_tickers: List[str] = field(default_factory=list)
+    always_flagged: List[str] = field(default_factory=list)  # carry no within-ticker contrast
+    diff: Optional[float] = None       # mean excess return flagged - unflagged, within-ticker demeaned
+    ci_low: Optional[float] = None
+    ci_high: Optional[float] = None
+    leave_one_out_same_sign: Optional[bool] = None  # rest keeps the sign with a CI excluding 0
+    verdict: str = INSUFFICIENT
+    reason: str = ""
+
+    def as_dict(self) -> dict:
+        return dict(self.__dict__)
+
+
+def _flag_diff(df: pd.DataFrame) -> Optional[float]:
+    f, u = df.loc[df["flag"], "dret"], df.loc[~df["flag"], "dret"]
+    if f.empty or u.empty:
+        return None
+    return float(f.mean() - u.mean())
+
+
+def _flag_diff_ci(df: pd.DataFrame, horizon: int, seed: int) -> tuple:
+    """Moving-block bootstrap over dates of the flagged-minus-unflagged mean (rows of one date move together)."""
+    dates = np.sort(df["date"].unique())
+    n = len(dates)
+    if n < 2:
+        return None, None
+    di = df["date"].map({d: i for i, d in enumerate(dates)}).to_numpy()
+    fl = df["flag"].to_numpy()
+    r = df["dret"].to_numpy()
+    sf, nf = np.bincount(di[fl], r[fl], n), np.bincount(di[fl], minlength=n).astype(float)
+    su, nu = np.bincount(di[~fl], r[~fl], n), np.bincount(di[~fl], minlength=n).astype(float)
+    block = max(1, min(max(horizon, int(round(n ** (1 / 3)))), n))
+    rng = np.random.default_rng(seed)
+    starts = rng.integers(0, n - block + 1, size=(BOOTSTRAP_SAMPLES, math.ceil(n / block)))
+    idx = (starts[:, :, None] + np.arange(block)[None, None, :]).reshape(BOOTSTRAP_SAMPLES, -1)[:, :n]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        diffs = sf[idx].sum(1) / nf[idx].sum(1) - su[idx].sum(1) / nu[idx].sum(1)
+    diffs = diffs[np.isfinite(diffs)]
+    if diffs.size == 0:
+        return None, None
+    a = (1.0 - CONFIDENCE) / 2.0
+    return float(np.quantile(diffs, a)), float(np.quantile(diffs, 1.0 - a))
+
+
+def evaluate_flag(panel: pd.DataFrame, name: str, horizon: int, seed: int = 7) -> FlagResult:
+    """Do snapshots carrying a flag (e.g. CATALYST RISK) see a different excess forward return?
+
+    `panel` has columns ticker, date, flag (bool), ret. Only tickers seen both with and without the flag
+    count, and returns are demeaned inside each ticker: a flag that sits on one ticker for weeks while that
+    ticker drifts down would otherwise look predictive just by naming the ticker. The CI comes from a
+    moving-block bootstrap over dates (rows of one date move together), and the result must stay
+    significant in the same direction after dropping any single ticker. LOWER means flagged snapshots were followed by worse returns: what a bearish gate
+    is supposed to catch.
+    """
+    df = panel.dropna(subset=["ret"]).copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df["flag"] = df["flag"].astype(bool)
+    states = df.groupby("ticker")["flag"].agg(["any", "all"])
+    mixed = sorted(states.index[states["any"] & ~states["all"]])
+    always = sorted(states.index[states["all"]])
+    df = df[df["ticker"].isin(mixed)]
+    res = FlagResult(name=name, horizon=horizon, n_flagged=int(df["flag"].sum()),
+                     n_unflagged=int((~df["flag"]).sum()),
+                     flagged_dates=df.loc[df["flag"], "date"].nunique(),
+                     unflagged_dates=df.loc[~df["flag"], "date"].nunique(),
+                     mixed_tickers=mixed, always_flagged=always)
+    short = []
+    h = max(horizon, 1)
+    if res.flagged_dates / h < MIN_FLAG_INDEPENDENT_OBS:
+        short.append(f"{res.flagged_dates} flagged dates / horizon {horizon} (need {MIN_FLAG_INDEPENDENT_OBS})")
+    if res.unflagged_dates / h < MIN_FLAG_INDEPENDENT_OBS:
+        short.append(f"{res.unflagged_dates} unflagged dates / horizon {horizon} (need {MIN_FLAG_INDEPENDENT_OBS})")
+    if len(mixed) < MIN_FLAG_TICKERS:
+        short.append(f"{len(mixed)} tickers seen with and without the flag (need {MIN_FLAG_TICKERS})"
+                     + (f"; always flagged: {', '.join(always)}" if always else ""))
+    if short:
+        res.reason = "; ".join(short)
+        return res
+
+    df["dret"] = df["ret"] - df.groupby("ticker")["ret"].transform("mean")
+    res.diff = _flag_diff(df)
+
+    res.ci_low, res.ci_high = _flag_diff_ci(df, horizon, seed)
+
+    # Dropping any one ticker, the rest must still show a difference of the same sign whose CI excludes 0:
+    # a sign-only check is passed half the time by noise once one strong ticker sets the direction.
+    loo_ok = True
+    for tk in mixed:
+        rest = df[df["ticker"] != tk]
+        d = _flag_diff(rest)
+        lo, hi = _flag_diff_ci(rest, horizon, seed) if d is not None else (None, None)
+        if d is None or lo is None or np.sign(d) != np.sign(res.diff) or not (lo > 0 or hi < 0):
+            loo_ok = False
+            break
+    res.leave_one_out_same_sign = loo_ok
+
+    significant = res.ci_low > 0 or res.ci_high < 0
+    if significant and res.leave_one_out_same_sign:
+        res.verdict = LOWER if res.diff < 0 else HIGHER
+        res.reason = "CI excludes 0 and no single ticker carries the sign"
+    else:
+        res.verdict = NO_DIFFERENCE
+        res.reason = "; ".join(m for m, bad in (
+            ("CI includes 0", not significant),
+            ("not significant once one ticker is dropped", not res.leave_one_out_same_sign)) if bad)
+    return res
+
+
+def format_flag(r: FlagResult) -> str:
+    if r.diff is None:
+        return f"{r.name:18s} {r.horizon}d  flagged={r.n_flagged:3d}/{r.n_flagged + r.n_unflagged:3d}  {r.verdict}: {r.reason}"
+    extra = f"  (always flagged, excluded: {', '.join(r.always_flagged)})" if r.always_flagged else ""
+    return (f"{r.name:18s} {r.horizon}d  flagged={r.n_flagged:3d}/{r.n_flagged + r.n_unflagged:3d}  "
+            f"diff={r.diff:+.2%} CI95=[{r.ci_low:+.2%}, {r.ci_high:+.2%}]  {r.verdict}"
+            + (f" ({r.reason})" if r.verdict == NO_DIFFERENCE else "") + extra)
+
+
 def build_panel(observations: Sequence[dict], score_key: str) -> pd.DataFrame:
     """One row per (ticker, entry date): the latest snapshot before that close. Snapshots sharing an entry
     close share the same forward return, so keeping all of them would multiply identical observations."""

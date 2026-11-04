@@ -162,3 +162,53 @@ def test_too_few_varying_tickers_is_insufficient():
     r = ics.evaluate_ic(pd.concat([one, flat]), "fundamental", horizon=1)
     assert r.verdict == ics.INSUFFICIENT
     assert "1 tickers with a varying score" in r.reason and "independent obs" not in r.reason
+
+
+# --- Flag effect (signal ledger) ---------------------------------------------------------------------
+
+def _flag_panel(effect: float, n_dates: int = 120, tickers=("ASTS", "RKLB", "SATL", "SPCE"), p: float = 0.3,
+                seed: int = 1):
+    rng = np.random.default_rng(seed)
+    dates = pd.bdate_range("2026-01-05", periods=n_dates)
+    rows = []
+    for tk in tickers:
+        drift = rng.normal(0, 0.01)  # per-ticker drift must not matter
+        for d in dates:
+            f = bool(rng.random() < p)
+            rows.append({"ticker": tk, "date": d, "flag": f, "ret": drift + effect * f + rng.normal(0, 0.03)})
+    return pd.DataFrame(rows)
+
+
+def test_flag_followed_by_worse_returns_is_lower():
+    r = ics.evaluate_flag(_flag_panel(effect=-0.03), "CATALYST RISK", horizon=1)
+    assert r.verdict == ics.LOWER, r.reason
+    assert r.diff < 0 and r.ci_high < 0 and r.leave_one_out_same_sign
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
+def test_uninformative_flag_shows_no_difference(seed):
+    r = ics.evaluate_flag(_flag_panel(effect=0.0, seed=seed), "HIGH RISK", horizon=1)
+    assert r.verdict == ics.NO_DIFFERENCE, f"{r.diff} {r.reason}"
+
+
+def test_flag_always_on_for_a_drifting_ticker_is_not_evidence():
+    """A flag stuck on one underperforming ticker says nothing within ticker: that ticker is excluded."""
+    df = _flag_panel(effect=0.0, tickers=("RKLB", "SATL"), p=0.0, seed=3)
+    stuck = _flag_panel(effect=0.0, tickers=("SPCE",), p=1.0, seed=4).assign(ret=lambda d: d["ret"] - 0.05)
+    r = ics.evaluate_flag(pd.concat([df, stuck]), "CATALYST RISK", horizon=1)
+    assert r.verdict == ics.INSUFFICIENT
+    assert r.always_flagged == ["SPCE"] and r.mixed_tickers == []
+
+
+def test_few_flagged_dates_is_insufficient():
+    r = ics.evaluate_flag(_flag_panel(effect=-0.03, n_dates=40, p=0.05), "DILUTION RISK", horizon=3)
+    assert r.verdict == ics.INSUFFICIENT and r.diff is None
+    assert "flagged dates" in r.reason
+
+
+def test_flag_effect_from_one_ticker_is_not_lower():
+    strong = _flag_panel(effect=-0.10, tickers=("ASTS",), seed=7)
+    noise = _flag_panel(effect=0.0, tickers=("RKLB", "SATL", "SPCE"), seed=8)
+    r = ics.evaluate_flag(pd.concat([strong, noise]), "CATALYST RISK", horizon=1)
+    assert r.diff < 0 and r.verdict == ics.NO_DIFFERENCE, r.reason
+    assert not r.leave_one_out_same_sign

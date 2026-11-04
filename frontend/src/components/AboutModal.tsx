@@ -494,6 +494,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                     <li><strong>Expectativas Reales con Dinero (Polymarket):</strong> Incorpora probabilidades financieras donde los usuarios arriesgan capital real.</li>
                     <li><strong>Filtro Automático de Calidad:</strong> Elimina mercados de predicción ilíquidos o con spreads manipulables.</li>
                     <li><strong>Explicabilidad Total (Cero Cajas Negras):</strong> Cada señal explica detalladamente por qué se emitió.</li>
+                    <li><strong>Auditoría y Validación Empírica:</strong> Rigor estadístico con backtesting paired block bootstrap y liquidación continua de señales (Signal Ledger) frente a retornos en exceso reales.</li>
                     <li><strong>Aislamiento de Fallos:</strong> Si una red social falla, el motor sigue funcionando con las demás fuentes.</li>
                   </ul>
                 </div>
