@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { TickerDetailResponse, HistoryPoint, PredictionMarketItem, formatWeight } from '../types';
 import { HistoryChart } from './HistoryChart';
+import { PriceChart } from './PriceChart';
 import { MessageSquare, Newspaper, Zap, Activity, Compass, ExternalLink, Target, Globe } from 'lucide-react';
 import { fmt, fmtPrice, isNum, riskTone, Tone, useThresholds } from '../lib/scale';
 import { Badge, DataFlags, EmptyState, Modal, Notice, ScoreValue, SignalPill } from './ui';
@@ -150,6 +151,10 @@ export const TickerDetail: React.FC<TickerDetailProps> = ({ ticker, onClose, las
 
       <div className="detail-section">
         <HistoryChart data={history} />
+      </div>
+
+      <div className="detail-section">
+        <PriceChart ticker={ticker} refreshKey={lastUpdate} />
       </div>
 
       {/* Pillars */}

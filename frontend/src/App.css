@@ -1058,3 +1058,157 @@ code {
   }
 }
 
+/* Daily price chart (TickerDetail) */
+.price-chart {
+  position: relative;
+  width: 100%;
+  background: rgba(11, 15, 25, 0.6);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.price-chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 0 4px;
+}
+
+.price-chart-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.price-chart-subtitle {
+  font-weight: 400;
+  color: var(--text-dim);
+}
+
+.price-chart-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 0.75rem;
+}
+
+.price-chart-separator {
+  width: 1px;
+  height: 16px;
+  background: var(--border-color);
+  margin: 0 2px;
+}
+
+.price-chart-pill {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: inherit;
+  cursor: pointer;
+}
+
+.price-chart-pill:hover { color: var(--text-main); }
+
+.price-chart-pill.is-active {
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+  background: rgba(0, 242, 254, 0.1);
+}
+
+.price-chart-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.price-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 0 4px 6px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.price-chart-legend b {
+  color: var(--text-main);
+  font-weight: 600;
+}
+
+.price-chart-date {
+  color: var(--text-main);
+  font-weight: 600;
+}
+
+.price-chart-partial { color: var(--neutral-yellow); }
+
+.price-chart-canvas {
+  width: 100%;
+  height: 360px;
+}
+
+.price-chart-events {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  min-height: 20px;
+  padding: 6px 4px 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.price-chart-event {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  overflow-wrap: anywhere;
+}
+
+.price-chart-event b {
+  color: var(--text-main);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.price-chart-dot {
+  display: inline-block;
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.price-chart-hint { color: var(--text-dim); }
+
+.price-chart-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 6px 4px 0;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
+.price-chart-empty {
+  text-align: center;
+  padding: 30px;
+  color: var(--text-muted);
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 12px;
+}
+
+@media (max-width: 640px) {
+  .price-chart-canvas { height: 280px; }
+}

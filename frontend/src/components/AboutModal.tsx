@@ -458,7 +458,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                       <br />• <strong>Pestaña Prediction Markets:</strong> Contratos de Polymarket, probabilidades YES/NO, volumen y liquidez.
                       <br />• <strong>Pestaña X Social Feed:</strong> Tweets categorizados con tags de catalizador y análisis de sentimiento.
                       <br />• <strong>WHY THIS SIGNAL?:</strong> Razones cuantitativas explicables con jerarquía de momentum (+X.X pts en 24h).
-                      <br />• <strong>Gráfico Multi-serie SVG:</strong> Enciende o apaga interactivamente las curvas de Precio, SMI, SSI y PMS.
+                      <br />• <strong>Gráficos Interactivos:</strong> Gráfico de velas diarias (PriceChart con volumen, EMA200, Bollinger Bands opcionales, marcas de cambios de señal, catalizadores y resultados) y gráfico multi-serie SVG con las curvas históricas de Precio, SMI, SSI y PMS.
                     </p>
                   </div>
                 </div>

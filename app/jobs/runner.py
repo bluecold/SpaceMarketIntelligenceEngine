@@ -11,7 +11,7 @@ from app.database.repository import (
     save_news_items, get_recent_news_items,
     save_prediction_markets, get_recent_prediction_markets,
     get_stale_active_prediction_markets, update_prediction_market_status,
-    save_divergences, save_alerts, save_market_snapshot, get_latest_market_snapshot,
+    save_divergences, save_alerts, save_market_snapshot, get_latest_market_snapshot, save_daily_bars,
     save_ssi_snapshot, get_latest_ssi_snapshot, get_historical_ssi_snapshot,
     create_job_run, finish_job_run, utc_now,
     acquire_pipeline_job_lock, update_job_heartbeat
@@ -305,6 +305,12 @@ async def ingest_market_for_ticker(
         **indicators,
     }
     save_market_snapshot(db, mkt_snap_data)
+    # Chart-only history; a failure here must never affect scoring.
+    try:
+        save_daily_bars(db, ticker, raw_market_df)
+    except Exception as bar_err:
+        db.rollback()
+        logger.warning(f"Could not store daily bars for {ticker}: {bar_err}")
     return indicators, raw_market_df
 
 

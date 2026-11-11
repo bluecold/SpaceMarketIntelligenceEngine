@@ -208,6 +208,22 @@ class MarketSnapshotModel(Base):
     technical_score = Column(Float, nullable=True)  # 0 to 40
 
 
+class DailyBarModel(Base):
+    """Daily OHLCV bar per ticker, for the price chart only. Scoring never reads this table."""
+    __tablename__ = "daily_bars"
+    __table_args__ = (UniqueConstraint("ticker", "date", name="uq_daily_bars_ticker_date"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticker = Column(String(10), index=True, nullable=False)
+    date = Column(String(10), index=True, nullable=False)  # Session date, YYYY-MM-DD
+    open = Column(Float, nullable=False)
+    high = Column(Float, nullable=False)
+    low = Column(Float, nullable=False)
+    close = Column(Float, nullable=False)
+    volume = Column(Float, nullable=True)
+    updated_at = Column(DateTime, default=utc_now)
+
+
 class SSISnapshotModel(Base):
     __tablename__ = "ssi_snapshots"
 

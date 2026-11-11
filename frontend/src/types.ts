@@ -247,3 +247,36 @@ export interface HistoryResponse {
   count: number;
   history: HistoryPoint[];
 }
+
+export interface PriceCandle {
+  time: string; // Session date, YYYY-MM-DD
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number | null;
+  ema200: number | null;
+  bb_upper: number | null;
+  bb_middle: number | null;
+  bb_lower: number | null;
+}
+
+export interface ChartMarker {
+  time: string;
+  kind: 'SIGNAL' | 'CATALYST' | 'EARNINGS';
+  label: string;
+  direction: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  text: string;
+}
+
+export interface CandlesResponse {
+  ticker: string;
+  name: string;
+  count: number;
+  candles: PriceCandle[];
+  levels: { high_52w: number | null; low_52w: number | null; range_sessions: number };
+  markers: ChartMarker[];
+  next_earnings_date: string | null;
+  last_bar_partial: boolean;
+  last_bar_updated_at: string | null;
+}

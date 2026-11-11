@@ -9,7 +9,7 @@ from app.database.models import (
     TickerModel, SocialPostModel, NewsItemModel,
     MarketSnapshotModel, SSISnapshotModel, JobRunModel,
     PredictionMarketModel, PredictionMarketSnapshotModel, DivergenceModel,
-    AlertModel
+    AlertModel, DailyBarModel
 )
 from app.config import INITIAL_TICKERS, DEFAULT_EVENT_COMPANY_MAPPINGS
 from app.collectors.base import PredictionMarketData
@@ -640,6 +640,107 @@ def save_market_snapshot(db: Session, data: Dict[str, Any]) -> MarketSnapshotMod
     db.commit()
     db.refresh(snapshot)
     return snapshot
+
+
+def save_daily_bars(db: Session, ticker: str, df: Any) -> int:
+    """
+    Upsert the daily OHLCV history that the market provider already downloads on every run.
+    Existing dates are overwritten: today's bar is partial until the close, and yfinance
+    restates past bars after splits. Returns the number of bars written.
+    """
+    if df is None or len(df) == 0 or not {"Open", "High", "Low", "Close"}.issubset(df.columns):
+        return 0
+
+    rows: Dict[str, Dict[str, Any]] = {}
+    has_volume = "Volume" in df.columns
+    for idx, row in df.iterrows():
+        values = [row["Open"], row["High"], row["Low"], row["Close"]]
+        if any(v is None or v != v or v <= 0 for v in values):  # v != v catches NaN
+            continue
+        day = idx.date().isoformat() if hasattr(idx, "date") else str(idx)[:10]
+        vol = row["Volume"] if has_volume else None
+        rows[day] = {
+            "open": float(values[0]), "high": float(values[1]), "low": float(values[2]), "close": float(values[3]),
+            "volume": float(vol) if vol is not None and vol == vol else None,
+        }
+    if not rows:
+        return 0
+
+    existing = {
+        b.date: b
+        for b in db.query(DailyBarModel).filter(DailyBarModel.ticker == ticker, DailyBarModel.date >= min(rows)).all()
+    }
+    now = utc_now()
+    for day, vals in rows.items():
+        bar = existing.get(day)
+        if bar is None:
+            db.add(DailyBarModel(ticker=ticker, date=day, updated_at=now, **vals))
+        else:
+            for key, val in vals.items():
+                setattr(bar, key, val)
+            bar.updated_at = now
+    db.commit()
+    return len(rows)
+
+
+def get_daily_bars(db: Session, ticker: str) -> List[DailyBarModel]:
+    """Every stored daily bar for the ticker, oldest first."""
+    return (
+        db.query(DailyBarModel)
+        .filter(DailyBarModel.ticker == ticker)
+        .order_by(DailyBarModel.date)
+        .all()
+    )
+
+
+def get_chart_events(db: Session, ticker: str, min_news_relevance: float, min_rules_version: str = "2.2.0") -> Dict[str, Any]:
+    """
+    Events for the price chart markers, each keyed by New York calendar day:
+    - daily_bands: [(day, base_signal)] from the last snapshot of each day. Snapshots older than
+      `min_rules_version` are skipped (their bands came from different formulas and thresholds).
+    - catalyst_days: bearish catalyst headlines (label stored at ingest time, not recomputed).
+    - earnings_dates: every report date the pipeline recorded in `next_earnings_date`.
+    """
+    from zoneinfo import ZoneInfo
+    eastern = ZoneInfo("America/New_York")
+
+    def ny_day(ts: datetime) -> str:
+        return ts.replace(tzinfo=timezone.utc).astimezone(eastern).date().isoformat()
+
+    snaps = (
+        db.query(SSISnapshotModel.timestamp, SSISnapshotModel.base_signal, SSISnapshotModel.rules_version,
+                 SSISnapshotModel.next_earnings_date)
+        .filter(SSISnapshotModel.ticker == ticker)
+        .order_by(SSISnapshotModel.timestamp)
+        .all()
+    )
+    bands: Dict[str, str] = {}
+    earnings: Set[str] = set()
+    for ts, band, rules_version, next_earnings in snaps:
+        if next_earnings:
+            earnings.add(str(next_earnings)[:10])
+        if ts is None or not band or not rules_version or _version_key(rules_version) < _version_key(min_rules_version):
+            continue
+        bands[ny_day(ts)] = band  # Ascending order: the last snapshot of the day wins
+
+    news = (
+        db.query(NewsItemModel.published_at, NewsItemModel.catalyst, NewsItemModel.title)
+        .filter(NewsItemModel.ticker == ticker)
+        .filter(NewsItemModel.catalyst != None)  # noqa: E711
+        .filter(NewsItemModel.catalyst_direction == "BEARISH")
+        .filter(or_(NewsItemModel.relevance_score == None, NewsItemModel.relevance_score >= min_news_relevance))  # noqa: E711
+        .order_by(NewsItemModel.published_at)
+        .all()
+    )
+    catalyst_days = [
+        {"day": ny_day(published), "catalyst": catalyst, "title": title}
+        for published, catalyst, title in news if published is not None
+    ]
+    return {"daily_bands": sorted(bands.items()), "catalyst_days": catalyst_days, "earnings_dates": sorted(earnings)}
+
+
+def _version_key(version: str) -> Tuple[int, ...]:
+    return tuple(int(part) if part.isdigit() else 0 for part in str(version).split("."))
 
 
 def get_latest_market_snapshot(db: Session, ticker: str) -> Optional[MarketSnapshotModel]:
