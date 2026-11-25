@@ -143,6 +143,23 @@ class TwikitProvider(XProvider):
         return posts
 
     @staticmethod
+    def _author_handle(tweet) -> str:
+        """
+        Stable author key: the @handle (screen_name), unique per account. The display name (user.name) is neither
+        unique nor stable, so counting authors by it under- or over-counts the distinct authors that bound
+        effective_sample_size. Falls back to the numeric user id, never to a shared placeholder that would merge
+        unrelated accounts into one author.
+        """
+        user = getattr(tweet, 'user', None)
+        if user is None:
+            return 'x_user'
+        handle = getattr(user, 'screen_name', None)
+        if handle:
+            return str(handle)
+        user_id = getattr(user, 'id', None)
+        return f"id:{user_id}" if user_id else 'x_user'
+
+    @staticmethod
     def _to_post(tweet, ticker: str) -> SocialPostData:
         if hasattr(tweet, 'created_at') and tweet.created_at:
             try:
@@ -152,11 +169,10 @@ class TwikitProvider(XProvider):
                 created_dt = datetime.now(timezone.utc)
         else:
             created_dt = datetime.now(timezone.utc)
-        user_name = getattr(tweet.user, 'name', 'x_user') if getattr(tweet, 'user', None) else 'x_user'
         return SocialPostData(
             tweet_id=str(tweet.id),
             ticker=ticker,
-            username=user_name,
+            username=TwikitProvider._author_handle(tweet),
             text=getattr(tweet, 'text', '') or '',
             created_at=created_dt,
             url=f"https://x.com/x/status/{tweet.id}",

@@ -331,3 +331,43 @@ class AlertModel(Base):
     last_seen = Column(DateTime, default=utc_now)
     resolved_at = Column(DateTime, nullable=True)
 
+
+
+class SecFilingModel(Base):
+    """EDGAR filings tracked by the dilution monitor (offerings, shelves, financing 8-Ks). Informational only."""
+    __tablename__ = "sec_filings"
+    __table_args__ = (
+        UniqueConstraint("ticker", "accession_number", name="uq_sec_filings_ticker_accession"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticker = Column(String(10), index=True, nullable=False)
+    cik = Column(String(10), nullable=False)
+    accession_number = Column(String(25), nullable=False)
+    form = Column(String(20), nullable=False, index=True)
+    items = Column(String(100), nullable=True)           # 8-K item codes, e.g. "1.01,2.03,3.02"
+    category = Column(String(30), nullable=False, index=True)
+    filed_date = Column(String(10), nullable=False)      # YYYY-MM-DD
+    accepted_at = Column(DateTime, nullable=True, index=True)
+    primary_document = Column(String(200), nullable=True)
+    description = Column(String(300), nullable=True)
+    url = Column(String(500), nullable=True)
+    source = Column(String(20), default="LIVE", index=True)  # "LIVE", "MOCK"
+    collected_at = Column(DateTime, default=utc_now)
+
+
+class SourceCheckModel(Base):
+    """Last fetch attempt and success per source and ticker, for sources whose newest item cannot show staleness
+    (a company can go months without an SEC filing, so only the fetch itself proves the source is alive)."""
+    __tablename__ = "source_checks"
+    __table_args__ = (
+        UniqueConstraint("source", "ticker", name="uq_source_checks_source_ticker"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    source = Column(String(30), nullable=False)
+    ticker = Column(String(10), nullable=False)
+    status = Column(String(20), nullable=True)            # OK, NOT_APPLICABLE, DISABLED, ERROR
+    last_attempt_at = Column(DateTime, nullable=True)
+    last_success_at = Column(DateTime, nullable=True)
+    detail = Column(Text, nullable=True)

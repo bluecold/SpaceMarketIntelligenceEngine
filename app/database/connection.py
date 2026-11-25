@@ -421,3 +421,12 @@ def init_db(target_engine=None):
                 logger.info("Successfully executed one-time schema migration 'v2_2_legacy_mock_polymarket_relabel'.")
         except Exception as relabel_err:
             logger.warning(f"Note on schema migration v2_2_legacy_mock_polymarket_relabel: {relabel_err}")
+
+        # Strict governance: SEC filings from the mock provider never stay next to live ones (an invented
+        # offering would raise a dilution alert). Runs on every startup, the table is small.
+        if not getattr(settings, "ALLOW_MOCK_FALLBACK", False):
+            try:
+                conn.execute(text("DELETE FROM sec_filings WHERE source = 'MOCK';"))
+                conn.commit()
+            except Exception as sec_err:
+                logger.warning(f"Note on mock SEC filings purge: {sec_err}")

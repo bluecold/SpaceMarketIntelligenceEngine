@@ -111,6 +111,17 @@ def test_rate_limit_mid_paging_keeps_partial_posts(monkeypatch):
     assert not prov.last_search_meta.complete
 
 
+def test_author_is_the_handle_not_the_display_name():
+    # Two accounts sharing a display name are two authors; the display name must not merge them
+    a = SimpleNamespace(id=1, created_at=None, text="$ASTS", user=SimpleNamespace(id=11, name="Space Fan", screen_name="fan_one"))
+    b = SimpleNamespace(id=2, created_at=None, text="$ASTS", user=SimpleNamespace(id=12, name="Space Fan", screen_name="fan_two"))
+    assert TwikitProvider._to_post(a, "ASTS").username == "fan_one"
+    assert TwikitProvider._to_post(b, "ASTS").username == "fan_two"
+    # Without a handle, the numeric id keeps accounts apart instead of a shared placeholder
+    c = SimpleNamespace(id=3, created_at=None, text="$ASTS", user=SimpleNamespace(id=13, name="Space Fan", screen_name=""))
+    assert TwikitProvider._to_post(c, "ASTS").username == "id:13"
+
+
 def test_x_query_uses_language_operator_and_spcx_override(monkeypatch):
     monkeypatch.setattr(settings, "SOCIAL_ALLOWED_LANGUAGES", ["en"])
     by_symbol = {t.symbol: t for t in INITIAL_TICKERS}

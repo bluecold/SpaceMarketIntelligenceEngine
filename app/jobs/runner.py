@@ -14,7 +14,8 @@ from app.database.repository import (
     save_divergences, save_alerts, save_market_snapshot, get_latest_market_snapshot, save_daily_bars,
     save_ssi_snapshot, get_latest_ssi_snapshot, get_historical_ssi_snapshot,
     create_job_run, finish_job_run, utc_now,
-    acquire_pipeline_job_lock, update_job_heartbeat
+    acquire_pipeline_job_lock, update_job_heartbeat,
+    save_sec_filings, get_recent_sec_filings, record_source_check
 )
 from app.collectors.mock_x_provider import MockXProvider
 from app.collectors.twikit_provider import TwikitProvider
@@ -22,6 +23,7 @@ from app.collectors.market_provider import YFinanceMarketProvider
 from app.collectors.news_provider import GoogleRSSNewsProvider, MockNewsProvider
 from app.collectors.mock_polymarket_provider import MockPolymarketProvider
 from app.collectors.polymarket_provider import PolymarketGammaProvider
+from app.collectors.sec_edgar_provider import EdgarSecProvider, MockSecProvider
 from app.sentiment.classifier import get_sentiment_classifier, get_social_sentiment_classifier
 from app.sentiment.weighting import (
     calculate_engagement_score, calculate_recency_weight,
@@ -71,6 +73,30 @@ def get_polymarket_provider():
     if getattr(settings, "ALLOW_MOCK_FALLBACK", False):
         return MockPolymarketProvider()
     return PolymarketGammaProvider()
+
+
+def get_sec_provider():
+    # No mock fallback for a live EDGAR failure: an invented offering would raise a false dilution alert
+    if getattr(settings, "SEC_PROVIDER", "edgar").lower() == "mock":
+        return MockSecProvider()
+    return EdgarSecProvider()
+
+
+async def ingest_sec_filings_for_ticker(db: SessionLocal, ticker_config, sec_provider=None) -> Dict[str, Any]:
+    """Fetch the ticker's EDGAR index, store new tracked filings and record the fetch for freshness.
+    Raises on failure (after recording it) so the caller keeps FILING alerts open."""
+    if sec_provider is None:
+        sec_provider = get_sec_provider()
+    ticker = ticker_config.symbol
+    try:
+        res = await sec_provider.fetch_filings(ticker, cik=getattr(ticker_config, "sec_cik", None))
+    except Exception as e:
+        record_source_check(db, "sec_edgar", ticker, "ERROR", detail=str(e)[:500])
+        raise
+    added = save_sec_filings(db, res.filings, commit=False) if res.status == "OK" else 0
+    record_source_check(db, "sec_edgar", ticker, res.status, detail=res.detail or None, commit=False)
+    db.commit()
+    return {"status": res.status, "cik": res.cik, "fetched": len(res.filings), "new": added}
 
 
 async def ingest_prediction_markets(db: SessionLocal, poly_provider=None) -> List[Any]:
@@ -363,6 +389,7 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
         news_provider = get_news_provider()
         market_provider = YFinanceMarketProvider()
         poly_provider = get_polymarket_provider()
+        sec_provider = get_sec_provider()
         sentiment_classifier = get_sentiment_classifier()
         social_classifier = get_social_sentiment_classifier()
 
@@ -441,6 +468,25 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 news_success = True
             except Exception as e:
                 logger.error(f"News collection error for {ticker} (isolated): {e}")
+
+            # --- STEP 3b: SEC EDGAR FILINGS (informational dilution monitor, never scored) ---
+            sec_success = True
+            if getattr(settings, "SEC_EDGAR_ENABLED", True):
+                try:
+                    sec_res = await ingest_sec_filings_for_ticker(db, ticker_config, sec_provider=sec_provider)
+                    records_processed += sec_res["new"]
+                except Exception as e:
+                    sec_success = False
+                    logger.error(f"SEC EDGAR collection error for {ticker} (isolated): {e}")
+            # Read from the DB, so an EDGAR outage keeps showing a filing still inside its window
+            recent_filings = []
+            try:
+                recent_filings = get_recent_sec_filings(
+                    db, ticker, days=settings.SEC_FILING_ALERT_DAYS,
+                    include_mock=getattr(settings, "SEC_PROVIDER", "edgar").lower() == "mock"
+                )
+            except Exception as e:
+                logger.warning(f"Could not read recent SEC filings for {ticker}: {e}")
 
             # --- STEP 4: MARKET DATA & TECHNICAL SCORING ---
             indicators = {
@@ -625,7 +671,8 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 risk_score=risk_score,
                 momentum_score=momentum_score,
                 is_mom_comparable_1d=smi_dict.get("is_mom_comparable_1d", True),
-                days_to_earnings=days_to_earnings
+                days_to_earnings=days_to_earnings,
+                recent_filings=recent_filings
             )
 
             # --- STEP 6: DETERMINE DATA PROVENANCE & SAVE STATEFUL DATA ---
@@ -779,6 +826,8 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                     resolve_categories.add("FUNDAMENTAL")
                 if div_sources_success:
                     resolve_categories.add("DIVERGENCE")
+                if sec_success:
+                    resolve_categories.add("FILING")
 
                 # Source freshness: a provider that answers but brings nothing new raises a SYSTEM alert,
                 # which resolves on the first run where every source is fresh again (DB-only, no network)

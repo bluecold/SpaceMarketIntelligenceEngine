@@ -4,6 +4,27 @@ from app.divergence.detector import detect_divergences, DivergenceResult
 from app.scoring.social import apply_bayesian_shrinkage
 from app.scoring.fundamentals import get_fundamental_runway_info
 from app.sentiment.weighting import IMPORTANCE_RANK
+from app.collectors.sec_forms import (
+    CATEGORY_LABELS as SEC_CATEGORY_LABELS, DEBT_FINANCING, DILUTION_CATEGORIES, SHELF
+)
+
+
+def _filing_field(filing: Any, name: str) -> Any:
+    return filing.get(name) if isinstance(filing, dict) else getattr(filing, name, None)
+
+
+def _summarize_filings(filings: List[Any]) -> str:
+    """'424B5 (2026-11-20), 8-K 3.02 (2026-11-18)': at most three, newest first as given."""
+    parts = []
+    for f in filings[:3]:
+        form = _filing_field(f, "form") or "?"
+        if str(form).upper().startswith("8-K") and _filing_field(f, "items"):
+            form = f"{form} items {_filing_field(f, 'items')}"
+        when = _filing_field(f, "accepted_at") or _filing_field(f, "filed_date")
+        when = when.date().isoformat() if hasattr(when, "date") else str(when or "")[:10]
+        parts.append(f"{form} ({when})" if when else str(form))
+    extra = f" +{len(filings) - 3} more" if len(filings) > 3 else ""
+    return ", ".join(parts) + extra
 
 
 def generate_signal_and_explanation(
@@ -29,7 +50,8 @@ def generate_signal_and_explanation(
     risk_score: Optional[float] = None,
     momentum_score: Optional[float] = None,
     is_mom_comparable_1d: bool = True,
-    days_to_earnings: Optional[int] = None
+    days_to_earnings: Optional[int] = None,
+    recent_filings: Optional[List[Any]] = None
 ) -> Dict[str, Any]:
     """
     Generates quantitative trading signal, multi-source divergence detection,
@@ -39,6 +61,11 @@ def generate_signal_and_explanation(
     indicators = indicators or {}
     social_stats = social_stats or {}
     catalysts_found = catalysts_found or []
+    recent_filings = recent_filings or []
+    # SEC filings inside the alert window (informational dilution monitor; see app/collectors/sec_forms.py)
+    dilution_filings = [f for f in recent_filings if _filing_field(f, "category") in DILUTION_CATEGORIES]
+    debt_filings = [f for f in recent_filings if _filing_field(f, "category") == DEBT_FINANCING]
+    shelf_filings = [f for f in recent_filings if _filing_field(f, "category") == SHELF]
     
     # Extract prediction delta if not directly provided
     eff_pred_delta = prediction_delta_24h
@@ -159,6 +186,11 @@ def generate_signal_and_explanation(
                 base_signal = "WATCH"
             if "NO MKT DATA" not in modifiers:
                 modifiers.append("NO MKT DATA")
+
+    # Informational only: an SEC offering filing never changes base_signal (phase 1 of the EDGAR monitor;
+    # it becomes a gate only if the signal ledger shows the modifier marks worse returns)
+    if dilution_filings and has_any_data:
+        modifiers.append("SEC OFFERING")
 
     # Informational only: upcoming earnings never change base_signal
     earnings_soon = days_to_earnings is not None and 0 <= days_to_earnings <= settings.EARNINGS_WARNING_DAYS
@@ -363,6 +395,35 @@ def generate_signal_and_explanation(
             "message": f"⚠️ {ticker} Low Runway Alert: {runway_months:.1f} months of cash remaining (${cash_m:.0f}M cash{as_of_str}) — watch for financing announcements"
         })
 
+    # SEC EDGAR filing alerts (category FILING: resolved only after a successful EDGAR fetch)
+    if dilution_filings:
+        alerts.append({
+            "id": f"{ticker}:FILING:SEC_OFFERING",
+            "ticker": ticker,
+            "type": "SEC_OFFERING",
+            "category": "FILING",
+            "level": "HIGH",
+            "message": f"🧾 {ticker}: SEC filing for a sale of new securities ({_summarize_filings(dilution_filings)}) — dilution; the signal is unchanged"
+        })
+    if debt_filings:
+        alerts.append({
+            "id": f"{ticker}:FILING:SEC_DEBT",
+            "ticker": ticker,
+            "type": "SEC_DEBT",
+            "category": "FILING",
+            "level": "WARNING",
+            "message": f"🧾 {ticker}: SEC 8-K reports a new debt obligation ({_summarize_filings(debt_filings)}) — check for convertible terms"
+        })
+    if shelf_filings:
+        alerts.append({
+            "id": f"{ticker}:FILING:SEC_SHELF",
+            "ticker": ticker,
+            "type": "SEC_SHELF",
+            "category": "FILING",
+            "level": "INFO",
+            "message": f"🧾 {ticker}: new shelf registration with the SEC ({_summarize_filings(shelf_filings)}) — allows future offerings, not a sale by itself"
+        })
+
     # Technical Structural & Price Action Alerts
     intraday_rev = indicators.get("intraday_reversal_pct")
     range_loc = indicators.get("range_location")
@@ -441,6 +502,14 @@ def generate_signal_and_explanation(
             reasons.append(f"- Low cash runway: {runway_months:.1f} months of liquidity available (${cash_m:.0f}M cash)")
         elif runway_months >= 24.0 or runway_months == 999.0:
             reasons.append(f"+ Strong balance sheet runway: >24 months of cash reserves (low dilution risk)")
+
+    if dilution_filings:
+        reasons.append(f"! SEC {SEC_CATEGORY_LABELS[_filing_field(dilution_filings[0], 'category')]}: "
+                       f"{_summarize_filings(dilution_filings)} (informational, does not change the signal)")
+    if debt_filings:
+        reasons.append(f"! SEC {SEC_CATEGORY_LABELS[DEBT_FINANCING]}: {_summarize_filings(debt_filings)}")
+    if shelf_filings:
+        reasons.append(f"! SEC {SEC_CATEGORY_LABELS[SHELF]}: {_summarize_filings(shelf_filings)}")
 
     if earnings_soon:
         when = "today" if days_to_earnings == 0 else f"in {days_to_earnings} day(s)"

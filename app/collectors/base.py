@@ -137,3 +137,35 @@ class PredictionMarketProvider(ABC):
     ) -> List[MarketProbabilityPoint]:
         """Fetch historical probability points for a market over `interval`, one point per `fidelity` minutes."""
         pass
+
+
+class SecFilingData(BaseModel):
+    """One tracked EDGAR filing (see app/collectors/sec_forms.py for the categories)."""
+    ticker: str
+    cik: str
+    accession_number: str
+    form: str
+    items: Optional[str] = None          # 8-K item codes, e.g. "1.01,2.03,3.02"
+    category: str
+    filed_date: str                      # YYYY-MM-DD as reported by EDGAR
+    accepted_at: Optional[datetime] = None
+    primary_document: Optional[str] = None
+    description: Optional[str] = None
+    url: Optional[str] = None
+    source: str = "LIVE"                 # "LIVE", "MOCK"
+
+
+class SecFetchResult(BaseModel):
+    """status: OK (index read), NOT_APPLICABLE (no CIK for the symbol), DISABLED (no SEC_USER_AGENT set)."""
+    status: str = "OK"
+    cik: Optional[str] = None
+    filings: List[SecFilingData] = []
+    detail: str = ""
+
+
+class SecFilingsProvider(ABC):
+    @abstractmethod
+    async def fetch_filings(self, ticker: str, cik: Optional[str] = None) -> SecFetchResult:
+        """Tracked filings (offerings, shelves, financing 8-Ks) from the company's EDGAR submissions index.
+        Raises on a network or parsing failure so the caller can keep FILING alerts open."""
+        pass

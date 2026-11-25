@@ -42,7 +42,7 @@ BANDS = ["STRONG AVOID", "AVOID", "CAUTION", "HOLD", "WATCH", "BUY", "STRONG BUY
 BAND_RANK = {b: i for i, b in enumerate(BANDS)}
 # Gates that cap the band, plus modifiers that only inform. EARNINGS IN nD is grouped as EARNINGS.
 MODIFIERS = ["CATALYST RISK", "HIGH RISK", "DILUTION RISK", "CONFLICTING SOURCES", "LOW DATA QUALITY",
-             "OVEREXTENDED", "NO MKT DATA", "EARNINGS"]
+             "OVEREXTENDED", "NO MKT DATA", "EARNINGS", "SEC OFFERING"]
 MIN_BAND_DATES_FOR_CI = 10
 
 

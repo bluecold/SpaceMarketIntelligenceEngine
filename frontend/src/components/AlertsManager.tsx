@@ -288,7 +288,7 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
   };
 
   const getCategory = (al: AlertItem): 'SIGNAL' | 'DIVERGENCES' | 'TECHNICAL' | 'SYSTEM' => {
-    if (al.category === 'SIGNAL' || al.type.includes('BUY') || al.type.includes('AVOID')) return 'SIGNAL';
+    if (al.category === 'SIGNAL' || al.category === 'FILING' || al.type.includes('BUY') || al.type.includes('AVOID')) return 'SIGNAL';
     if (al.category === 'TECHNICAL' || al.type.includes('RSI') || al.type.includes('BOLLINGER') || al.type.includes('EMA') || al.type.includes('INTRADAY')) return 'TECHNICAL';
     if (al.category === 'SYSTEM' || al.type.includes('STALE')) return 'SYSTEM';
     return 'DIVERGENCES';
@@ -858,19 +858,19 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
                         )}
 
                         {/* Category Tag for Fundamental / Catalyst / Technical */}
-                        {al.category && (al.category === 'FUNDAMENTAL' || al.category === 'CATALYST' || al.category === 'TECHNICAL') && (
+                        {al.category && (al.category === 'FUNDAMENTAL' || al.category === 'FILING' || al.category === 'CATALYST' || al.category === 'TECHNICAL') && (
                           <span
                             style={{
                               fontSize: '0.62rem',
                               fontWeight: 700,
                               padding: '1px 5px',
                               borderRadius: '3px',
-                              background: al.category === 'FUNDAMENTAL' ? 'rgba(168, 85, 247, 0.16)' : al.category === 'CATALYST' ? 'rgba(249, 115, 22, 0.16)' : 'rgba(56, 189, 248, 0.16)',
-                              color: al.category === 'FUNDAMENTAL' ? '#c084fc' : al.category === 'CATALYST' ? '#fb923c' : '#38bdf8',
-                              border: `1px solid ${al.category === 'FUNDAMENTAL' ? 'rgba(168, 85, 247, 0.35)' : al.category === 'CATALYST' ? 'rgba(249, 115, 22, 0.35)' : 'rgba(56, 189, 248, 0.35)'}`
+                              background: (al.category === 'FUNDAMENTAL' || al.category === 'FILING') ? 'rgba(168, 85, 247, 0.16)' : al.category === 'CATALYST' ? 'rgba(249, 115, 22, 0.16)' : 'rgba(56, 189, 248, 0.16)',
+                              color: (al.category === 'FUNDAMENTAL' || al.category === 'FILING') ? '#c084fc' : al.category === 'CATALYST' ? '#fb923c' : '#38bdf8',
+                              border: `1px solid ${(al.category === 'FUNDAMENTAL' || al.category === 'FILING') ? 'rgba(168, 85, 247, 0.35)' : al.category === 'CATALYST' ? 'rgba(249, 115, 22, 0.35)' : 'rgba(56, 189, 248, 0.35)'}`
                             }}
                           >
-                            {al.category === 'FUNDAMENTAL' ? 'Balance/Runway' : al.category === 'CATALYST' ? 'Catalyst' : 'Technical'}
+                            {al.category === 'FUNDAMENTAL' ? 'Balance/Runway' : al.category === 'FILING' ? 'SEC filing' : al.category === 'CATALYST' ? 'Catalyst' : 'Technical'}
                           </span>
                         )}
 

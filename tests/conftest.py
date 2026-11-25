@@ -21,6 +21,7 @@ settings.ALLOW_MOCK_FALLBACK = True
 settings.X_PROVIDER = "mock"
 settings.NEWS_PROVIDER = "mock"
 settings.POLYMARKET_PROVIDER = "mock"
+settings.SEC_PROVIDER = "mock"
 settings.ENABLE_SCHEDULER = False
 
 # 3. Explicitly rebind database engine to dedicated test DB

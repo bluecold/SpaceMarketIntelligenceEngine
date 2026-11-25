@@ -17,6 +17,8 @@ class TickerConfig(BaseModel):
     validation_status: str = "VALIDATED"
     # X search terms when `$SYMBOL OR "name"` is too broad to page through (a bare "SpaceX" fills a page in ~1 minute)
     x_search_terms: Optional[str] = None
+    # SEC registrant (10-digit CIK). None = resolved from the SEC ticker map on each run (cached 24h)
+    sec_cik: Optional[str] = None
 
 
 # Core initial space stocks specified for SMIE v2.0
@@ -189,6 +191,15 @@ class Settings(BaseSettings):
 
     # News Provider
     NEWS_PROVIDER: str = "rss"  # "rss" or "mock"
+
+    # SEC EDGAR dilution monitor (app/collectors/sec_edgar_provider.py). Informational only: alerts plus the
+    # SEC OFFERING modifier, never the SMI or the band. The SEC requires a User-Agent naming the requester and a
+    # contact ("SMIE research name@example.com"); while it is empty the collector stays disabled.
+    SEC_EDGAR_ENABLED: bool = True
+    SEC_PROVIDER: str = "edgar"          # "edgar" or "mock"
+    SEC_USER_AGENT: str = ""
+    SEC_HISTORY_DAYS: int = 400          # Filings kept per fetch (the submissions index covers ~1 year or 1,000 filings)
+    SEC_FILING_ALERT_DAYS: float = 5.0   # A filing raises alerts / the modifier for this many days after acceptance (same as the CATALYST grace)
     
     # Sentiment Model
     SENTIMENT_MODEL: str = "heuristic"  # News model: "heuristic" or "ProsusAI/finbert"
@@ -256,6 +267,8 @@ class Settings(BaseSettings):
     SOCIAL_STALE_HOURS: float = 12.0
     NEWS_STALE_HOURS: float = 24.0
     POLYMARKET_STALE_HOURS: float = 6.0
+    # EDGAR is checked on the last successful fetch, not on the newest filing: companies go months without one
+    SEC_STALE_HOURS: float = 48.0
     # The price feed must carry the latest session that opened at least this long ago (US holiday calendar)
     MARKET_CANDLE_GRACE_MINUTES: int = 60
     # With the scheduler on, no successful run for this many intervals marks the pipeline itself as stale

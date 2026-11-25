@@ -24,10 +24,11 @@ from app.collectors.market_provider import _EASTERN_TZ, get_us_market_holidays
 from app.config import INITIAL_TICKERS, settings
 from app.database.models import (
     JobRunModel, MarketSnapshotModel, NewsItemModel, PredictionMarketModel,
-    PredictionMarketSnapshotModel, SocialPostModel,
+    PredictionMarketSnapshotModel, SocialPostModel, SourceCheckModel,
 )
 
 OK, STALE, NO_DATA, MOCK, DISABLED, MANUAL = "ok", "stale", "no_data", "mock", "disabled", "manual"
+NOT_APPLICABLE = "not_applicable"
 PROBLEM_STATUSES = {STALE, NO_DATA}
 SESSION_OPEN = time(9, 30)
 
@@ -132,6 +133,35 @@ def check_market(db: Session, ticker: str, ref: datetime) -> Dict[str, Any]:
     return {"status": OK, "candle": candle_d.isoformat(), **base, "detail": f"candle {candle_d.isoformat()}"}
 
 
+def sec_collector_active() -> bool:
+    return (getattr(settings, "SEC_EDGAR_ENABLED", True) and getattr(settings, "SEC_PROVIDER", "edgar").lower() != "mock"
+            and bool((getattr(settings, "SEC_USER_AGENT", "") or "").strip()))
+
+
+def check_sec(db: Session, ticker: str, ref: datetime) -> Dict[str, Any]:
+    """EDGAR: age of the last successful fetch. The newest filing says nothing (months can pass without one)."""
+    if not getattr(settings, "SEC_EDGAR_ENABLED", True):
+        return {"status": DISABLED}
+    if getattr(settings, "SEC_PROVIDER", "edgar").lower() == "mock":
+        return {"status": MOCK}
+    if not sec_collector_active():
+        return {"status": DISABLED, "detail": "SEC_USER_AGENT is not set"}
+    row = (db.query(SourceCheckModel)
+           .filter(SourceCheckModel.source == "sec_edgar", SourceCheckModel.ticker == ticker.upper())
+           .first())
+    if row is not None and row.status == "NOT_APPLICABLE":
+        return {"status": NOT_APPLICABLE, "detail": row.detail or "no SEC registrant"}
+    newest = _naive_utc(row.last_success_at) if row is not None else None
+    if newest is not None and newest > ref:
+        newest = ref
+    out = _age_check(newest, ref, settings.SEC_STALE_HOURS, "successful EDGAR fetch")
+    if out["status"] == NO_DATA:
+        out["detail"] = "EDGAR never fetched successfully"
+    if out["status"] in PROBLEM_STATUSES and row is not None and row.status == "ERROR" and row.detail:
+        out["detail"] += f" (last error: {row.detail[:120]})"
+    return out
+
+
 def check_pipeline(db: Session, now: datetime) -> Dict[str, Any]:
     last = (db.query(JobRunModel)
             .filter(JobRunModel.status == "SUCCESS", JobRunModel.finished_at.isnot(None))
@@ -153,7 +183,8 @@ def check_pipeline(db: Session, now: datetime) -> Dict[str, Any]:
 
 # --- Alerts and report ------------------------------------------------------------------------------
 
-SOURCE_LABELS = {"social": "X", "news": "News (all tickers)", "polymarket": "Polymarket", "market": "Price feed"}
+SOURCE_LABELS = {"social": "X", "news": "News (all tickers)", "polymarket": "Polymarket", "market": "Price feed",
+                 "sec": "SEC EDGAR"}
 
 
 def ticker_source_checks(db: Session, ticker: str, ref: Optional[datetime] = None) -> Dict[str, Dict[str, Any]]:
@@ -163,6 +194,7 @@ def ticker_source_checks(db: Session, ticker: str, ref: Optional[datetime] = Non
         "news": check_news(db, ref),
         "polymarket": check_polymarket(db, ref),
         "market": check_market(db, ticker, ref),
+        "sec": check_sec(db, ticker, ref),
     }
 
 
@@ -195,6 +227,7 @@ def evaluate_data_freshness(db: Session, now: Optional[datetime] = None) -> Dict
         "polymarket": per_ticker[tickers[0]]["polymarket"] if tickers else check_polymarket(db, ref),
         "social": {tk: c["social"] for tk, c in per_ticker.items()},
         "market": {tk: c["market"] for tk, c in per_ticker.items()},
+        "sec": {tk: c["sec"] for tk, c in per_ticker.items()},
     }
     problems: List[str] = []
     if pipeline["status"] in PROBLEM_STATUSES:
@@ -202,7 +235,7 @@ def evaluate_data_freshness(db: Session, now: Optional[datetime] = None) -> Dict
     for key in ("news", "polymarket"):
         if report[key].get("status") in PROBLEM_STATUSES:
             problems.append(key)
-    for key in ("social", "market"):
+    for key in ("social", "market", "sec"):
         problems += [f"{key}:{tk}" for tk, c in report[key].items() if c.get("status") in PROBLEM_STATUSES]
     report["status"] = "stale" if problems else "ok"
     report["problems"] = problems

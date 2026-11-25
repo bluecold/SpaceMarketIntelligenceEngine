@@ -9,7 +9,7 @@ from app.database.models import (
     TickerModel, SocialPostModel, NewsItemModel,
     MarketSnapshotModel, SSISnapshotModel, JobRunModel,
     PredictionMarketModel, PredictionMarketSnapshotModel, DivergenceModel,
-    AlertModel, DailyBarModel
+    AlertModel, DailyBarModel, SecFilingModel, SourceCheckModel
 )
 from app.config import INITIAL_TICKERS, DEFAULT_EVENT_COMPANY_MAPPINGS
 from app.collectors.base import PredictionMarketData
@@ -1078,3 +1078,73 @@ def finish_job_run(db: Session, job_id: int, status: str = "SUCCESS", records: i
         job.records_processed = records
         job.error_message = error
         db.commit()
+
+
+def save_sec_filings(db: Session, filings: List[Any], commit: bool = True) -> int:
+    """Insert EDGAR filings not stored yet (keyed by ticker + accession number). Returns the number of new rows."""
+    if not filings:
+        return 0
+    tickers = {f.ticker.upper() for f in filings}
+    existing = {
+        (t, a) for t, a in db.query(SecFilingModel.ticker, SecFilingModel.accession_number)
+        .filter(SecFilingModel.ticker.in_(tickers)).all()
+    }
+    now = utc_now()
+    added = 0
+    for f in filings:
+        key = (f.ticker.upper(), f.accession_number)
+        if key in existing:
+            continue
+        existing.add(key)
+        db.add(SecFilingModel(
+            ticker=f.ticker.upper(), cik=f.cik, accession_number=f.accession_number, form=f.form, items=f.items,
+            category=f.category, filed_date=f.filed_date, accepted_at=f.accepted_at,
+            primary_document=f.primary_document, description=f.description, url=f.url,
+            source=f.source or "LIVE", collected_at=now,
+        ))
+        added += 1
+    if commit:
+        db.commit()
+    return added
+
+
+def get_recent_sec_filings(db: Session, ticker: str, days: float, include_mock: bool = False,
+                           now: Optional[datetime] = None) -> List[SecFilingModel]:
+    """Filings accepted (or, without an acceptance time, filed) within the last `days` days, newest first."""
+    now = now or utc_now()
+    since = now - timedelta(days=days)
+    q = db.query(SecFilingModel).filter(
+        SecFilingModel.ticker == ticker.upper(),
+        or_(
+            SecFilingModel.accepted_at >= since,
+            (SecFilingModel.accepted_at.is_(None)) & (SecFilingModel.filed_date >= since.date().isoformat()),
+        ),
+    )
+    if not include_mock:
+        q = q.filter(SecFilingModel.source != "MOCK")
+    return q.order_by(desc(SecFilingModel.accepted_at), desc(SecFilingModel.filed_date)).all()
+
+
+def record_source_check(db: Session, source: str, ticker: str, status: str, detail: Optional[str] = None,
+                        commit: bool = True) -> None:
+    """Record one fetch attempt. Any status other than ERROR counts as a success (the source answered)."""
+    now = utc_now()
+    row = db.query(SourceCheckModel).filter(
+        SourceCheckModel.source == source, SourceCheckModel.ticker == ticker.upper()
+    ).first()
+    if row is None:
+        row = SourceCheckModel(source=source, ticker=ticker.upper())
+        db.add(row)
+    row.status = status
+    row.last_attempt_at = now
+    row.detail = detail
+    if status != "ERROR":
+        row.last_success_at = now
+    if commit:
+        db.commit()
+
+
+def get_source_check(db: Session, source: str, ticker: str) -> Optional[SourceCheckModel]:
+    return db.query(SourceCheckModel).filter(
+        SourceCheckModel.source == source, SourceCheckModel.ticker == ticker.upper()
+    ).first()
