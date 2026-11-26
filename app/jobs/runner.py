@@ -44,6 +44,9 @@ from app.scoring.smi import calculate_smi
 from app.scoring.signal import generate_signal_and_explanation
 from app.divergence.detector import detect_divergences
 from app.monitoring.freshness import build_freshness_alert, ticker_source_checks
+from app.monitoring.source_health import (
+    GLOBAL_TICKER, build_source_error_alert, classify_source_error, evaluate_source_health,
+)
 
 logger = logging.getLogger("SMIE.Runner")
 
@@ -82,6 +85,19 @@ def get_sec_provider():
     return EdgarSecProvider()
 
 
+def _record_fetch(db, source: str, ticker: str, error: Optional[BaseException], commit: bool = False) -> None:
+    """Record one collector fetch in source_checks for app/monitoring/source_health.py. Never raises: health
+    bookkeeping must not break the pipeline."""
+    try:
+        if error is None:
+            record_source_check(db, source, ticker, "OK", commit=commit)
+        else:
+            record_source_check(db, source, ticker, "ERROR", detail=f"{type(error).__name__}: {error}"[:500],
+                                error_kind=classify_source_error(error), commit=commit)
+    except Exception as rec_err:  # pragma: no cover - defensive
+        logger.warning(f"Could not record {source} fetch for {ticker}: {rec_err}")
+
+
 async def ingest_sec_filings_for_ticker(db: SessionLocal, ticker_config, sec_provider=None) -> Dict[str, Any]:
     """Fetch the ticker's EDGAR index, store new tracked filings and record the fetch for freshness.
     Raises on failure (after recording it) so the caller keeps FILING alerts open."""
@@ -91,7 +107,8 @@ async def ingest_sec_filings_for_ticker(db: SessionLocal, ticker_config, sec_pro
     try:
         res = await sec_provider.fetch_filings(ticker, cik=getattr(ticker_config, "sec_cik", None))
     except Exception as e:
-        record_source_check(db, "sec_edgar", ticker, "ERROR", detail=str(e)[:500])
+        record_source_check(db, "sec_edgar", ticker, "ERROR", detail=str(e)[:500],
+                            error_kind=classify_source_error(e))
         raise
     added = save_sec_filings(db, res.filings, commit=False) if res.status == "OK" else 0
     record_source_check(db, "sec_edgar", ticker, res.status, detail=res.detail or None, commit=False)
@@ -401,9 +418,11 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 poly_markets = await ingest_prediction_markets(db, poly_provider=poly_provider)
                 records_processed += len(poly_markets)
                 poly_success = True
+                _record_fetch(db, "polymarket", GLOBAL_TICKER, None, commit=True)
             except Exception as e:
                 logger.error(f"Polymarket collection error (isolated): {e}")
                 poly_success = False
+                _record_fetch(db, "polymarket", GLOBAL_TICKER, e, commit=True)
         else:
             logger.info("Polymarket collection is disabled (POLYMARKET_ENABLED=False).")
             poly_success = True
@@ -429,8 +448,10 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 social_success = True
                 search_meta = getattr(x_provider, "last_search_meta", None)
                 social_coverage_complete = bool(search_meta.complete) if search_meta is not None else True
+                _record_fetch(db, "x", ticker, None)
             except Exception as e:
                 logger.error(f"Social collection error for {ticker} (isolated): {e}")
+                _record_fetch(db, "x", ticker, e)
 
             # --- STEP 2: PREDICTION MARKET SCORE (PMS) ---
             pms_score = None
@@ -466,8 +487,10 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                 catalysts_found.extend(news_cats)
                 records_processed += len(processed_news)
                 news_success = True
+                _record_fetch(db, "news", ticker, None)
             except Exception as e:
                 logger.error(f"News collection error for {ticker} (isolated): {e}")
+                _record_fetch(db, "news", ticker, e)
 
             # --- STEP 3b: SEC EDGAR FILINGS (informational dilution monitor, never scored) ---
             sec_success = True
@@ -499,8 +522,10 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                     db, ticker_config, market_provider=market_provider
                 )
                 records_processed += 1
+                _record_fetch(db, "market", ticker, None)
             except Exception as e:
                 logger.error(f"Market data error for {ticker} (isolated): {e}")
+                _record_fetch(db, "market", ticker, e)
                 indicators["status"] = "ERROR"
                 try:
                     err_snap_data = {
@@ -839,6 +864,14 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
                     resolve_categories.add("SYSTEM")
                 except Exception as fresh_err:
                     logger.warning(f"Source freshness check failed for {ticker}: {fresh_err}")
+                # Fetch errors, classified (credentials vs. broken client vs. transient): immediate for AUTH/INCOMPATIBLE
+                try:
+                    source_error_alert = build_source_error_alert(ticker, evaluate_source_health(db))
+                    if source_error_alert:
+                        source_error_alert["data_source"] = overall_data_src
+                        alerts_to_save.append(source_error_alert)
+                except Exception as health_err:
+                    logger.warning(f"Source health check failed for {ticker}: {health_err}")
 
                 save_alerts(
                     db,
@@ -876,12 +909,20 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
 
         pipeline_status = "PARTIAL" if has_persist_error else "SUCCESS"
         finish_job_run(db, job_id, status=pipeline_status, records=records_processed)
+        try:
+            source_health = evaluate_source_health(db)
+        except Exception as health_err:
+            source_health = {"status": "error", "problems": [], "detail": str(health_err)}
+        for prob in source_health.get("problems", []):
+            logger.error(f"SOURCE {prob['severity']}: {prob['label']} {prob['kind']} "
+                         f"(tickers: {', '.join(prob['tickers']) or 'all'}). {prob['action']}")
         logger.info(f"SMIE pipeline completed with status {pipeline_status}.")
         return {
             "status": pipeline_status,
             "records_processed": records_processed,
             "results": results,
-            "alerts": collected_alerts
+            "alerts": collected_alerts,
+            "source_health": source_health,
         }
 
     except Exception as e:

@@ -24,6 +24,21 @@ def cli():
     pass
 
 
+def _echo_source_health(health) -> None:
+    """Print failing data sources after a run, with the action that fixes each one."""
+    problems = (health or {}).get("problems") or []
+    if not problems:
+        return
+    click.echo("")
+    click.echo(click.style("[DATA SOURCES] Some sources are failing; their pillars are left out of the SMI:", fg="red", bold=True))
+    for p in problems:
+        color = "red" if p["severity"] == "CRITICAL" else "yellow"
+        tickers = ", ".join(p["tickers"]) or "all tickers"
+        since = (p.get("since") or "")[:16].replace("T", " ")
+        click.echo(click.style(f"  [{p['severity']}] {p['label']} - {p['kind']} ({tickers}; since {since} UTC)", fg=color))
+        click.echo(f"      -> {p['action']}")
+
+
 @cli.command()
 def run_all():
     """Execute full pipeline for all space tickers."""
@@ -37,6 +52,7 @@ def run_all():
                 f"PMS: {data['pms'] or '--'} | Signal: {data['signal']} | "
                 f"Confidence: {data['confidence']}%"
             )
+        _echo_source_health(res.get("source_health"))
     else:
         err_msg = res.get("error", "Pipeline execution failed")
         click.echo(click.style(f"[ERROR] {err_msg}", fg="red"))

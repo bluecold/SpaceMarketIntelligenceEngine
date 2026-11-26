@@ -371,3 +371,7 @@ class SourceCheckModel(Base):
     last_attempt_at = Column(DateTime, nullable=True)
     last_success_at = Column(DateTime, nullable=True)
     detail = Column(Text, nullable=True)
+    # Set while the source is failing: AUTH, INCOMPATIBLE, RATE_LIMITED, NETWORK or ERROR (source_health.py),
+    # and when the current failure streak started. Both are cleared on the next success.
+    error_kind = Column(String(20), nullable=True)
+    error_since = Column(DateTime, nullable=True)

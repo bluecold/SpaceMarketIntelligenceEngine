@@ -3,11 +3,103 @@ import os
 import logging
 from datetime import datetime, timezone
 from typing import List
-from app.collectors.base import XProvider, SocialPostData, SocialSearchMeta
+from app.collectors.base import (
+    XProvider, SocialPostData, SocialSearchMeta, SourceAuthError, SourceIncompatibleError,
+)
 from app.collectors.mock_x_provider import MockXProvider
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+_REDIRECT_CODES = (301, 302, 303, 307, 308)
+_X_HOSTS = ("x.com", "www.x.com", "twitter.com", "www.twitter.com")
+
+# Set by the handshake wrapper: whether x.com recognised the session on the last handshake (it redirects a
+# logged-in GET / to /home and sets the `twid` cookie). Tells expired cookies apart from a twikit that can no
+# longer parse X's web client, which raise the same InvalidSession error.
+_handshake_state = {"logged_in": None}
+
+
+def _response_shows_login(response) -> bool:
+    try:
+        if "twid" in response.cookies:
+            return True
+    except Exception:
+        pass
+    location = (getattr(response, "headers", {}) or {}).get("location") or ""
+    return location.rstrip("/").endswith("/home")
+
+
+class _RedirectFollowingSession:
+    """Wraps twikit's handshake session so GET requests follow same-site redirects.
+
+    Since Nov 2026 x.com answers a logged-in GET https://x.com with `307 -> /home` and an empty body.
+    twikit 2.3.3 does not follow it, parses the empty body and raises InvalidSession ("logged-out page
+    shell, 0 bytes"), which looks exactly like expired cookies although the session is valid.
+    """
+
+    def __init__(self, inner, max_hops: int = 3):
+        self._inner = inner
+        self._max_hops = max_hops
+
+    async def request(self, method: str = "GET", url: str = "", **kwargs):
+        from urllib.parse import urljoin, urlparse
+        response = await self._inner.request(method=method, url=url, **kwargs)
+        if _response_shows_login(response):
+            _handshake_state["logged_in"] = True
+        hops = 0
+        while (method.upper() == "GET" and hops < self._max_hops
+               and getattr(response, "status_code", None) in _REDIRECT_CODES):
+            location = response.headers.get("location")
+            if not location:
+                break
+            url = urljoin(url, location)
+            if (urlparse(url).hostname or "").lower() not in _X_HOSTS:
+                break
+            response = await self._inner.request(method="GET", url=url, **kwargs)
+            hops += 1
+        return response
+
+
+def _patch_twikit_handshake() -> None:
+    """Idempotent: make the X-Client-Transaction-Id handshake follow the x.com -> /home redirect."""
+    try:
+        from twikit.x_client_transaction import transaction as _tx
+    except ImportError:  # pragma: no cover - twikit not installed
+        return
+    original = getattr(_tx, "handle_x_migration", None)
+    if original is None or getattr(original, "_smie_follows_redirects", False):
+        return
+
+    async def handle_x_migration(session, headers):
+        _handshake_state["logged_in"] = False
+        return await original(_RedirectFollowingSession(session), headers)
+
+    handle_x_migration._smie_follows_redirects = True
+    _tx.handle_x_migration = handle_x_migration
+
+
+_patch_twikit_handshake()
+
+
+def classify_twikit_error(e: Exception):
+    """Map a twikit failure to SourceAuthError / SourceIncompatibleError, or None to keep the original error."""
+    name = type(e).__name__
+    msg = str(e)
+    if name in ("AccountLocked", "AccountSuspended", "Unauthorized"):
+        return SourceAuthError(f"X rejected the account or session ({name}): {msg[:300]}")
+    if name == "InvalidSession":
+        if _handshake_state.get("logged_in"):
+            return SourceIncompatibleError(
+                "X accepted the session (it redirected to /home) but twikit could not read X's web client to "
+                "build the X-Client-Transaction-Id header: X changed its site and twikit needs an update. "
+                f"Cookies are fine. ({msg[:200]})")
+        return SourceAuthError(f"X did not recognise the session: cookies missing, expired or rejected. ({msg[:200]})")
+    if name == "ClientTransactionError":
+        return SourceIncompatibleError(f"twikit could not build the X-Client-Transaction-Id header ({msg[:200]})")
+    if name == "Forbidden":
+        return SourceAuthError(f"X answered 403 Forbidden to the session ({msg[:200]})")
+    return None
 
 
 class TwikitProvider(XProvider):
@@ -77,9 +169,10 @@ class TwikitProvider(XProvider):
         if not is_auth or not self.client:
             if getattr(settings, "ALLOW_MOCK_FALLBACK", False):
                 return await self._fallback_provider.search(query, ticker, max_results)
-            err_msg = f"Twikit unauthenticated for ticker {ticker} (ALLOW_MOCK_FALLBACK=False)."
+            err_msg = (f"Twikit unauthenticated for ticker {ticker}: no usable X session "
+                       f"(set X_AUTH_TOKEN/X_CT0 or X credentials; ALLOW_MOCK_FALLBACK=False).")
             logger.warning(err_msg)
-            raise RuntimeError(err_msg)
+            raise SourceAuthError(err_msg)
 
         known_ids = known_ids or set()
         since_utc = None
@@ -133,6 +226,9 @@ class TwikitProvider(XProvider):
                 return await self._fallback_provider.search(query, ticker, max_results)
             else:
                 logger.error(f"Twikit search error for ticker {ticker} ({e}). ALLOW_MOCK_FALLBACK=False, propagating exception.")
+                typed = classify_twikit_error(e)
+                if typed is not None:
+                    raise typed from e
                 raise
 
         self.last_search_meta = meta

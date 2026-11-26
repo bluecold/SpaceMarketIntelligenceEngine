@@ -74,6 +74,21 @@ export const formatWeight = (engine: EngineInfo | undefined, pillar: string): st
   return w > 0 ? `${Math.round(w * 100)}%` : 'gate';
 };
 
+// /api/health -> source_errors.problems (app/monitoring/source_health.py)
+export interface SourceProblem {
+  source: string;
+  label: string;
+  kind: 'AUTH' | 'INCOMPATIBLE' | 'RATE_LIMITED' | 'NETWORK' | 'ERROR' | string;
+  severity: 'CRITICAL' | 'WARNING' | string;
+  tickers: string[];
+  since: string | null;
+  last_attempt: string | null;
+  last_success: string | null;
+  failing_hours: number;
+  detail: string;
+  action: string;
+}
+
 export interface DashboardResponse {
   title: string;
   last_update: string | null;

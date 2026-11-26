@@ -167,6 +167,12 @@ def test_partial_window_has_no_mention_ratio():
     "Why Is AST SpaceMobile Stock Falling Thursday? - Benzinga",
     "AST SpaceMobile stock Analysis closes at $56.93, down 6.13% - The Cryptonomist",
     "Redwire Falls 5% as Space Stocks Sell Off Together; Rocket Lab Drops 4% - 24/7 Wall St.",
+    # v2.2.4: no percentage, dated to the session / pre-market / "what's going on"
+    "SpaceX Shares Drop Wednesday: What's Going On? - Benzinga",
+    "SpaceX Stock Premarket Today: SPCX Falls As Gary Black Eyes $100 Entry Point - Coinpedia",
+    "Rocket Lab Stock Is Soaring Today. Here's Why - The Motley Fool",
+    "Why SpaceX Stock Dropped on Thursday - Yahoo Finance",
+    "AST SpaceMobile Shares Are Falling Today - Benzinga",
 ])
 def test_price_recap_headlines_detected(title):
     assert is_price_recap_headline(title)
@@ -177,6 +183,10 @@ def test_price_recap_headlines_detected(title):
     "SpaceX Stock Could Soar by 73%, According to a Wall Street Analyst - The Motley Fool",
     "TD Cowen Cut Its Rocket Lab Target. It Still Sees 32% Upside - TIKR.com",
     "Rocket Lab Delays Neutron Again - Yahoo Finance",
+    "Tesla and SpaceX stocks sink as merger concerns mount - Yahoo Finance",
+    "SpaceX Stock Has an Anthropic Problem - Barron's",
+    "Why SpaceX Stock Could Rise Today: Analysts Upbeat - Benzinga",
+    "AST SpaceMobile launches satellites from Cape Canaveral today - Reuters",
 ])
 def test_news_with_content_is_not_a_price_recap(title):
     assert not is_price_recap_headline(title)

@@ -7,6 +7,7 @@ from app.database.connection import DbSession
 from app.database.models import JobRunModel, SSISnapshotModel
 from app.config import settings
 from app.monitoring.freshness import evaluate_data_freshness
+from app.monitoring.source_health import evaluate_source_health
 
 router = APIRouter(prefix="/api", tags=["Health"])
 
@@ -25,8 +26,9 @@ def health_check(db: DbSession) -> Dict[str, Any]:
         x_status = "mock"
     elif settings.X_PROVIDER.lower() == "twikit":
         has_cookies = os.path.exists(settings.X_COOKIES_FILE) and os.path.getsize(settings.X_COOKIES_FILE) > 0
+        has_token = bool(getattr(settings, "X_AUTH_TOKEN", ""))
         has_credentials = bool(settings.X_AUTH_INFO_1 and settings.X_PASSWORD)
-        x_status = "live" if (has_cookies or has_credentials) else "unauthenticated"
+        x_status = "live" if (has_cookies or has_token or has_credentials) else "unauthenticated"
     else:
         x_status = "configured"
 
@@ -62,10 +64,20 @@ def health_check(db: DbSession) -> Dict[str, Any]:
     except Exception as e:
         data_freshness = {"status": "error", "detail": str(e)}
 
+    # Fetch errors classified by cause, with the action that fixes each one (DB only, see source_health.py)
+    try:
+        source_errors = evaluate_source_health(db)
+    except Exception as e:
+        source_errors = {"status": "error", "problems": [], "detail": str(e)}
+    x_problem = next((p for p in source_errors.get("problems", []) if p["source"] == "x"), None)
+    if x_problem and x_status == "live":
+        x_status = {"AUTH": "auth_failed", "INCOMPATIBLE": "incompatible"}.get(x_problem["kind"], "failing")
+
     is_last_job_ok = last_job is None or last_job.status in ["SUCCESS", "RUNNING"]
     overall_status = "ok" if (
         db_status == "ok" and is_last_job_ok and x_status in ["live", "mock"]
         and poly_status in ["live", "mock", "disabled"] and data_freshness.get("status") == "ok"
+        and source_errors.get("status") == "ok"
     ) else "degraded"
 
     return {
@@ -91,5 +103,6 @@ def health_check(db: DbSession) -> Dict[str, Any]:
             "status": "live"
         },
         "data_freshness": data_freshness,
+        "source_errors": source_errors,
         "last_update": last_update_str
     }

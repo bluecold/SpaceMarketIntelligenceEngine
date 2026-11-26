@@ -1126,8 +1126,10 @@ def get_recent_sec_filings(db: Session, ticker: str, days: float, include_mock: 
 
 
 def record_source_check(db: Session, source: str, ticker: str, status: str, detail: Optional[str] = None,
-                        commit: bool = True) -> None:
-    """Record one fetch attempt. Any status other than ERROR counts as a success (the source answered)."""
+                        commit: bool = True, error_kind: Optional[str] = None) -> None:
+    """Record one fetch attempt. Any status other than ERROR counts as a success (the source answered).
+    On ERROR, `error_kind` (AUTH, INCOMPATIBLE, RATE_LIMITED, NETWORK, ERROR) and the start of the failure
+    streak are kept for app/monitoring/source_health.py."""
     now = utc_now()
     row = db.query(SourceCheckModel).filter(
         SourceCheckModel.source == source, SourceCheckModel.ticker == ticker.upper()
@@ -1135,11 +1137,18 @@ def record_source_check(db: Session, source: str, ticker: str, status: str, deta
     if row is None:
         row = SourceCheckModel(source=source, ticker=ticker.upper())
         db.add(row)
+    was_failing = row.status == "ERROR"
     row.status = status
     row.last_attempt_at = now
     row.detail = detail
     if status != "ERROR":
         row.last_success_at = now
+        row.error_kind = None
+        row.error_since = None
+    else:
+        row.error_kind = error_kind or "ERROR"
+        if not was_failing or row.error_since is None:
+            row.error_since = now
     if commit:
         db.commit()
 

@@ -4,6 +4,22 @@ from typing import List, Optional, Dict, Any, Set
 from pydantic import BaseModel
 
 
+class SourceError(RuntimeError):
+    """A collector failure whose cause the provider could identify. `kind` drives the operator alert
+    (app/monitoring/source_health.py): AUTH needs new credentials, INCOMPATIBLE needs a code/library update."""
+    kind = "ERROR"
+
+
+class SourceAuthError(SourceError):
+    """The source rejected or never received credentials (expired cookies, missing token, locked account)."""
+    kind = "AUTH"
+
+
+class SourceIncompatibleError(SourceError):
+    """The source accepted the credentials but changed its protocol, so the client library can no longer talk to it."""
+    kind = "INCOMPATIBLE"
+
+
 class SocialPostData(BaseModel):
     tweet_id: str
     ticker: str

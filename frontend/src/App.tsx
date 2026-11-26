@@ -5,7 +5,8 @@ import { TickerDetail } from './components/TickerDetail';
 import { AboutModal } from './components/AboutModal';
 import { ApiKeyDialog } from './components/ApiKeyDialog';
 import { Notice, NoticeKind } from './components/ui';
-import { DashboardResponse } from './types';
+import { SourceHealthBanner } from './components/SourceHealthBanner';
+import { DashboardResponse, SourceProblem } from './types';
 import { DEFAULT_THRESHOLDS, ThresholdsContext } from './lib/scale';
 import './App.css';
 
@@ -50,10 +51,22 @@ export const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<NoticeState | null>(null);
   const [apiKeyPrompt, setApiKeyPrompt] = useState<{ error: string | null } | null>(null);
+  const [sourceProblems, setSourceProblems] = useState<SourceProblem[]>([]);
   const jobPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastFetchedRef = useRef<number>(Date.now());
 
+  // Failing data sources (expired cookies, broken client library, outages), shown as a banner above everything
+  const fetchSourceHealth = useCallback(() => {
+    fetch('/api/health')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data) setSourceProblems(data.source_errors?.problems ?? []);
+      })
+      .catch((err) => console.warn('Failed to fetch source health', err));
+  }, []);
+
   const fetchDashboard = useCallback(() => {
+    fetchSourceHealth();
     fetch('/api/dashboard')
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`.trim());
@@ -69,7 +82,7 @@ export const App: React.FC = () => {
         setLoadError(err.message || 'Network error');
       })
       .finally(() => setLoading(false));
-  }, []);
+  }, [fetchSourceHealth]);
 
   const stopJobPolling = () => {
     if (jobPollRef.current) {
@@ -203,6 +216,7 @@ export const App: React.FC = () => {
         />
 
         <div className="notice-stack">
+          <SourceHealthBanner problems={sourceProblems} />
           {loadError && dashboard && (
             <Notice kind="warning" action={{ label: 'Retry', onClick: fetchDashboard }}>
               Could not refresh the dashboard ({loadError}). Showing data loaded at {formatTime(lastFetchedRef.current)}.

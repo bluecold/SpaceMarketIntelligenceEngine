@@ -9,7 +9,7 @@ CATALYST_CONFIG = {
         "keywords": [
             "satellite deployment", "satellites deployed", "satellite deployed",
             "deployed satellites", "reaches orbit", "reached orbit", "placed in orbit",
-            "inserted into orbit", "constellation deployment", "fcc license",
+            "inserted into orbit", "constellation deployment",
             "direct to cell", "direct-to-cell", "into orbit", "launches satellites",
             "launched satellites", "deploys satellites"
         ],
@@ -27,6 +27,13 @@ CATALYST_CONFIG = {
     },
     "FAA_APPROVAL": {
         "keywords": ["faa license", "faa approval", "environmental review", "launch license", "cleared for launch"],
+        "direction": "BULLISH",
+        "importance": "HIGH"
+    },
+    "REGULATORY_APPROVAL": {
+        # Matched by detect_regulatory_approval() (regulator + approval verb, either order), not by this list;
+        # kept here so the category, direction and importance live next to the others.
+        "keywords": ["fcc approval", "fcc approves", "fcc grants", "fcc authorization", "fcc license"],
         "direction": "BULLISH",
         "importance": "HIGH"
     },
@@ -203,6 +210,80 @@ FAA_DENIAL_PATTERNS = [
     r"\brevok(es|ed|ing)\b",
     r"\bsuspend(s|ed|ing)?\b"
 ]
+
+# FCC / spectrum regulators: licences and authorizations are the gating events for ASTS, SATL and Starlink
+# ("FCC approves Starmind data center satellites", "AST SpaceMobile wins FCC nod for commercial service").
+# Before v2.2.4 only "fcc license" matched, so FinBERT read "pares losses following FCC approval" as bearish.
+_REGULATOR = r"(?:fcc|federal communications commission|ofcom|itu|ised|ntia)"
+_APPROVAL_TERM = (r"(?:approv(?:e|es|ed|al|als|ing)|grant(?:s|ed|ing)?|authori[sz](?:e|es|ed|ation|ations|ing)|"
+                  r"clear(?:s|ed|ance)?|green[- ]?light(?:s|ed)?|licen[cs](?:e|es|ed|ing)|nod|okays?|okayed|"
+                  r"sign(?:s|ed)? off|waiver)")
+_REJECTION_TERM = (r"(?:den(?:y|ies|ied|ial)|reject(?:s|ed|ion|ing)?|revok(?:e|es|ed|ing)|revocation|dismiss(?:es|ed)?|"
+                   r"block(?:s|ed|ing)?|halt(?:s|ed)?|suspend(?:s|ed)?|pauses?|paused)")
+REGULATORY_APPROVAL_PATTERNS = [
+    re.compile(rf"\b{_REGULATOR}\b(?:\W+\w+){{0,6}}?\W+{_APPROVAL_TERM}\b", re.I),
+    re.compile(rf"\b{_APPROVAL_TERM}\b(?:\W+\w+){{0,4}}?\W+(?:from|by)\W+(?:the\W+)?{_REGULATOR}\b", re.I),
+    re.compile(rf"\b{_REGULATOR}\W+{_APPROVAL_TERM}\b", re.I),
+]
+REGULATORY_REJECTION_PATTERNS = [
+    re.compile(rf"\b{_REGULATOR}\b(?:\W+\w+){{0,6}}?\W+{_REJECTION_TERM}\b", re.I),
+    re.compile(rf"\b{_REJECTION_TERM}\b(?:\W+\w+){{0,4}}?\W+(?:from|by)\W+(?:the\W+)?{_REGULATOR}\b", re.I),
+]
+# Not an event yet: the approval is being sought or awaited
+REGULATORY_PENDING_PATTERNS = [
+    re.compile(rf"\b(?:seek(?:s|ing)?|sought|await(?:s|ing|ed)?|wait(?:s|ing)? for|pending|request(?:s|ed|ing)?|"
+               rf"appl(?:y|ies|ied|ying) for|files? for|filed for|hopes? for|needs?|without|ahead of)\b"
+               rf"(?:\W+\w+){{0,3}}?\W+{_REGULATOR}\b", re.I),
+    re.compile(rf"\b{_REGULATOR}\b(?:\W+\w+){{0,3}}?\W+(?:filing|application|request|decision)\b", re.I),
+]
+# A third party lobbying the regulator ("Viasat Urges FCC To Reject AST", "Claims Rival Uses FCC To Block
+# Competitors") is not a decision in either direction
+REGULATORY_THIRD_PARTY_PATTERN = re.compile(
+    rf"\b(?:urg(?:e|es|ed|ing)|ask(?:s|ed|ing)?|petition(?:s|ed|ing)?|call(?:s|ed)? on|lobb(?:y|ies|ied|ying)|"
+    rf"press(?:es|ed|ing)?|push(?:es|ed|ing)?|us(?:e|es|ed|ing))\b(?:\W+\w+){{0,2}}?\W+(?:the\W+)?{_REGULATOR}\W+to\b", re.I)
+# Approval of the named company's own business; "starmind" is SpaceX's orbital data-center constellation
+_OWN_EXTRA_ALIASES = {"spcx": ["starlink", "starmind", "space x"]}
+
+
+def _approval_is_for_other_company(clean_text: str, ticker: Optional[str]) -> bool:
+    """True when every regulator-first approval names another company right after the verb
+    ("FCC Clears Amazon's $11.5B Globalstar Deal" is not news about ASTS)."""
+    if not ticker:
+        return False
+    own = COMPETITOR_ALIASES.get(ticker.lower(), [ticker.lower()]) + _OWN_EXTRA_ALIASES.get(ticker.lower(), [])
+    spans = [m for p in (REGULATORY_APPROVAL_PATTERNS[0], REGULATORY_APPROVAL_PATTERNS[2]) for m in p.finditer(clean_text)]
+    if not spans:
+        return False
+    for m in spans:
+        obj = clean_text[m.end():m.end() + 40]
+        names_other = _mentions_known_company(obj)
+        names_own = any(re.search(rf"\b{re.escape(a.lower())}\b", obj) for a in own)
+        if names_own or not names_other:
+            return False
+    return True
+
+
+def detect_regulatory_approval(clean_text: str, ticker: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """BULLISH for a granted licence/authorization, BEARISH for a denial or revocation, None when pending,
+    requested by a third party, or granted to another named company."""
+    if not re.search(rf"\b{_REGULATOR}\b", clean_text, re.I):
+        return None
+    if REGULATORY_THIRD_PARTY_PATTERN.search(clean_text):
+        return None
+    if any(p.search(clean_text) for p in REGULATORY_REJECTION_PATTERNS):
+        return {"category": "REGULATORY_APPROVAL", "direction": "BEARISH", "importance": "HIGH",
+                "keyword": "regulatory denial/revocation"}
+    approved = any(p.search(clean_text) for p in REGULATORY_APPROVAL_PATTERNS)
+    if not approved or _approval_is_for_other_company(clean_text, ticker):
+        return None
+    if any(p.search(clean_text) for p in REGULATORY_PENDING_PATTERNS):
+        # "Receives FCC approval after its 2024 application" is still an approval; only a sought/awaited one is not
+        if not re.search(r"\b(?:receiv(?:es|ed|ing)|wins?|won|gets?|got|secur(?:es|ed)|grant(?:s|ed)|approv(?:es|ed)|"
+                         r"authori[sz](?:es|ed)|clear(?:s|ed)|green[- ]?lit|green[- ]?lights?)\b", clean_text, re.I):
+            return None
+    return {"category": "REGULATORY_APPROVAL", "direction": "BULLISH", "importance": "HIGH",
+            "keyword": "regulatory approval"}
+
 
 FIGURATIVE_EXPLOSION_PATTERNS = [
     r"\bexplosions?\s+(?:of|in)\s+(?:demand|growth|interest|sales|activity|volume|revenue|users|orders|popularity|traffic|capacity)\b",
@@ -521,6 +602,13 @@ def detect_catalysts(
                 })
                 seen_categories.add("FAA_APPROVAL")
 
+    # 6b. Regulatory (FCC) approval / denial
+    if "REGULATORY_APPROVAL" not in seen_categories:
+        reg = detect_regulatory_approval(clean_text, ticker)
+        if reg:
+            matches.append(reg)
+            seen_categories.add("REGULATORY_APPROVAL")
+
     # 7. Technical Milestone detection with test failure handling
     if "TECHNICAL_MILESTONE" not in seen_categories:
         has_milestone_kw = any(re.search(rf"\b{re.escape(kw)}\b", clean_text) for kw in CATALYST_CONFIG["TECHNICAL_MILESTONE"]["keywords"])
@@ -551,7 +639,7 @@ def detect_catalysts(
         if cat in CATALYST_CONFIG and cat not in seen_categories
     ]
     for cat in CATALYST_CONFIG:
-        if cat not in seen_categories and cat not in remaining_categories and cat not in ["GOVERNMENT_CONTRACT", "PARTNERSHIP", "FAA_APPROVAL", "TECHNICAL_MILESTONE"]:
+        if cat not in seen_categories and cat not in remaining_categories and cat not in ["GOVERNMENT_CONTRACT", "PARTNERSHIP", "FAA_APPROVAL", "REGULATORY_APPROVAL", "TECHNICAL_MILESTONE"]:
             remaining_categories.append(cat)
 
     for category in remaining_categories:
@@ -738,6 +826,10 @@ _PRICE_MOVE_VERBS = (
     r"jumps?|jumped|soars?|soared|surges?|surged|rall(?:y|ies|ied)|climbs?|climbed|rises?|rose|"
     r"spikes?|spiked|skyrockets?|skyrocketed|pops?|popped|gains?|gained|moved (?:up|down)(?: by)?|(?:is |are )?(?:down|up)"
 )
+_PRICE_MOVE_ING = (
+    r"falling|dropping|sinking|sliding|slipping|slumping|tumbling|plunging|plummeting|crashing|dipping|declining|"
+    r"jumping|soaring|surging|rallying|climbing|rising|spiking|skyrocketing|popping|gaining|moving (?:higher|lower)"
+)
 PRICE_RECAP_PATTERNS = [
     re.compile(rf"\b(?:{_PRICE_MOVE_VERBS})\s+(?:by\s+)?(?:more than |over |nearly |almost |as much as |about |another )?\d+(?:\.\d+)?\s?%", re.I),
     re.compile(r"\b(?:hits?|sinks? to|falls? to|touches|at|reaches|new)\s+(?:a\s+)?(?:new\s+)?(?:52|fifty-two)[- ]week (?:low|high)\b", re.I),
@@ -745,6 +837,13 @@ PRICE_RECAP_PATTERNS = [
     re.compile(r"\bcloses at \$?\d", re.I),
     re.compile(r"\bstock price (?:down|up)\b", re.I),
     re.compile(r"\bwhy (?:is |are )?.{0,60}?\b(?:stock|shares)\b.{0,25}?\b(?:falling|rising|soaring|sinking|sliding|dropping|plunging|jumping|surging|tumbling|climbing|down|up)\b", re.I),
+    # v2.2.4: the move without a percentage, dated to the session ("SpaceX Shares Drop Wednesday: What's Going On?")
+    re.compile(rf"\b(?:stocks?|shares)\s+(?:(?:is|are)\s+)?(?:{_PRICE_MOVE_VERBS}|{_PRICE_MOVE_ING})\s+(?:on\s+)?(?:monday|tuesday|wednesday|thursday|friday|today|this week|in (?:early|midday|late|afternoon|morning) trading)\b", re.I),
+    # v2.2.4: "X Stock Premarket Today: SPCX Falls As ...", "Shares Slide in After-Hours Trading"
+    re.compile(rf"\b(?:pre-?market|after-?hours|midday|intraday)\b.{{0,40}}?\b(?:{_PRICE_MOVE_VERBS})\b", re.I),
+    re.compile(rf"\b(?:{_PRICE_MOVE_VERBS})\b.{{0,40}}?\b(?:pre-?market|after-?hours)\b", re.I),
+    # v2.2.4: the move followed by "What's going on / Here's what happened / Here's why"
+    re.compile(rf"\b(?:stocks?|shares)\b.{{0,30}}?\b(?:{_PRICE_MOVE_VERBS})\b.{{0,40}}?(?:what'?s going on|here'?s what happened|here'?s why|what happened)\b", re.I),
 ]
 # A percentage move right after these nouns is a business metric ("Revenue Jumps 40%"), not the share price
 _METRIC_NOUNS = re.compile(

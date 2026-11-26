@@ -125,7 +125,7 @@ DEFAULT_EVENT_COMPANY_MAPPINGS: Dict[str, Dict[str, float]] = {
 class Settings(BaseSettings):
     APP_NAME: str = "Space Market Intelligence Engine"
     APP_VERSION: str = "2.2.0"
-    RULES_VERSION: str = "2.2.3"  # Stored per snapshot: 2.2.0 = opinion-only SSI + baseline, FinTwitBERT, mirrored bands, v2.2 weights; 2.2.1 = opinion-only deduped news, PMS without sector-only proxies or range buckets; 2.2.2 = paginated X collection (SSI windows no longer ~20 tweets), price-recap headlines excluded from news polarity; 2.2.3 = more CAPITAL_RAISE wording (stock offering, debt-for-equity), informational EARNINGS modifier
+    RULES_VERSION: str = "2.2.4"  # 2.2.4 = REGULATORY_APPROVAL catalyst (FCC approvals/denials), price recaps without a percentage (session, pre-market, "what's going on"). Stored per snapshot: 2.2.0 = opinion-only SSI + baseline, FinTwitBERT, mirrored bands, v2.2 weights; 2.2.1 = opinion-only deduped news, PMS without sector-only proxies or range buckets; 2.2.2 = paginated X collection (SSI windows no longer ~20 tweets), price-recap headlines excluded from news polarity; 2.2.3 = more CAPITAL_RAISE wording (stock offering, debt-for-equity), informational EARNINGS modifier
     ENVIRONMENT: str = "development"  # "development", "testing", "production"
     DEBUG: bool = True
     DATABASE_URL: str = "sqlite:///./data/space_sentiment.db"
@@ -269,6 +269,13 @@ class Settings(BaseSettings):
     POLYMARKET_STALE_HOURS: float = 6.0
     # EDGAR is checked on the last successful fetch, not on the newest filing: companies go months without one
     SEC_STALE_HOURS: float = 48.0
+    # Fetch errors (app/monitoring/source_health.py). AUTH (credentials rejected) and INCOMPATIBLE (the source
+    # changed its protocol) never heal by themselves and raise a CRITICAL SOURCE_ERROR alert on the first failed
+    # fetch. Transient kinds (NETWORK, RATE_LIMITED, ERROR) alert as WARNING once the failure streak spans this
+    # many hours of attempts, and as CRITICAL after the second threshold. Freshness above stays the backstop for
+    # sources that answer without error but bring nothing new.
+    SOURCE_ERROR_WARNING_HOURS: float = 1.0
+    SOURCE_ERROR_CRITICAL_HOURS: float = 6.0
     # The price feed must carry the latest session that opened at least this long ago (US holiday calendar)
     MARKET_CANDLE_GRACE_MINUTES: int = 60
     # With the scheduler on, no successful run for this many intervals marks the pipeline itself as stale

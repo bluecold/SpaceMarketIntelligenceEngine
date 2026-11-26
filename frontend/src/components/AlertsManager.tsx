@@ -210,6 +210,12 @@ export const AlertsManager: React.FC<AlertsManagerProps> = ({ alerts, onSelectTi
       const key = getAlertKey(alert, idx);
       if (updatedSet.has(key)) return;
 
+      // A failing data source is notified once by SourceHealthBanner, not once per affected ticker
+      if (alert.type === 'SOURCE_ERROR') {
+        updatedSet.add(key);
+        return;
+      }
+
       // Freshness check: must be active and <= 2.0 hours old (broadened window to prevent dropping alerts between polls)
       const isActive = isAlertActive(alert);
       const isFresh = alert.age_hours === undefined || alert.age_hours === null || alert.age_hours <= 2.0;

@@ -348,6 +348,8 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                     • <strong>Salud Fundamental Adaptativa:</strong> Se normalizan los pesos exclusivamente sobre las métricas observadas (runway, solvencia, crecimiento, margen) sin imputar valores neutrales ficticios.
                     <br />
                     • <strong>Monitoreo de Frescura (Freshness):</strong> Supervisión continua que detecta si un proveedor responde sin error pero no aporta datos nuevos (alerta automática <code>SOURCE_STALE</code> si X &gt; 12h, noticias &gt; 24h, Polymarket &gt; 6h o falta la vela de sesión).
+                    <br />
+                    • <strong>Errores de Fuentes Clasificados:</strong> cada consulta registra su causa (credenciales rechazadas, cliente incompatible, límite de pedidos, red). Las fallas permanentes abren al instante la alerta CRITICAL <code>SOURCE_ERROR</code> y un banner con la acción para resolverla.
                   </p>
                 </div>
               </div>
