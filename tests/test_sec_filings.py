@@ -1,6 +1,6 @@
 """
-SEC EDGAR dilution monitor (phase 1): form classification, submissions parsing, the informational SEC OFFERING
-modifier (never moves the band), FILING alerts that only resolve after a successful fetch, and freshness.
+SEC EDGAR dilution monitor (phases 1 and 2): form classification, submissions parsing, the SEC OFFERING
+modifier and gate (an OFFERING caps BUY at WATCH since 2.2.5), FILING alerts that only resolve after a successful fetch, and freshness.
 No network: the EDGAR client runs on httpx.MockTransport.
 """
 import asyncio
@@ -143,10 +143,30 @@ def test_offering_adds_modifier_and_alert_without_changing_the_band():
     assert any("SEC offering prospectus" in r for r in res["reasons"])
 
 
-def test_buy_band_is_not_gated_by_an_offering_in_phase_1():
+def test_unregistered_sale_stays_informational():
+    """8-K 3.02 showed no measurable effect in the event study: modifier and alert only, the BUY stays."""
     res = _signal([_filing(UNREGISTERED_SALE, "8-K", "1.01,2.03,3.02")], smi=75.0)
     assert res["base_signal"] == "BUY"
     assert "SEC OFFERING" in res["signal_modifier"]
+    assert "unchanged" in next(a for a in res["alerts"] if a["id"] == "ASTS:FILING:SEC_OFFERING")["message"]
+
+
+def test_offering_caps_buy_and_strong_buy_at_watch():
+    """Phase 2 (2.2.5): an offering prospectus inside the alert window gates bullish bands."""
+    for smi in (75.0, 90.0):
+        res = _signal([_filing(OFFERING, "424B5")], smi=smi)
+        assert res["base_signal"] == "WATCH", smi
+        assert res["signal_modifier"].count("SEC OFFERING") == 1
+    res = _signal([_filing(OFFERING, "424B5")], smi=75.0)
+    assert "capped at WATCH" in next(a for a in res["alerts"] if a["id"] == "ASTS:FILING:SEC_OFFERING")["message"]
+    assert any("BUY capped at WATCH" in r for r in res["reasons"])
+    assert _signal([_filing(OFFERING, "424B5")], smi=40.0)["base_signal"] == "CAUTION"  # never raises a band
+
+
+def test_offering_gate_can_be_switched_off(monkeypatch):
+    monkeypatch.setattr(settings, "SEC_OFFERING_GATE_ENABLED", False)
+    res = _signal([_filing(OFFERING, "424B5")], smi=75.0)
+    assert res["base_signal"] == "BUY" and "SEC OFFERING" in res["signal_modifier"]
 
 
 def test_shelf_and_debt_alert_without_modifier():

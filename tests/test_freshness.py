@@ -212,3 +212,10 @@ def test_health_endpoint_exposes_freshness():
     assert body["data_freshness"]["status"] in ("ok", "stale", "error")
     if body["data_freshness"]["status"] != "ok":
         assert body["status"] == "degraded"
+
+
+def test_x_switched_off_is_disabled_not_stale(db, live_providers, monkeypatch):
+    _post(db, "ASTS", REF - timedelta(days=10))
+    assert fr.check_social(db, "ASTS", REF)["status"] == fr.STALE
+    monkeypatch.setattr(settings, "X_PROVIDER", "off")
+    assert fr.check_social(db, "ASTS", REF)["status"] == fr.DISABLED

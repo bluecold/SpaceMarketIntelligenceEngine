@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from app.config import settings
+from app.config import settings, x_collection_off
 from app.database.models import SourceCheckModel
 
 AUTH, INCOMPATIBLE, RATE_LIMITED, NETWORK, ERROR = "AUTH", "INCOMPATIBLE", "RATE_LIMITED", "NETWORK", "ERROR"
@@ -33,9 +33,10 @@ GLOBAL_TICKER = "ALL"  # source_checks.ticker for sector-wide fetches (Polymarke
 ACTIONS = {
     ("x", AUTH): "Log in to x.com in a browser, copy the auth_token and ct0 cookies into X_AUTH_TOKEN and X_CT0 "
                  "in .env, delete data/x_cookies.json if it exists, and run the pipeline again.",
-    ("x", INCOMPATIBLE): "Your cookies are fine: X changed its web client and twikit can no longer sign requests. "
-                         "Update twikit (pip install -U twikit) when a fix is released, or switch X_PROVIDER. "
-                         "Until then the social pillar is left out of the SMI.",
+    ("x", INCOMPATIBLE): "The X session works, but the search request fails. Either X changed its web client "
+                         "(update twikit with pip install -U twikit when a fix is released) or the account has "
+                         "search restricted, which a library update will not fix. Until then the social pillar is "
+                         "left out of the SMI; set X_PROVIDER=off to switch X off on purpose.",
     ("x", RATE_LIMITED): "X is rate-limiting the account: run the pipeline less often or lower X_SEARCH_MAX_PAGES.",
     ("sec_edgar", AUTH): "EDGAR rejected the request: set SEC_USER_AGENT to 'Name email@domain' in .env.",
     ("sec_edgar", RATE_LIMITED): "EDGAR is throttling requests (10/s limit): wait and run again.",
@@ -86,7 +87,7 @@ def _iso(dt: Optional[datetime]) -> Optional[str]:
 def _active_sources() -> set:
     """Sources whose current configuration makes a live fetch (a row left from a mock or disabled period is ignored)."""
     active = {"market"}
-    if settings.X_PROVIDER.lower() != "mock":
+    if settings.X_PROVIDER.lower() != "mock" and not x_collection_off():
         active.add("x")
     if getattr(settings, "NEWS_PROVIDER", "rss").lower() != "mock":
         active.add("news")

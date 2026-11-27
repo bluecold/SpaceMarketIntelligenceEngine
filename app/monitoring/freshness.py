@@ -21,7 +21,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.collectors.market_provider import _EASTERN_TZ, get_us_market_holidays
-from app.config import INITIAL_TICKERS, settings
+from app.config import INITIAL_TICKERS, settings, x_collection_off
 from app.database.models import (
     JobRunModel, MarketSnapshotModel, NewsItemModel, PredictionMarketModel,
     PredictionMarketSnapshotModel, SocialPostModel, SourceCheckModel,
@@ -76,6 +76,8 @@ def expected_candle_date(ref_utc: datetime, grace_minutes: Optional[int] = None)
 # --- Checks -----------------------------------------------------------------------------------------
 
 def check_social(db: Session, ticker: str, ref: datetime) -> Dict[str, Any]:
+    if x_collection_off():
+        return {"status": DISABLED, "detail": "X_PROVIDER is off"}
     if settings.X_PROVIDER.lower() == "mock":
         return {"status": MOCK}
     newest = (db.query(func.max(SocialPostModel.created_at))

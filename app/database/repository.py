@@ -9,7 +9,7 @@ from app.database.models import (
     TickerModel, SocialPostModel, NewsItemModel,
     MarketSnapshotModel, SSISnapshotModel, JobRunModel,
     PredictionMarketModel, PredictionMarketSnapshotModel, DivergenceModel,
-    AlertModel, DailyBarModel, SecFilingModel, SourceCheckModel
+    AlertModel, DailyBarModel, SecFilingModel, SourceCheckModel, SocialShadowDailyModel
 )
 from app.config import INITIAL_TICKERS, DEFAULT_EVENT_COMPANY_MAPPINGS
 from app.collectors.base import PredictionMarketData
@@ -1157,3 +1157,45 @@ def get_source_check(db: Session, source: str, ticker: str) -> Optional[SourceCh
     return db.query(SourceCheckModel).filter(
         SourceCheckModel.source == source, SourceCheckModel.ticker == ticker.upper()
     ).first()
+
+
+# --- Shadow social source (measured only, never scored) ---------------------------------------------------
+
+def get_social_shadow_rows(db: Session, ticker: str, provider: str = "ADANOS") -> List[SocialShadowDailyModel]:
+    """Stored shadow rows for the ticker, oldest first."""
+    return (
+        db.query(SocialShadowDailyModel)
+        .filter(SocialShadowDailyModel.provider == provider, SocialShadowDailyModel.ticker == ticker)
+        .order_by(SocialShadowDailyModel.date)
+        .all()
+    )
+
+
+def get_last_social_shadow_fetch(db: Session, provider: str = "ADANOS") -> Optional[datetime]:
+    return db.query(func.max(SocialShadowDailyModel.fetched_at)).filter(
+        SocialShadowDailyModel.provider == provider).scalar()
+
+
+SHADOW_FIELDS = ("mentions", "sentiment_score", "bullish_pct", "bearish_pct", "buzz_score", "raw_score",
+                 "baseline_score", "shadow_ssi", "opinion_count", "volume_ratio")
+
+
+def save_social_shadow_rows(db: Session, ticker: str, rows: List[Dict[str, Any]], provider: str = "ADANOS",
+                            fetched_dates: Optional[Set[str]] = None) -> int:
+    """Upsert daily shadow rows (each carrying its computed shadow columns). fetched_at is stamped only on the
+    dates the provider returned in this fetch, so it keeps meaning "last read from the source". Returns rows written."""
+    existing = {r.date: r for r in get_social_shadow_rows(db, ticker, provider)}
+    now = utc_now()
+    written = 0
+    for row in rows:
+        rec = existing.get(row["date"])
+        if rec is None:
+            rec = SocialShadowDailyModel(provider=provider, ticker=ticker, date=row["date"], fetched_at=now)
+            db.add(rec)
+        for f in SHADOW_FIELDS:
+            setattr(rec, f, row.get(f))
+        if fetched_dates is None or row["date"] in fetched_dates:
+            rec.fetched_at = now
+        written += 1
+    db.commit()
+    return written

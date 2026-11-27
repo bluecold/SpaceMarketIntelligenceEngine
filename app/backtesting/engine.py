@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Optional
 from collections import defaultdict
 import numpy as np
 from sqlalchemy.orm import Session
-from app.database.models import SSISnapshotModel, MarketSnapshotModel, utc_now
+from app.database.models import SSISnapshotModel, MarketSnapshotModel, SecFilingModel, utc_now
 from app.scoring.smi import calculate_smi
 from app.scoring.signal import generate_signal_and_explanation
 from app.config import INITIAL_TICKERS, settings
@@ -90,6 +90,34 @@ def calculate_financial_metrics(
         "sharpe_ratio": round(sharpe_ratio, 2),
         "sortino_ratio": round(sortino_ratio, 2)
     }
+
+
+def attach_recent_filings(snapshots: List[Dict[str, Any]], filings: List[Any], days: Optional[float] = None) -> None:
+    """Give each snapshot the SEC filings the live engine would have seen at that time: same ticker, accepted
+    (or, without an acceptance time, filed) within `days` before the snapshot and never after it (no lookahead).
+    Mirrors get_recent_sec_filings, so the SEC OFFERING gate matches between the live engine and the backtest."""
+    days = float(settings.SEC_FILING_ALERT_DAYS if days is None else days)
+    by_ticker: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for f in filings:
+        get = (lambda k: f.get(k)) if isinstance(f, dict) else (lambda k: getattr(f, k, None))
+        when = _parse_timestamp(get("accepted_at"))
+        if when is None and get("filed_date"):
+            when = _parse_timestamp(str(get("filed_date"))[:10])
+        if when is None:
+            continue
+        by_ticker[str(get("ticker") or "").upper()].append({
+            "category": get("category"), "form": get("form"), "items": get("items"),
+            "accepted_at": when, "filed_date": get("filed_date"),
+        })
+    for s in snapshots:
+        ts = _parse_timestamp(s.get("timestamp"))
+        if ts is None:
+            s.setdefault("recent_filings", [])
+            continue
+        since = ts - timedelta(days=days)
+        s["recent_filings"] = sorted(
+            (f for f in by_ticker.get(str(s.get("ticker") or "").upper(), []) if since <= f["accepted_at"] <= ts),
+            key=lambda f: f["accepted_at"], reverse=True)
 
 
 def _parse_timestamp(ts: Any) -> Optional[datetime]:
@@ -605,7 +633,8 @@ def evaluate_backtest_dataset(
                     fundamental_score=fund,
                     risk_score=risk,
                     is_mom_comparable_1d=smi_a_res.get("is_mom_comparable_1d", True),
-                    social_stats={"total_posts": post_cnt} if post_cnt is not None else None
+                    social_stats={"total_posts": post_cnt} if post_cnt is not None else None,
+                    recent_filings=current.get("recent_filings")
                 )
                 if smi_a is not None and smi_a >= buy_threshold and sig_a_res.get("base_signal") in ["BUY", "STRONG BUY"]:
                     signal_a = True
@@ -653,7 +682,8 @@ def evaluate_backtest_dataset(
                         fundamental_score=fund,
                         risk_score=risk,
                         is_mom_comparable_1d=smi_b_res.get("is_mom_comparable_1d", True),
-                        social_stats={"total_posts": post_cnt} if post_cnt is not None else None
+                        social_stats={"total_posts": post_cnt} if post_cnt is not None else None,
+                        recent_filings=current.get("recent_filings")
                     )
                     if smi_b is not None and smi_b >= buy_threshold and sig_b_res.get("base_signal") in ["BUY", "STRONG BUY"]:
                         signal_b = True
@@ -973,6 +1003,12 @@ def run_historical_backtest(
                 "technical_score": s.technical_score
             }
         })
+
+    # SEC filings known at each snapshot, so the SEC OFFERING gate applies exactly as in the live engine
+    filings_q = db.query(SecFilingModel)
+    if not include_mock:
+        filings_q = filings_q.filter(SecFilingModel.source != "MOCK")
+    attach_recent_filings(snapshots_list, filings_q.all())
 
     # Evaluate for 1D, 3D, 5D holding horizons
     horizon_1d = evaluate_backtest_dataset(snapshots_list, holding_period_days=1)

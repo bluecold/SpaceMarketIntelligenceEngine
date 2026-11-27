@@ -125,7 +125,7 @@ DEFAULT_EVENT_COMPANY_MAPPINGS: Dict[str, Dict[str, float]] = {
 class Settings(BaseSettings):
     APP_NAME: str = "Space Market Intelligence Engine"
     APP_VERSION: str = "2.2.0"
-    RULES_VERSION: str = "2.2.4"  # 2.2.4 = REGULATORY_APPROVAL catalyst (FCC approvals/denials), price recaps without a percentage (session, pre-market, "what's going on"). Stored per snapshot: 2.2.0 = opinion-only SSI + baseline, FinTwitBERT, mirrored bands, v2.2 weights; 2.2.1 = opinion-only deduped news, PMS without sector-only proxies or range buckets; 2.2.2 = paginated X collection (SSI windows no longer ~20 tweets), price-recap headlines excluded from news polarity; 2.2.3 = more CAPITAL_RAISE wording (stock offering, debt-for-equity), informational EARNINGS modifier
+    RULES_VERSION: str = "2.2.5"  # 2.2.5 = SEC OFFERING gate (an EDGAR offering prospectus caps BUY at WATCH for SEC_FILING_ALERT_DAYS; the SMI is unchanged). 2.2.4 = REGULATORY_APPROVAL catalyst (FCC approvals/denials), price recaps without a percentage (session, pre-market, "what's going on"). Stored per snapshot: 2.2.0 = opinion-only SSI + baseline, FinTwitBERT, mirrored bands, v2.2 weights; 2.2.1 = opinion-only deduped news, PMS without sector-only proxies or range buckets; 2.2.2 = paginated X collection (SSI windows no longer ~20 tweets), price-recap headlines excluded from news polarity; 2.2.3 = more CAPITAL_RAISE wording (stock offering, debt-for-equity), informational EARNINGS modifier
     ENVIRONMENT: str = "development"  # "development", "testing", "production"
     DEBUG: bool = True
     DATABASE_URL: str = "sqlite:///./data/space_sentiment.db"
@@ -145,7 +145,9 @@ class Settings(BaseSettings):
     ALLOW_MOCK_FALLBACK: bool = False  # If False, unauthenticated/failing live collectors return empty datasets instead of generating fake mock data
     
     # X / Social Provider Settings
-    X_PROVIDER: str = "twikit"  # "twikit" or "mock"
+    # "twikit", "mock" or "off". "off" switches X collection off on purpose: no fetch, no SOURCE_ERROR alert,
+    # and the social pillar is left out of the SMI (used since the 10/11/2026 X outage).
+    X_PROVIDER: str = "twikit"
     X_AUTH_INFO_1: str = ""
     X_AUTH_INFO_2: str = ""
     X_PASSWORD: str = ""
@@ -192,14 +194,28 @@ class Settings(BaseSettings):
     # News Provider
     NEWS_PROVIDER: str = "rss"  # "rss" or "mock"
 
-    # SEC EDGAR dilution monitor (app/collectors/sec_edgar_provider.py). Informational only: alerts plus the
-    # SEC OFFERING modifier, never the SMI or the band. The SEC requires a User-Agent naming the requester and a
+    # SEC EDGAR dilution monitor (app/collectors/sec_edgar_provider.py): alerts plus the SEC OFFERING modifier,
+    # never the SMI. Since 2.2.5 an OFFERING filing also caps BUY at WATCH (SEC_OFFERING_GATE_ENABLED). The SEC requires a User-Agent naming the requester and a
     # contact ("SMIE research name@example.com"); while it is empty the collector stays disabled.
     SEC_EDGAR_ENABLED: bool = True
     SEC_PROVIDER: str = "edgar"          # "edgar" or "mock"
     SEC_USER_AGENT: str = ""
     SEC_HISTORY_DAYS: int = 400          # Filings kept per fetch (the submissions index covers ~1 year or 1,000 filings)
     SEC_FILING_ALERT_DAYS: float = 5.0   # A filing raises alerts / the modifier for this many days after acceptance (same as the CATALYST grace)
+    # Phase 2 (2.2.5): an OFFERING filing (424B prospectus) inside SEC_FILING_ALERT_DAYS caps BUY / STRONG BUY at WATCH,
+    # in the live engine and in both backtest models. Event study: -7.3% abnormal return over 3 sessions (33 deals).
+    SEC_OFFERING_GATE_ENABLED: bool = True
+
+    # Shadow social source (app/collectors/adanos_provider.py, app/scoring/social_shadow.py): daily X sentiment
+    # aggregates from the Adanos free plan, stored in social_shadow_daily and measured only. Nothing in the SMI,
+    # the signal or the backtest reads it. Free plan: 250 requests/month and 30 days of history, so the pipeline
+    # fetches at most once per ADANOS_FETCH_INTERVAL_HOURS (5 requests per fetch, ~150/month at one per day).
+    ADANOS_SHADOW_ENABLED: bool = False
+    ADANOS_API_KEY: str = ""
+    ADANOS_BASE_URL: str = "https://api.adanos.com"
+    ADANOS_FETCH_INTERVAL_HOURS: float = 20.0
+    ADANOS_HISTORY_DAYS: int = 30        # First fetch per ticker (the free plan's history limit)
+    ADANOS_REFETCH_DAYS: int = 3         # Later fetches re-read the last days, since the current day is partial
     
     # Sentiment Model
     SENTIMENT_MODEL: str = "heuristic"  # News model: "heuristic" or "ProsusAI/finbert"
@@ -288,3 +304,8 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def x_collection_off() -> bool:
+    """True when X collection is switched off on purpose (X_PROVIDER="off")."""
+    return (settings.X_PROVIDER or "").strip().lower() in ("off", "disabled", "none")

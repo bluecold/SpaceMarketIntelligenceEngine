@@ -1,10 +1,10 @@
 import asyncio
 import click
-from app.config import settings, INITIAL_TICKERS
+from app.config import settings, INITIAL_TICKERS, x_collection_off
 from app.jobs.runner import (
     run_full_pipeline, get_x_provider, get_polymarket_provider, get_news_provider,
     ingest_prediction_markets, ingest_social_posts_for_ticker, ingest_news_for_ticker,
-    ingest_market_for_ticker
+    ingest_market_for_ticker, ingest_social_shadow
 )
 from app.collectors.market_provider import YFinanceMarketProvider
 from app.database.connection import SessionLocal, init_db
@@ -62,6 +62,9 @@ def run_all():
 @cli.command("collect-social")
 def collect_social():
     """Collect social posts from X/Twitter."""
+    if x_collection_off():
+        click.echo("[SMIE] X collection is switched off (X_PROVIDER=off); nothing to collect.")
+        return
     click.echo("[SMIE] Collecting social posts from X...")
     async def _run():
         init_db()
@@ -98,6 +101,28 @@ def collect_polymarket():
             click.echo(f"Retrieved and saved {len(markets)} space prediction markets.")
             for m in markets[:5]:
                 click.echo(f"  - {m.title} (YES: {int(m.yes_probability*100)}%, Quality: {m.quality_score})")
+        finally:
+            db.close()
+    asyncio.run(_run())
+
+
+@cli.command("collect-social-shadow")
+@click.option("--force", is_flag=True, help="Fetch even if the last fetch is newer than ADANOS_FETCH_INTERVAL_HOURS.")
+def collect_social_shadow(force):
+    """Fetch the Adanos daily X aggregates (shadow mode: stored and measured, never scored)."""
+    async def _run():
+        init_db()
+        db = SessionLocal()
+        try:
+            ensure_tickers_seeded(db)
+            res = await ingest_social_shadow(db, force=force)
+            click.echo(f"[SMIE] Shadow social source: {res['status']}" + (f" ({res['reason']})" if res.get("reason") else ""))
+            for ticker, info in res["tickers"].items():
+                if info["status"] == "ok":
+                    click.echo(f"  [{ticker}] {info['days_fetched']} days fetched, {info['days_stored']} stored, "
+                               f"latest {info['latest_date']} shadow SSI {info['latest_shadow_ssi']}")
+                else:
+                    click.echo(f"  [{ticker}] error: {info['error']}")
         finally:
             db.close()
     asyncio.run(_run())

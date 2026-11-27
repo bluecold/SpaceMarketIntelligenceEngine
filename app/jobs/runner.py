@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, List, Optional
 
-from app.config import settings, INITIAL_TICKERS
+from app.config import settings, INITIAL_TICKERS, x_collection_off
 from app.database.connection import SessionLocal, init_db
 from app.database.repository import (
     ensure_tickers_seeded, save_social_posts, get_recent_social_posts,
@@ -361,6 +361,67 @@ async def ingest_market_for_ticker(
 PIPELINE_LOCK = asyncio.Lock()
 
 
+def get_social_shadow_provider():
+    from app.collectors.adanos_provider import AdanosXProvider
+    return AdanosXProvider()
+
+
+async def ingest_social_shadow(db, provider=None, force: bool = False, today: Optional[date] = None) -> Dict[str, Any]:
+    """Fetch the Adanos daily X aggregates for every ticker and store them with their shadow SSI.
+
+    Shadow mode: nothing in scoring reads the result. Runs at most once per ADANOS_FETCH_INTERVAL_HOURS
+    (unless force) to stay inside the free plan's 250 requests/month. A failure for one ticker never stops
+    the others, and a shadow-source failure never touches the pipeline's alerts or source health."""
+    from app.database.repository import (
+        get_last_social_shadow_fetch, get_social_shadow_rows, save_social_shadow_rows, SHADOW_FIELDS,
+    )
+    from app.scoring.social_shadow import compute_shadow_scores
+
+    summary: Dict[str, Any] = {"status": "skipped", "tickers": {}}
+    if not getattr(settings, "ADANOS_SHADOW_ENABLED", False):
+        summary["reason"] = "ADANOS_SHADOW_ENABLED is False"
+        return summary
+    if not getattr(settings, "ADANOS_API_KEY", ""):
+        summary["reason"] = "ADANOS_API_KEY is not set"
+        return summary
+    last = get_last_social_shadow_fetch(db)
+    interval = timedelta(hours=float(getattr(settings, "ADANOS_FETCH_INTERVAL_HOURS", 20.0)))
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if not force and last is not None and now - last < interval:
+        summary["reason"] = f"last fetch {last.isoformat()}Z is newer than ADANOS_FETCH_INTERVAL_HOURS"
+        return summary
+
+    provider = provider or get_social_shadow_provider()
+    today = today or now.date()
+    summary["status"] = "ok"
+    for cfg in INITIAL_TICKERS:
+        ticker = cfg.symbol
+        stored = get_social_shadow_rows(db, ticker)
+        if stored:
+            newest = date.fromisoformat(stored[-1].date)
+            start = min(newest, today) - timedelta(days=int(getattr(settings, "ADANOS_REFETCH_DAYS", 3)))
+        else:
+            start = today - timedelta(days=int(getattr(settings, "ADANOS_HISTORY_DAYS", 30)) - 1)
+        try:
+            fetched = await provider.fetch_daily(ticker, start, today)
+        except Exception as e:
+            logger.warning(f"Shadow social fetch failed for {ticker} (ignored, shadow only): {e}")
+            summary["tickers"][ticker] = {"status": "error", "error": str(e)[:200]}
+            summary["status"] = "partial"
+            continue
+        merged = {r.date: {"date": r.date, **{f: getattr(r, f) for f in SHADOW_FIELDS}} for r in stored}
+        for row in fetched:
+            merged[row["date"]] = {**merged.get(row["date"], {}), **row}
+        scored = compute_shadow_scores(list(merged.values()))
+        save_social_shadow_rows(db, ticker, scored, fetched_dates={r["date"] for r in fetched})
+        latest = scored[-1] if scored else {}
+        summary["tickers"][ticker] = {"status": "ok", "days_fetched": len(fetched), "days_stored": len(scored),
+                                      "latest_date": latest.get("date"), "latest_shadow_ssi": latest.get("shadow_ssi")}
+    if summary["status"] == "partial" and all(t["status"] == "error" for t in summary["tickers"].values()):
+        summary["status"] = "error"
+    return summary
+
+
 async def _pipeline_heartbeat_worker(job_id: int, stop_event: asyncio.Event, interval: float = 30.0):
     """
     Background worker that periodically refreshes the job heartbeat in the database
@@ -402,7 +463,10 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
 
     try:
         ensure_tickers_seeded(db)
-        x_provider = get_x_provider()
+        x_off = x_collection_off()
+        x_provider = None if x_off else get_x_provider()
+        if x_off:
+            logger.info("X collection is switched off (X_PROVIDER=off): the social pillar is left out of the SMI.")
         news_provider = get_news_provider()
         market_provider = YFinanceMarketProvider()
         poly_provider = get_polymarket_provider()
@@ -426,6 +490,14 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
         else:
             logger.info("Polymarket collection is disabled (POLYMARKET_ENABLED=False).")
             poly_success = True
+
+        # Step 0b: shadow social source (Adanos daily X aggregates). Stored and measured only, never scored.
+        try:
+            shadow = await ingest_social_shadow(db)
+            if shadow["status"] != "skipped":
+                logger.info(f"Shadow social source: {shadow['status']} {shadow['tickers']}")
+        except Exception as e:
+            logger.warning(f"Shadow social source failed (ignored): {e}")
             
         update_job_heartbeat(db, job_id)
 
@@ -439,19 +511,24 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
             social_coverage_complete = False
             posts_data = []
             catalysts_found = []
-            try:
-                saved_count, posts_data, soc_cats = await ingest_social_posts_for_ticker(
-                    db, ticker_config, x_provider=x_provider, sentiment_classifier=social_classifier
-                )
-                catalysts_found.extend(soc_cats)
-                records_processed += len(posts_data)
+            if x_off:
+                # Switched off on purpose: nothing to fetch, so nothing failed (alerts that wait on a successful
+                # X fetch can resolve) and no SOURCE_ERROR is recorded.
                 social_success = True
-                search_meta = getattr(x_provider, "last_search_meta", None)
-                social_coverage_complete = bool(search_meta.complete) if search_meta is not None else True
-                _record_fetch(db, "x", ticker, None)
-            except Exception as e:
-                logger.error(f"Social collection error for {ticker} (isolated): {e}")
-                _record_fetch(db, "x", ticker, e)
+            else:
+                try:
+                    saved_count, posts_data, soc_cats = await ingest_social_posts_for_ticker(
+                        db, ticker_config, x_provider=x_provider, sentiment_classifier=social_classifier
+                    )
+                    catalysts_found.extend(soc_cats)
+                    records_processed += len(posts_data)
+                    social_success = True
+                    search_meta = getattr(x_provider, "last_search_meta", None)
+                    social_coverage_complete = bool(search_meta.complete) if search_meta is not None else True
+                    _record_fetch(db, "x", ticker, None)
+                except Exception as e:
+                    logger.error(f"Social collection error for {ticker} (isolated): {e}")
+                    _record_fetch(db, "x", ticker, e)
 
             # --- STEP 2: PREDICTION MARKET SCORE (PMS) ---
             pms_score = None
@@ -545,7 +622,8 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
 
             # --- STEP 5: COMPUTE SCORES, SMI, CONFIDENCE & SIGNALS ---
             now_eval = utc_now()
-            recent_posts = get_recent_social_posts(db, ticker, hours=settings.SOCIAL_LOOKBACK_HOURS)
+            # With X off, posts still stored inside the lookback window must not keep scoring the pillar
+            recent_posts = [] if x_off else get_recent_social_posts(db, ticker, hours=settings.SOCIAL_LOOKBACK_HOURS)
             social_res = calculate_social_score(recent_posts, analysis_timestamp=now_eval)
             # Re-center X polarity on the ticker's own trailing norm (excluding the current lookback window)
             baseline_posts = get_recent_social_posts(db, ticker, hours=settings.SOCIAL_BASELINE_DAYS * 24)
@@ -702,7 +780,9 @@ async def _run_full_pipeline_internal(existing_job_id: Optional[int] = None) -> 
 
             # --- STEP 6: DETERMINE DATA PROVENANCE & SAVE STATEFUL DATA ---
             # 1. Social Provenance from actual posts in window
-            if not social_success:
+            if x_off:
+                soc_src = "DISABLED"  # switched off on purpose: not missing data, so it does not degrade the snapshot
+            elif not social_success:
                 soc_src = "ERROR"
             elif len(recent_posts) == 0:
                 soc_src = "EXCLUDED"

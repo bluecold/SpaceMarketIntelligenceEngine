@@ -5,7 +5,7 @@ from app.scoring.social import apply_bayesian_shrinkage
 from app.scoring.fundamentals import get_fundamental_runway_info
 from app.sentiment.weighting import IMPORTANCE_RANK
 from app.collectors.sec_forms import (
-    CATEGORY_LABELS as SEC_CATEGORY_LABELS, DEBT_FINANCING, DILUTION_CATEGORIES, SHELF
+    CATEGORY_LABELS as SEC_CATEGORY_LABELS, DEBT_FINANCING, DILUTION_CATEGORIES, GATE_CATEGORIES, SHELF
 )
 
 
@@ -66,6 +66,11 @@ def generate_signal_and_explanation(
     dilution_filings = [f for f in recent_filings if _filing_field(f, "category") in DILUTION_CATEGORIES]
     debt_filings = [f for f in recent_filings if _filing_field(f, "category") == DEBT_FINANCING]
     shelf_filings = [f for f in recent_filings if _filing_field(f, "category") == SHELF]
+    # Phase 2 of the EDGAR monitor: an offering prospectus caps bullish bands (event study, sec_forms.GATE_CATEGORIES)
+    offering_gate_active = bool(getattr(settings, "SEC_OFFERING_GATE_ENABLED", True)) and any(
+        _filing_field(f, "category") in GATE_CATEGORIES for f in recent_filings
+    )
+    offering_gate_applied = False
     
     # Extract prediction delta if not directly provided
     eff_pred_delta = prediction_delta_24h
@@ -163,6 +168,15 @@ def generate_signal_and_explanation(
             if "CATALYST RISK" not in modifiers:
                 modifiers.append("CATALYST RISK")
 
+        # Capital Preservation Gate 3c: SEC offering prospectus inside SEC_FILING_ALERT_DAYS. Deals since 2022 were
+        # followed by a -7.3% abnormal return over 3 sessions (-16.9% over 10), so a BUY waits until it passes.
+        if offering_gate_active:
+            if base_signal in ["STRONG BUY", "BUY"]:
+                base_signal = "WATCH"
+                offering_gate_applied = True
+            if "SEC OFFERING" not in modifiers:
+                modifiers.append("SEC OFFERING")
+
         # Special Rule: Overbought restriction (RSI > 75 restricts both STRONG BUY and BUY to WATCH)
         is_overbought = False
         if rsi is not None and rsi > 75.0:
@@ -187,9 +201,9 @@ def generate_signal_and_explanation(
             if "NO MKT DATA" not in modifiers:
                 modifiers.append("NO MKT DATA")
 
-    # Informational only: an SEC offering filing never changes base_signal (phase 1 of the EDGAR monitor;
-    # it becomes a gate only if the signal ledger shows the modifier marks worse returns)
-    if dilution_filings and has_any_data:
+    # Informational: an unregistered sale (8-K 3.02) adds the modifier without changing base_signal (no measurable
+    # effect in the event study); offering prospectuses are handled by Gate 3c above
+    if dilution_filings and has_any_data and "SEC OFFERING" not in modifiers:
         modifiers.append("SEC OFFERING")
 
     # Informational only: upcoming earnings never change base_signal
@@ -403,7 +417,8 @@ def generate_signal_and_explanation(
             "type": "SEC_OFFERING",
             "category": "FILING",
             "level": "HIGH",
-            "message": f"🧾 {ticker}: SEC filing for a sale of new securities ({_summarize_filings(dilution_filings)}) — dilution; the signal is unchanged"
+            "message": f"🧾 {ticker}: SEC filing for a sale of new securities ({_summarize_filings(dilution_filings)}) — dilution; "
+                       + ("bullish signals are capped at WATCH while it is recent" if offering_gate_active else "the signal is unchanged")
         })
     if debt_filings:
         alerts.append({
@@ -505,7 +520,11 @@ def generate_signal_and_explanation(
 
     if dilution_filings:
         reasons.append(f"! SEC {SEC_CATEGORY_LABELS[_filing_field(dilution_filings[0], 'category')]}: "
-                       f"{_summarize_filings(dilution_filings)} (informational, does not change the signal)")
+                       f"{_summarize_filings(dilution_filings)} "
+                       + ("(BUY capped at WATCH: offerings were followed by a -7% abnormal return over 3 sessions)"
+                          if offering_gate_applied else
+                          "(caps BUY at WATCH while recent)" if offering_gate_active else
+                          "(informational, does not change the signal)"))
     if debt_filings:
         reasons.append(f"! SEC {SEC_CATEGORY_LABELS[DEBT_FINANCING]}: {_summarize_filings(debt_filings)}")
     if shelf_filings:

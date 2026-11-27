@@ -134,10 +134,10 @@ def test_auth_failure_is_critical_on_first_attempt_and_grouped(db, clock, live_p
     assert "X_AUTH_TOKEN" in p["action"]
 
 
-def test_incompatible_client_says_cookies_are_fine(db, clock, live_providers):
+def test_incompatible_client_says_session_works(db, clock, live_providers):
     repository.record_source_check(db, "x", "SPCX", "ERROR", error_kind="INCOMPATIBLE")
     [p] = sh.evaluate_source_health(db, now=T0)["problems"]
-    assert p["severity"] == "CRITICAL" and "cookies are fine" in p["action"].lower()
+    assert p["severity"] == "CRITICAL" and "session works" in p["action"].lower()
 
 
 def test_transient_errors_escalate_with_streak_length(db, clock, live_providers):
@@ -191,3 +191,19 @@ def test_health_endpoint_exposes_source_errors():
     assert body["source_errors"]["status"] in ("ok", "warning", "critical", "error")
     if body["source_errors"]["status"] in ("warning", "critical"):
         assert body["status"] == "degraded"
+
+
+def test_x_switched_off_is_not_a_failing_source(db, clock, live_providers, monkeypatch):
+    """X_PROVIDER=off: leftover X errors from the outage no longer raise SOURCE_ERROR, other sources still do."""
+    repository.record_source_check(db, "x", "ASTS", "ERROR", error_kind="INCOMPATIBLE")
+    assert sh.evaluate_source_health(db)["status"] == "critical"
+    monkeypatch.setattr(settings, "X_PROVIDER", "off")
+    assert sh.evaluate_source_health(db) == {"status": "ok", "problems": []}
+    assert sh.build_source_error_alert("ASTS", sh.evaluate_source_health(db)) is None
+    repository.record_source_check(db, "news", "ASTS", "ERROR", error_kind="AUTH")
+    assert [p["source"] for p in sh.evaluate_source_health(db)["problems"]] == ["news"]
+
+
+def test_incompatible_x_action_mentions_restricted_search():
+    text = sh.ACTIONS[("x", sh.INCOMPATIBLE)]
+    assert "restricted" in text and "X_PROVIDER=off" in text

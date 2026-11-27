@@ -23,8 +23,12 @@ DEBT_FINANCING = "DEBT_FINANCING"
 SHELF = "SHELF"
 RESALE = "RESALE"
 
-# Company sells new securities: the events behind the informational SEC OFFERING modifier
+# Company sells new securities: the events behind the SEC OFFERING modifier
 DILUTION_CATEGORIES = frozenset({OFFERING, UNREGISTERED_SALE})
+# Categories that cap BUY / STRONG BUY at WATCH (phase 2, 27/11/2026). Only OFFERING: 33 episodes since 2022 gave a
+# 3-session abnormal return of -7.3% (95% CI -13.0% to -1.4%); unregistered sales, shelves and resales showed no
+# measurable effect (audit/sentiment_2026_10/event_study_sec.py, PROJECT_CONTEXT.md section 5).
+GATE_CATEGORIES = frozenset({OFFERING})
 
 OFFERING_FORMS = frozenset({"424B1", "424B2", "424B4", "424B5"})
 RESALE_FORMS = frozenset({"424B3", "424B7"})

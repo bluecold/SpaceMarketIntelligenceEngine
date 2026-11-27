@@ -233,3 +233,11 @@ def test_cli_clean_schema_autonomy(tmp_path, monkeypatch):
     res_bt = runner.invoke(cli, ["backtest"])
     assert res_bt.exit_code == 0, f"backtest failed on clean DB: {res_bt.output}"
 
+
+
+def test_cli_collect_social_with_x_off(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "X_PROVIDER", "off")
+    result = CliRunner().invoke(cli, ["collect-social"])
+    assert result.exit_code == 0, result.output
+    assert "switched off" in result.output

@@ -202,7 +202,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                 <div style={{ background: 'rgba(255,255,255,0.03)', padding: '12px', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
                   <div style={{ color: 'var(--bullish-green)', fontWeight: 700, fontSize: '0.85rem' }}>1. Narrativa Social (X)</div>
                   <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                    Sentimiento en tiempo real con ponderación logarítmica de engagement y relevancia.
+                    Sentimiento en tiempo real con ponderación logarítmica de engagement y relevancia. <strong>Apagada desde el 10/11/2026</strong> (sin acceso gratuito a X): el SMI se calcula sin este pilar.
                   </div>
                 </div>
 
@@ -265,9 +265,11 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                   <p style={{ margin: '8px 0 0 0', color: 'var(--text-main)', fontSize: '0.85rem' }}>
                     Combina todas las fuentes disponibles mediante <strong>pesos adaptativos normalizados</strong> (Social 35%, Noticias 30%, Polymarket 15%, Momentum 10%, Fundamentales 10%): el sentimiento mueve el índice y el técnico lo enmarca. El <em>Risk Score</em> actúa como compuerta de preservación de capital para no penalizar el alpha direccional.
                     <br />
+                    • <strong>Estado actual (sin X):</strong> con el pilar social apagado, la normalización deja el SMI en ~60% Noticias, 20% Momentum y 20% Fundamentales (~52/13/17/17 si hay contrato de Polymarket). Un BUY depende de un pico de noticias sobre el sesgo fijo de los fundamentales, y ninguno de esos dos pilares tiene todavía poder predictivo demostrado: tomalo como hipótesis, no como ventaja.
+                    <br />
                     • <strong>Escala Cuantitativa Simétrica:</strong> <code>≥ 85</code> STRONG BUY | <code>70–84</code> BUY | <code>55–69</code> WATCH | <code>46–54</code> HOLD | <code>31–45</code> CAUTION | <code>16–30</code> AVOID | <code>≤ 15</code> STRONG AVOID.
                     <br />
-                    • <strong>Señales Canónicas Desacopladas & Bloqueo Operativo:</strong> Separa la señal base (<code>base_signal</code>) de modificadores contextuales y de riesgo (<code>OVEREXTENDED / DILUTION RISK / HIGH RISK / NO MKT DATA / CATALYST RISK / EARNINGS IN nD</code>). El modificador de resultados es estrictamente informativo (ventana de 7 días sin alterar la señal cuantitativa) y ante ausencia de cotización restringe compras a <code>WATCH (NO MKT DATA)</code> para impedir órdenes no operables.
+                    • <strong>Señales Canónicas Desacopladas & Bloqueo Operativo:</strong> Separa la señal base (<code>base_signal</code>) de modificadores contextuales y de riesgo (<code>OVEREXTENDED / DILUTION RISK / HIGH RISK / NO MKT DATA / CATALYST RISK / SEC OFFERING / EARNINGS IN nD</code>). Una oferta de acciones registrada en la SEC (prospecto 424B) en los últimos 5 días lleva BUY a <code>WATCH (SEC OFFERING)</code>: desde 2022, esas ofertas tuvieron un retorno anormal medio de −7% en 3 sesiones. El modificador de resultados es estrictamente informativo (ventana de 7 días sin alterar la señal cuantitativa) y ante ausencia de cotización restringe compras a <code>WATCH (NO MKT DATA)</code> para impedir órdenes no operables.
                   </p>
                 </div>
 
@@ -342,6 +344,10 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                     • <strong>🟡 DEGRADED:</strong> Algunas fuentes secundarias están en modo histórico o excluidas por baja cobertura.
                     <br />
                     • <strong>🔴 MOCK:</strong> Datos sintéticos generados localmente cuando no hay conectividad externa o credenciales.
+                    <br />
+                    • <strong>⚪ DISABLED:</strong> fuente apagada a propósito (X, con <code>X_PROVIDER=off</code>). No es un fallo, así que no degrada el snapshot ni abre <code>SOURCE_ERROR</code>.
+                    <br />
+                    • <strong>Fuente social sombra:</strong> los agregados diarios de X de la API gratuita de Adanos se guardan con su propio SSI sombra para medir si predicen algo. No tienen peso en el SMI ni en la señal.
                     <br />
                     • <strong>Sin Acuerdo Artificial:</strong> No se asigna acuerdo ni bonificación de confianza (+15%) cuando existe solo 1 fuente activa aislada; se requiere corroboración cruzada.
                     <br />
@@ -444,7 +450,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
                   <div>
                     <h4 style={{ margin: 0, color: '#fff', fontSize: '0.95rem' }}>Explora la Tabla Terminal de Posiciones</h4>
                     <p style={{ margin: '4px 0 0 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                      Compara rápidamente qué empresas tienen señales alcistas (<code>SMI ≥ 75</code>), señales bajistas de preservación de capital (<code>SMI &lt; 35</code>), modificadores de sobrecompra (<code>OVEREXTENDED</code>) o alertas de divergencia activa.
+                      Compara rápidamente qué empresas tienen señales alcistas (<code>SMI ≥ 70</code>), señales bajistas de preservación de capital (<code>SMI ≤ 30</code>), modificadores de sobrecompra (<code>OVEREXTENDED</code>) o alertas de divergencia activa.
                     </p>
                   </div>
                 </div>

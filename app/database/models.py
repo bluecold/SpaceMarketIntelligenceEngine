@@ -271,7 +271,7 @@ class SSISnapshotModel(Base):
     
     # Data Provenance and Integrity Governance
     data_source = Column(String(30), default="LIVE", index=True)         # "LIVE", "DEGRADED", "MOCK"
-    social_source = Column(String(20), default="LIVE")                   # "LIVE", "MOCK", "EXCLUDED"
+    social_source = Column(String(20), default="LIVE")                   # "LIVE", "MOCK", "EXCLUDED", "ERROR", "DISABLED" (X_PROVIDER=off)
     prediction_source = Column(String(20), default="LIVE")               # "LIVE", "MOCK", "EXCLUDED"
     news_source = Column(String(20), default="LIVE")                     # "LIVE", "EXCLUDED"
     market_source = Column(String(20), default="LIVE")                   # "LIVE", "DEGRADED"
@@ -375,3 +375,29 @@ class SourceCheckModel(Base):
     # and when the current failure streak started. Both are cleared on the next success.
     error_kind = Column(String(20), nullable=True)
     error_since = Column(DateTime, nullable=True)
+
+
+class SocialShadowDailyModel(Base):
+    """Daily social sentiment from a third-party aggregate (Adanos X API), stored in shadow mode.
+
+    Measured only: nothing in scoring, signals or the backtest reads this table. Each row is one UTC day as the
+    provider reports it; the current day is partial and is overwritten on the next fetch. The shadow SSI columns
+    are recomputed from the stored history on every fetch (app/scoring/social_shadow.py)."""
+    __tablename__ = "social_shadow_daily"
+    __table_args__ = (UniqueConstraint("provider", "ticker", "date", name="uq_social_shadow_provider_ticker_date"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    provider = Column(String(20), nullable=False, default="ADANOS")
+    ticker = Column(String(10), index=True, nullable=False)
+    date = Column(String(10), index=True, nullable=False)  # UTC calendar day, YYYY-MM-DD
+    mentions = Column(Integer, nullable=True)
+    sentiment_score = Column(Float, nullable=True)  # Provider's own -1..+1 score
+    bullish_pct = Column(Float, nullable=True)
+    bearish_pct = Column(Float, nullable=True)
+    buzz_score = Column(Float, nullable=True)
+    raw_score = Column(Float, nullable=True)        # Opinion-only polarity 0..100 from the bullish/bearish shares
+    baseline_score = Column(Float, nullable=True)   # Same scale, trailing SOCIAL_BASELINE_DAYS norm
+    shadow_ssi = Column(Float, nullable=True)       # 50 + raw - baseline, clamped 0..100
+    opinion_count = Column(Float, nullable=True)    # mentions x (bullish + bearish) share
+    volume_ratio = Column(Float, nullable=True)     # mentions / trailing median mentions
+    fetched_at = Column(DateTime, default=utc_now)

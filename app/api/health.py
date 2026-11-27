@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from sqlalchemy import text
 from app.database.connection import DbSession
 from app.database.models import JobRunModel, SSISnapshotModel
-from app.config import settings
+from app.config import settings, x_collection_off
 from app.monitoring.freshness import evaluate_data_freshness
 from app.monitoring.source_health import evaluate_source_health
 
@@ -22,7 +22,9 @@ def health_check(db: DbSession) -> Dict[str, Any]:
         db_status = "error"
 
     # Check X / Social Provider Status
-    if settings.X_PROVIDER.lower() == "mock":
+    if x_collection_off():
+        x_status = "disabled"
+    elif settings.X_PROVIDER.lower() == "mock":
         x_status = "mock"
     elif settings.X_PROVIDER.lower() == "twikit":
         has_cookies = os.path.exists(settings.X_COOKIES_FILE) and os.path.getsize(settings.X_COOKIES_FILE) > 0
@@ -75,7 +77,7 @@ def health_check(db: DbSession) -> Dict[str, Any]:
 
     is_last_job_ok = last_job is None or last_job.status in ["SUCCESS", "RUNNING"]
     overall_status = "ok" if (
-        db_status == "ok" and is_last_job_ok and x_status in ["live", "mock"]
+        db_status == "ok" and is_last_job_ok and x_status in ["live", "mock", "disabled"]
         and poly_status in ["live", "mock", "disabled"] and data_freshness.get("status") == "ok"
         and source_errors.get("status") == "ok"
     ) else "degraded"

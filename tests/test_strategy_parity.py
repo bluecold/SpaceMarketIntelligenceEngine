@@ -606,3 +606,45 @@ def test_divergence_direction_transition_and_alert_identity():
 
 
 
+
+
+def test_sec_offering_gate_parity_live_vs_backtest():
+    """The SEC OFFERING gate (2.2.5) blocks the same entries in the live engine and in both backtest models,
+    and the backtest only sees filings accepted before each snapshot (no lookahead)."""
+    from datetime import datetime, timedelta
+    from app.backtesting.engine import attach_recent_filings, evaluate_backtest_dataset
+    from app.scoring.signal import generate_signal_and_explanation
+
+    t0 = datetime(2026, 8, 3, 15, 0, 0)
+
+    def snaps():
+        return [{"ticker": "LUNR", "timestamp": t0 + timedelta(days=d), "social_score": 85.0, "prediction_score": 85.0,
+                 "news_score": 85.0, "momentum_score": 80.0, "risk_score": 50.0, "price": p, "rsi14": 55.0,
+                 "indicators": {"price": p, "rsi14": 55.0, "status": "AVAILABLE"}} for d, p in ((0, 10.0), (3, 12.0))]
+
+    offering = {"ticker": "LUNR", "category": "OFFERING", "form": "424B5", "accepted_at": t0 - timedelta(days=1)}
+
+    gated = snaps()
+    attach_recent_filings(gated, [offering])
+    assert [len(s["recent_filings"]) for s in gated] == [1, 1]   # 1 and 4 days after: inside SEC_FILING_ALERT_DAYS
+    late = snaps()
+    attach_recent_filings(late, [{**offering, "accepted_at": t0 - timedelta(days=6)}])
+    assert late[0]["recent_filings"] == []                       # older than the window: no gate
+    res = evaluate_backtest_dataset(gated, holding_period_days=3)
+    assert res["model_a_baseline"]["metrics"]["total_trades"] == 0
+    assert res["model_b_multisource"]["metrics"]["total_trades"] == 0
+
+    live = generate_signal_and_explanation(ticker="LUNR", smi=85.0, indicators=gated[0]["indicators"],
+                                           recent_filings=gated[0]["recent_filings"])
+    assert live["base_signal"] == "WATCH" and "SEC OFFERING" in live["signal_modifier"]
+
+    future = snaps()
+    attach_recent_filings(future, [{**offering, "accepted_at": t0 + timedelta(hours=1)}])  # filed after the entry
+    assert future[0]["recent_filings"] == []
+    res_future = evaluate_backtest_dataset(future, holding_period_days=3)
+    assert res_future["model_a_baseline"]["metrics"]["total_trades"] == 1
+    assert res_future["model_b_multisource"]["metrics"]["total_trades"] == 1
+
+    other = snaps()
+    attach_recent_filings(other, [{**offering, "category": "UNREGISTERED_SALE", "form": "8-K"}])
+    assert evaluate_backtest_dataset(other, holding_period_days=3)["model_b_multisource"]["metrics"]["total_trades"] == 1
